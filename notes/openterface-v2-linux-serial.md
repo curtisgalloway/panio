@@ -176,6 +176,30 @@ which makes baud autodetection there not merely unnecessary but meaningless.
   converse should hold too. Any test that depends on a cold MCU must have **both**
   cables out at once; a host-only replug leaves it powered from target VBUS.
   Every "power cycle" above is suspect on this ground.
+- **Cold MCU, tested 2026-10-11: still silent.** A V2 Mini-KVM (`1a86:fe0c`;
+  possibly the same unit as above, which was not recorded) that had answered
+  on macOS earlier the same day
+  (`chip_version=0x02 target_connected=true baud=115200`), was moved to an
+  x86_64 Linux host (Ubuntu 26.04, kernel 7.0, paniolo 0.7.0) with the
+  target side cabled to a running board. Results:
+
+  | probe (Linux) | result |
+  |---|---|
+  | `ch9329 info`, autodetect | timeout |
+  | raw `GET_INFO` via termios at 115200 / 57600 / 9600 | no reply |
+  | raw `GET_INFO`, DTR/RTS set to each of the four combinations | no reply |
+  | host-cable replug, two separate times | no reply |
+  | moved to a different host USB controller and hub | no reply |
+  | **both cables unplugged together** (kernel logged the disconnect, re-enumeration about 12 s later), then `ch9329 info` | **no reply** |
+
+  `ID_MM_DEVICE_IGNORE=1` was set on the node, no other process held the port,
+  and the device enumerated as a normal two-interface CDC-ACM (`cdc_acm` on
+  both). The MS2109 capture on the same unit worked throughout. So a cold MCU
+  does not fix it either: the unit works on macOS hours apart from failing on
+  Linux, which again points at the Linux host side, not the board.
+  What is still untested: a USB protocol capture of the Linux open (to see
+  whether the device ever returns bulk-IN data, or the host never sends the
+  CDC requests macOS sends).
 - **Issue #81 cannot be tested on this unit as written.** Its repro targets a
   factory-baud CH9329 behind a CH340 at `/dev/ttyUSB2`; none of that exists on
   V2 hardware. Whether the settle fix works on a real V1 board is still unproven.
