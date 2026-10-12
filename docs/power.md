@@ -138,7 +138,12 @@ helpers:
 
 Helpers install into the private libexec dir (`~/.local/libexec/paniolo/bin`),
 not onto `PATH`. Hook strings name them bare; paniolo looks in libexec first.
-To run one by hand, use `paniolo helper <name> …`.
+To run one by hand, use `paniolo helper <name> …`. List installed helpers
+with `paniolo helper`, then read a helper's own help with
+`paniolo helper -- amt --help`. The `--` before the name lets the helper
+receive `--help`; without it, paniolo shows its outer helper-command help.
+Listing helpers and reading bundled helper help do not open hardware or
+start a daemon.
 
 The `hidrig` control board can also switch a DUT power relay
 (`hidrig power off|on|cycle`) behind these hooks (see

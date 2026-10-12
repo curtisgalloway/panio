@@ -214,6 +214,10 @@ enum Command {
     Mcp,
     /// Run a helper binary from paniolo's private libexec dir (omit NAME to
     /// list the installed helpers).
+    ///
+    /// For the helper's own help, put -- before its name:
+    /// paniolo helper -- serialcap --help. Without the separator, --help
+    /// shows this command's help instead of running the helper.
     Helper {
         /// Helper name (e.g. hdmicap, hidrig, zigplug).
         name: Option<String>,
