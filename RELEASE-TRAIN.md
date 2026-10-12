@@ -164,8 +164,8 @@ feeds needs re-reading before `--update` re-pins it.
 
 | path | blob | feeds |
 |---|---|---|
-| `.github/workflows/release.yml` | 1541994350e9 | Channels (every arm's build and staging), Publish |
-| `.github/workflows/docs.yml` | 0ffe09ec9fa4 | Publish: re-verify apt |
+| `.github/workflows/release.yml` | b42747c4c34c | Channels (every arm's build and staging), Publish |
+| `.github/workflows/docs.yml` | 9f66618afceb | Publish: re-verify apt |
 | `packaging/nfpm.yaml` | b348d64432f4 | Channels: deb |
 | `packaging/scripts/build-apt-repo.sh` | fb2205eeab8e | Channels: deb, install like a user |
 | `Makefile` | 36543cf5ec97 | Project: helpers; Channels: source |
