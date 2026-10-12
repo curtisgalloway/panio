@@ -1,5 +1,9 @@
 # USB HID injection
 
+**Terms:** HID is USB keyboard/mouse input; the control host runs paniolo and
+the target receives input. CDC-ACM is USB's virtual serial-port interface.
+See the [glossary](glossary.md).
+
 paniolo injects keyboard and mouse events into the target through a USB HID
 injector: a device plugged into the target that acts as a keyboard and mouse.
 A helper tool on the control host drives it. The target's **hid channel** is
@@ -25,6 +29,37 @@ Any other injector works if it implements the command vocabulary (`type`,
 session. `-b <rate>` skips it.
 
 ---
+
+## Openterface CDC on Linux
+
+Some Openterface Mini-KVMs and KVM-Go units expose `1a86:fe0c` through Linux's
+`cdc_acm` driver (`/dev/ttyACM*`). A startup message can arrive before a program
+puts the tty into raw mode. Linux can echo that message back with control bytes
+expanded into caret notation, leaving the device's firmware parser waiting for
+a malformed frame. Subsequent commands then time out despite successful USB
+writes. This is the leading explanation from a captured Mini-KVM investigation;
+it is not a claim that every unit or firmware build has the same defect.
+
+On failed Linux connections, `ch9329` adds a compatibility warning when the
+selected serial port's USB identity is `1a86:fe0c`. It preserves the underlying
+error, follows stable serial-path aliases, and does not warn on successful
+connections or adapters whose identity is unknown.
+
+**There is no verified minimum firmware release to recommend yet.** The
+`chip_version` value printed by `info` is not a reliable firmware release number:
+the inspected Openterface source uses it as a board selector. Its v0.0.5 source
+contains response-endpoint fixes but still has the implicated partial-frame
+parser behavior. Do not select firmware solely by VID/PID or `chip_version`.
+
+A bench workaround was verified on one Mini-KVM: unplug **both** USB cables,
+reconnect, avoid opening its tty, then use the repository's
+`scripts/openterface_probe.py` to drain startup bytes through direct USB before
+sending GET_INFO. Restore the serial driver, then use the normal helper. The
+diagnostic needs explicit device selection and may need USB-access privileges;
+it temporarily interrupts that unit's serial connection. Capture and cleanup
+instructions, limitations, and pinned source evidence are in the
+[investigation note](https://github.com/curtisgalloway/paniolo/blob/main/notes/openterface-v2-linux-serial.md).
+An ordinary replug followed by another tty open can repeat the failure.
 
 ## JetKVM network KVM (`jetkvm`)
 

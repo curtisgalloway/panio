@@ -126,9 +126,11 @@ enum Cmd {
     Ping,
     /// Print protocol version, implementation id, and capabilities.
     Version,
-    /// Print CH9329 chip status (GET_INFO): firmware version, whether the
+    /// Print CH9329 chip status (GET_INFO): device-reported chip_version, whether the
     /// target has enumerated the emulated HID, lock-LED state, and link baud.
-    /// CH9329-specific (not part of the HID serial protocol).
+    /// On Openterface emulators, chip_version may identify the board type;
+    /// it is not a reliable firmware release number. CH9329-specific
+    /// (not part of the HID serial protocol).
     Info,
     /// Run a command file: one protocol command per line; blank lines and
     /// `# comments` are skipped; `delay <ms>` / `sleep <seconds>` pause.

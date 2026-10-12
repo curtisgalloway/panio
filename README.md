@@ -55,6 +55,9 @@ More on the [demos page](https://curtisgalloway.github.io/paniolo/demos/).
 A **target** (DUT, device under test) is the machine being developed on; a
 **control host** is the machine cabled to it.
 
+For Openterface devices using USB virtual serial ports on Linux, see the
+[startup compatibility warning and workaround](https://curtisgalloway.github.io/paniolo/hid/#openterface-cdc-on-linux).
+
 ---
 
 ## Installation

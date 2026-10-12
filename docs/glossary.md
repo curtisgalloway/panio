@@ -53,8 +53,14 @@ each term briefly on first use; this page is the longer reference.
 | Term | Meaning |
 |---|---|
 | **BPF** | Berkeley Packet Filter: the macOS kernel interface for sending and receiving raw network frames. |
+| **CDC-ACM / cdc_acm** | USB's standard virtual serial-port interface / the Linux driver that exposes it as a tty. |
+| **endpoint / bulk transfer** | An endpoint is a numbered USB data path. Bulk transfers carry reliable bytes; OUT goes from host to device, IN returns to the host. |
 | **ConIn** | UEFI console input: where firmware reads keystrokes from. |
 | **DTR** | Data Terminal Ready: a control output on a serial adapter. |
+| **RTS** | Request To Send: another serial control output. Hardware may repurpose DTR or RTS, so their electrical effects depend on the device. |
+| **line coding** | A USB serial control request describing baud, stop bits, parity, and data bits. Firmware can act on it even when data travels over USB rather than a physical UART. |
+| **tty / termios** | A Unix terminal or serial device / the settings that control it, including raw input and automatic echo. |
+| **VID/PID** | USB vendor and product identifiers. Shared identifiers do not uniquely identify a board or firmware build. |
 | **HID** | Human Interface Device: the USB class for keyboards and mice. |
 | **H.264** | A lossy video codec. A JetKVM streams its screen as H.264; the `jetkvm` daemon decodes it with `ffmpeg`. |
 | **HTTP Boot** | UEFI's network boot over HTTP, an alternative to PXE. |
@@ -93,5 +99,7 @@ each term briefly on first use; this page is the longer reference.
 | **RCS** | Fuchsia's RemoteControlService; `ffx target list` shows `RCS:Y` when it is reachable. |
 | **Redfish** | A DMTF standard REST API for managing servers. |
 | **tio** | A terminal program for serial ports. |
+| **libusb / PyUSB** | A library for accessing USB devices directly / its Python interface. Claiming an interface may require temporarily detaching its kernel driver. |
+| **usbmon** | Linux's capture interface for USB requests and completions. It records host-side transfers, not every electrical handshake on the wire. |
 | **ZRLE** | Zlib Run-Length Encoding: the lossless RFB encoding hdmicap uses to send changed screen tiles compactly. |
 | **xterm.js** | The in-browser terminal the dashboard uses. |
