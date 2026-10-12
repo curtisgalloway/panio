@@ -515,6 +515,7 @@ cli/src/
                 (Endpoint = port + token; get/post attach the bearer header,
                 http_url/ws_url carry it as ?token= for a browser), wait
   serial.rs     serialcap orchestration + tio exec + /input + device listing
+                + read-only health_snapshot (`serial status`, MCP serial_status)
   video.rs      hdmicap orchestration (daemon start/stop, client passthrough)
   adb.rs        adb transport (argv build, shell exec, run/input passthrough,
                 exec-out screencap → PNG) — a generic transport in core, no helper
@@ -781,7 +782,11 @@ serialcap/       Rust crate: serial console daemon (parallels hdmicap)
   src/
     main.rs      CLI subcommands: daemon (--interface NAME=DEV[@BAUD], repeatable),
                  log (-i NAME), devices, stop
-    serial_io.rs one supervisor per interface: tokio-serial port owner; reconnect
+    serial_io.rs Health tracks per-supervisor epoch, connection generation,
+                 opened identity, RX/TX counters and capture processing watermark;
+                 GET /status and `serial status` expose them without acting.
+                 Synthetic markers never advance RX counters.
+                 One supervisor per interface: tokio-serial port owner; reconnect
                  loop; broadcast fan-out to WS clients; mpsc client->port; 64KB
                  scrollback ring; tees every chunk to that interface's capture
                  thread (off the live fan-out path). `Serials` holds the named set.

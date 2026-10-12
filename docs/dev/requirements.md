@@ -55,8 +55,13 @@ owner's own need).
 
 ## 3. Serial console
 
+A capture epoch identifies one serial supervisor lifetime; RX and TX mean
+received bytes and driver-accepted transmitted bytes. See the
+[glossary](../glossary.md).
+
 | ID | Requirement | Pri | Status | Notes |
 |---|---|---|---|---|
+| SER-HEALTH | Read-only configured/active identity, process/port state, epoch, reconnect and RX/TX/capture progress through CLI and MCP | S | ☑ | `serial status`, MCP `serial_status`; task-specific response remains the caller's judgment (#279) |
 | SER-A | `serialcap` daemon owns the port exclusively; supervisor fans out reads | M | ☑ | `serialcap/`; lockfile |
 | SER-B | Timestamped rolling JSONL capture log, addressable by seq; rotation | M | ☑ | `capture.rs`; `serial log` |
 | SER-C | Interactive terminal via `tio` (`serial connect`) | M | ☑ | |

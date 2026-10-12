@@ -229,3 +229,6 @@ findings. They are not kept current and not published.
 ## License
 
 Apache 2.0 — see [LICENSE](LICENSE).
+
+Terminology is defined in the [glossary](docs/glossary.md). Serial capture also exposes
+read-only [health snapshots](docs/serial.md#read-only-health) via CLI and MCP.

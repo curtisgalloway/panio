@@ -207,7 +207,7 @@ enum Command {
     ///
     /// Speaks newline-delimited JSON-RPC on stdin/stdout until stdin closes;
     /// configure it in the harness as a stdio server whose command is
-    /// `paniolo mcp`. Tools: target_list, video_shot, video_read, serial_log,
+    /// `paniolo mcp`. Tools: target_list, video_shot, video_read, serial_status, serial_log,
     /// serial_send, hid_send, power_state, power_on, power_off, power_cycle.
     /// Each tool runs the
     /// matching paniolo command, so remote targets dispatch over SSH as usual.
@@ -513,6 +513,15 @@ enum SerialCmd {
     },
     /// List available serial devices on this machine.
     Devices,
+    /// Read serial health as JSON without starting or changing the daemon.
+    /// Process liveness, port connection and RX traffic are separate evidence;
+    /// none proves that a target executed a command.
+    Status {
+        #[command(flatten)]
+        target: TargetArg,
+        #[arg(long, short)]
+        interface: Option<String>,
+    },
     /// Show a target's serial interfaces and the daemon status.
     Show {
         #[command(flatten)]
@@ -2357,6 +2366,26 @@ fn serial_cmd(lab_flag: Option<&str>, cmd: SerialCmd) -> Result<()> {
             for d in devices {
                 println!("  {d}");
             }
+            Ok(())
+        }
+        SerialCmd::Status { target, interface } => {
+            let (target, serials) = serial_runtime(
+                lab_flag,
+                target.name(),
+                interface.as_deref(),
+                dispatch::Mode::Reexec,
+            )?;
+            if let Some(name) = interface.as_deref() {
+                pick_serial(&target, &serials, Some(name))?;
+            }
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serial::health_snapshot(
+                    &target,
+                    &serials,
+                    interface.as_deref()
+                )?)?
+            );
             Ok(())
         }
         SerialCmd::Show { target } => cmd_serial_show(lab_flag, target.name()),
@@ -5611,6 +5640,7 @@ mod tests {
         &["serial", "watch"],
         &["serial", "stop"],
         &["serial", "show"],
+        &["serial", "status"],
         &["serial", "log"],
         &["serial", "dtr"],
         &["serial", "reset"],

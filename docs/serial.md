@@ -1,5 +1,10 @@
 # Serial console
 
+**Terms:** a capture epoch identifies one interface supervisor's lifetime;
+RX is bytes received from the target, TX is bytes accepted by the serial driver;
+a connection generation counts successful opens within an epoch.
+See the [glossary](glossary.md).
+
 | Mode | Command | What you get |
 |---|---|---|
 | Interactive | `serial connect` | A foreground `tio` terminal |
@@ -331,3 +336,35 @@ older daemon without that endpoint, run `paniolo daemons stop serialcap`.
 
 `/stream` client messages are also capped at 64 KiB and share the same FIFO
 writer.
+
+## Read-only health
+
+`paniolo serial status [target-machine] [-i console]` returns a JSON snapshot
+without opening a device, starting a daemon, or sending input. The MCP tool
+`serial_status` returns the same JSON.
+
+- `configured` contains the lab's selected interfaces. `active` contains the
+  running daemon's interfaces, which may differ after a lab edit.
+- `process_live` and `daemon_state` distinguish stopped, untracked, unreachable,
+  and reachable daemons. An untracked or unreachable process supplies no port
+  or traffic evidence. Missing fields on an older daemon mean unknown.
+- Each active interface has `connected` and a `health` object: `epoch`,
+  `started_at_ms`, `connection_generation`, `connected_at_ms`, `active_device`,
+  `active_baud`, and `identity_source`. Linux resolves the opened file
+  descriptor; other platforms report the opened port's name. A null identity
+  is unknown. Disconnected interfaces have null active device and baud.
+- `last_rx_seq`, `last_rx_at_ms`, `last_rx_age_ms`, `rx_bytes`, and `tx_bytes`
+  distinguish a connected but quiet port from receiving traffic. Counters
+  exclude paniolo's synthetic connection/button markers. A sequence is a
+  received chunk, independent of the line log's sequence. Reconnect increments
+  the connection generation; a new supervisor gets a new epoch and counters.
+- `capture_through_seq` and `capture_through_at_ms` report bytes processed by
+  the capture thread, with `capture_alive` indicating its receive channel.
+  This is an assembly watermark, not a guarantee of durable disk writes;
+  pending-line sidecars may still be waiting for their debounce deadline.
+  `observed_at_ms` is snapshot time, not receive time. Times are Unix milliseconds.
+
+Save a status before input and compare later status in the same epoch. Driver
+acceptance (`tx_bytes`) does not prove receipt by the target, and receive
+traffic does not prove command execution. Verify the task-specific response
+in the captured output. The status command never restarts or retries anything.

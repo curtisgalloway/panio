@@ -12,6 +12,10 @@ each term briefly on first use; this page is the longer reference.
 
 | Term | Meaning |
 |---|---|
+| **capture epoch** | Identifier for one serial interface supervisor lifetime. Receive chunk counters restart with a new epoch. |
+| **connection generation** | Successful port-open count within an epoch; increments on reconnect. |
+| **RX / TX** | Bytes received from the target / bytes accepted by the host serial driver. Neither proves command execution. |
+| **capture watermark** | Last receive chunk processed by the capture thread; does not guarantee durable disk writes. |
 | **target** | The machine being developed on or tested: the board, PC or VM paniolo controls. Also called the DUT. |
 | **DUT** | Device under test. Same as target. |
 | **control host** | The machine cabled to the target that runs paniolo and its daemons. It can be your laptop or a dedicated box such as a Raspberry Pi. |
