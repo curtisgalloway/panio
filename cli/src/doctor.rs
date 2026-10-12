@@ -434,6 +434,13 @@ fn check_channel(lab: &Lab, ch: &ResolvedChannel, rt: &ResolvedTarget) -> (Statu
                 rc => interpret(rc, dev),
             },
         },
+        ChannelKind::Netboot if field(ch, "tftp_root").is_none_or(str::is_empty) => (
+            Status::Missing,
+            format!(
+                "no tftp_root configured (paniolo netboot set -t {} --tftp-root <path>)",
+                rt.name
+            ),
+        ),
         ChannelKind::Netboot => match field(ch, "interface") {
             None => (Status::Incomplete, "no interface set".to_string()),
             Some(iface) => {
