@@ -373,7 +373,7 @@ Python tree below:
   one origin, never `*`. The layer is each daemon's `src/auth.rs`,
   byte-identical across the four like `platform.rs`; only hdmicap's vendored
   `/xterm*` assets are exempt. A daemon started by an older paniolo has no
-  token (the CLI then sends none) — `paniolo daemons restart --stale`
+  token (the CLI then sends none) — a named `paniolo daemons restart`
   replaces it. The URL handed to a **browser** always carries `?token=`, and
   `dispatch::remote_daemon_endpoint` reads the token over SSH so a tunnelled
   `console` carries it too — but **`video preview` is the only command that
@@ -476,9 +476,17 @@ Python tree below:
   files stop being swept; a `make install` host should add that drop-in itself.
   A daemon keeps running its binary from when it started; an upgrade or rebuild
   replaces that binary on disk but not the running process. The CLI stamps each
-  capture daemon's binary identity at spawn (`binmeta.json`) and flags a daemon
-  whose binary has since changed as **stale** in `paniolo daemons` (and on
-  `serial show` / `video show`). `paniolo daemons restart [NAME…|--all|--stale]`
+  capture daemon's SHA-256 content digest and pid at spawn (`binmeta.json`);
+  Linux also reads `/proc/<pid>/exe` to compare the actual running bytes.
+  Only a proven content difference is **stale** in `paniolo daemons` (and on
+  `serial show` / `video show`). Identical bytes after reinstall/path/mtime
+  changes remain current. Missing identity or unavailable content is explicitly
+  **binary identity unknown**, never a restart recommendation; metadata alone
+  proves nothing. Digest fields are optional so legacy records still load.
+  The platform hash tools are best-effort (Linux sha256sum, macOS shasum,
+  Windows Get-FileHash); unavailable hashing keeps the status unknown.
+  Automatic watch restarts and `--stale` select only proven content changes.
+  `paniolo daemons restart [NAME…|--all|--stale]`
   cleanly cycles serialcap/hdmicap from the current binary (reusing the lab's
   channel config; it waits for the old process to exit so the new one doesn't
   race it for an exclusive device). netbootd is not auto-restarted — cycle it

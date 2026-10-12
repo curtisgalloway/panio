@@ -300,7 +300,7 @@ enum DaemonsCmd {
         /// Restart every running serialcap/hdmicap daemon.
         #[arg(long)]
         all: bool,
-        /// Restart only daemons whose binary changed since they started.
+        /// Restart only daemons with proven binary content changes; unknown identity is skipped.
         #[arg(long)]
         stale: bool,
     },
@@ -1204,12 +1204,8 @@ fn cmd_daemons_list() -> Result<()> {
     for d in &discovered {
         let port = d.port.map_or("-".to_string(), |p| p.to_string());
         let name = daemon_label(d);
-        let stale = if d.stale == Some(true) {
-            any_stale = true;
-            "\t(stale: binary changed since start)"
-        } else {
-            ""
-        };
+        any_stale |= d.binary_status.is_stale() == Some(true);
+        let stale = d.binary_status.note();
         println!("{name}\tpid {}\tport {}\t{}{stale}", d.pid, port, d.detail);
     }
     if any_stale {
@@ -1404,7 +1400,7 @@ fn cmd_daemons_restart(
                     .iter()
                     .any(|s| s.matches(&d.name, d.instance.as_deref()))
         })
-        .filter(|d| !stale_only || d.stale == Some(true))
+        .filter(|d| !stale_only || d.binary_status.is_stale() == Some(true))
         .filter_map(|d| d.instance.map(|inst| (d.name, inst)))
         .collect();
     if selected.is_empty() {
@@ -3688,14 +3684,9 @@ fn cmd_serial_show(lab_flag: Option<&str>, target: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-/// Suffix noting a running daemon's binary is stale (changed since it started),
-/// empty otherwise — appended to `serial show` / `video show` status lines.
-fn stale_note(daemon: &str, target: &str) -> &'static str {
-    if daemons::binary_is_stale(daemon, Some(target)) == Some(true) {
-        "  (stale — `paniolo daemons restart`)"
-    } else {
-        ""
-    }
+/// Content change or unknown identity, appended to channel status lines.
+fn stale_note(daemon: &str, target: &str) -> String {
+    daemons::binary_status(daemon, Some(target)).note()
 }
 
 // ── video runtime bodies ────────────────────────────────────────────────────
@@ -4019,7 +4010,7 @@ fn video_cmd(lab_flag: Option<&str>, cmd: VideoCmd) -> Result<()> {
                 Some(url) => {
                     println!(
                         "{}",
-                        video_show_daemon_line(&url, stale_note(video::DAEMON, &target))
+                        video_show_daemon_line(&url, &stale_note(video::DAEMON, &target))
                     );
                     // A one-time pointer, not a field: `show`'s stdout is
                     // `key<TAB>value` that scripts split on, and this is prose.
