@@ -97,6 +97,27 @@ class ProbeTest(unittest.TestCase):
             2, bytes.fromhex("57 ab 00 01 00 03"), timeout=2000
         )
 
+    def test_startup_frame_is_drained_not_mistaken_for_query_reply(self):
+        device = unittest.mock.Mock()
+        startup = bytes.fromhex("57 ab 00 81 08 02 00 00 05 00 00 00 00 92")
+        device.read.side_effect = [
+            startup,
+            usb.core.USBTimeoutError("drain elapsed"),
+            usb.core.USBTimeoutError("query unanswered"),
+        ]
+        device.write.return_value = 6
+        incoming = SimpleNamespace(bEndpointAddress=0x83, wMaxPacketSize=64)
+        probe.drain_input(device, incoming, 0.25)
+        self.assertFalse(
+            probe.get_info(device, SimpleNamespace(bEndpointAddress=2), incoming, 2000)
+        )
+
+    def test_drain_duration_is_positive_finite_and_bounded(self):
+        self.assertEqual(probe.parse_step("drain=0.25"), ("drain", 0.25))
+        for value in ("0", "-1", "nan", "inf", "31"):
+            with self.assertRaises(probe.argparse.ArgumentTypeError):
+                probe.parse_step(f"drain={value}")
+
     def test_partial_claim_failure_restores_both_cdc_bindings(self):
         device = unittest.mock.Mock()
         bound = {0, 1}

@@ -285,6 +285,21 @@ pub struct Session {
     buttons: u8,
 }
 
+/// Identify only the selected USB device, including stable serial-path aliases.
+/// Missing metadata is not evidence that an adapter is an Openterface.
+#[cfg(any(target_os = "linux", test))]
+fn openterface_cdc_port(device: &str, ports: &[serialport::SerialPortInfo]) -> bool {
+    let selected = std::fs::canonicalize(device).unwrap_or_else(|_| device.into());
+    ports.iter().any(|port| {
+        matches!(
+            &port.port_type,
+            serialport::SerialPortType::UsbPort(usb)
+                if usb.vid == 0x1a86 && usb.pid == 0xfe0c
+        ) && std::fs::canonicalize(&port.port_name).unwrap_or_else(|_| (&port.port_name).into())
+            == selected
+    })
+}
+
 impl Session {
     /// Open `device` and confirm the CH9329 answers. When `baud` is `None`,
     /// probe [`BAUD_CANDIDATES`] in order; otherwise use the given rate.
@@ -306,6 +321,27 @@ impl Session {
     }
 
     fn open_candidates(device: &str, candidates: &[u32]) -> Result<Session> {
+        let result = Self::try_open_candidates(device, candidates);
+        #[cfg(target_os = "linux")]
+        let result = result.map_err(|error| {
+            if serialport::available_ports().is_ok_and(|ports| openterface_cdc_port(device, &ports))
+            {
+                return error.context(
+                    "warning: Openterface CDC (1a86:fe0c) has a known Linux startup \
+                     compatibility issue: tty echo of startup data can leave its \
+                     firmware parser unresponsive. Firmware release is unknown; \
+                     chip_version is not a reliable release number. See \
+                     https://curtisgalloway.github.io/paniolo/hid/#openterface-cdc-on-linux \
+                     for diagnosis and the cold-start/direct-USB workaround; verify \
+                     board and firmware compatibility before updating",
+                );
+            }
+            error
+        });
+        result
+    }
+
+    fn try_open_candidates(device: &str, candidates: &[u32]) -> Result<Session> {
         let mut last_err: Option<anyhow::Error> = None;
         let last_index = candidates.len() - 1;
         for (i, &rate) in candidates.iter().enumerate() {
@@ -1101,6 +1137,67 @@ pub(crate) mod test_support {
 mod tests {
     use super::test_support::*;
     use super::*;
+
+    fn usb_port(name: &str, vid: u16, pid: u16) -> serialport::SerialPortInfo {
+        serialport::SerialPortInfo {
+            port_name: name.into(),
+            port_type: serialport::SerialPortType::UsbPort(serialport::UsbPortInfo {
+                vid,
+                pid,
+                serial_number: None,
+                manufacturer: None,
+                product: None,
+            }),
+        }
+    }
+
+    #[test]
+    fn compatibility_hint_requires_selected_usb_identity() {
+        let selected = "/nonexistent/ch9329-selected-port";
+        let other = "/nonexistent/ch9329-other-port";
+        assert!(openterface_cdc_port(
+            selected,
+            &[usb_port(selected, 0x1a86, 0xfe0c)]
+        ));
+        for ports in [
+            vec![],
+            vec![usb_port(other, 0x1a86, 0xfe0c)],
+            vec![usb_port(selected, 0x1a86, 0x7523)],
+            vec![usb_port(selected, 0xffff, 0xfe0c)],
+            vec![serialport::SerialPortInfo {
+                port_name: selected.into(),
+                port_type: serialport::SerialPortType::Unknown,
+            }],
+        ] {
+            assert!(!openterface_cdc_port(selected, &ports));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn compatibility_hint_resolves_stable_port_symlinks() {
+        let dir = std::env::temp_dir().join(format!(
+            "ch9329-port-alias-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&dir).unwrap();
+        let device = dir.join("device");
+        let alias = dir.join("by-path");
+        std::fs::write(&device, []).unwrap();
+        std::os::unix::fs::symlink(&device, &alias).unwrap();
+        let matched = openterface_cdc_port(
+            alias.to_str().unwrap(),
+            &[usb_port(device.to_str().unwrap(), 0x1a86, 0xfe0c)],
+        );
+        std::fs::remove_file(alias).unwrap();
+        std::fs::remove_file(device).unwrap();
+        std::fs::remove_dir(dir).unwrap();
+        assert!(matched);
+    }
 
     #[test]
     fn frame_checksum_matches_spec_example() {

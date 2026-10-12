@@ -16,6 +16,10 @@ limitations under the License.
 
 # ch9329 — CH9329 USB-HID injector for paniolo
 
+**Terms:** HID is USB keyboard/mouse input; UART is a hardware serial port;
+CDC-ACM is USB's virtual serial-port interface. See the
+[glossary](../docs/glossary.md).
+
 `ch9329` is a paniolo `hid` helper (the target's keyboard and mouse) for the
 **WCH CH9329**, a chip that turns UART commands into USB keyboard and mouse
 input on the target. It has the **same CLI surface** as
@@ -71,7 +75,7 @@ sequences.
 
 ### Extras beyond hidrig
 
-- **`ch9329 -d <dev> info`**: CH9329 `GET_INFO`. Reports firmware version,
+- **`ch9329 -d <dev> info`**: CH9329 `GET_INFO`. Reports device `chip_version`,
   whether the target has enumerated the emulated HID (`target_connected`),
   lock-LED state, and the negotiated baud. Useful for `paniolo doctor`-style
   checks.
@@ -98,6 +102,15 @@ sequences.
   after `baud` set a rate outside that list.
 
 ## Status and limitations
+
+**Openterface CDC on Linux:** failed connections to a selected `1a86:fe0c`
+port include a compatibility warning. Startup data echoed by the tty can leave
+the firmware parser unresponsive; a cold direct-USB drain before opening the
+tty restored operation on one tested Mini-KVM. See
+[the Linux guide](../docs/hid.md#openterface-cdc-on-linux) and
+[captured investigation](../notes/openterface-v2-linux-serial.md).
+`chip_version` may identify the board variant, not its firmware release. No
+reliable minimum release or automatic outdated-firmware check is established.
 
 **Verified end to end** on a chip 0x38 over a CH340 at 115200 into a Raspberry
 Pi OS desktop: typing (US layout), special keys (`ENTER`/`ESCAPE`/`CAPS_LOCK`,

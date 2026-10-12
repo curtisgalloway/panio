@@ -235,25 +235,45 @@ def get_info(device, outgoing, incoming, timeout):
     return False
 
 
+def drain_input(device, incoming, seconds):
+    """Record queued/startup bytes before a query, without counting a reply."""
+    deadline = time.monotonic() + seconds
+    total = 0
+    while time.monotonic() < deadline:
+        remaining = max(1, math.ceil((deadline - time.monotonic()) * 1000))
+        try:
+            chunk = device.read(
+                incoming.bEndpointAddress, incoming.wMaxPacketSize, timeout=remaining
+            )
+        except usb.core.USBTimeoutError:
+            break
+        log("pre_query_input", hex=bytes(chunk).hex())
+        total += len(chunk)
+        if total > 65536:
+            raise RuntimeError("Unexpected continuous input; stopping drain")
+    log("drain_complete", bytes_read=total)
+
+
 def parse_step(value):
     """Validate every requested step before touching USB."""
     if value == "info":
         return ("info", None)
     name, separator, raw = value.partition("=")
     try:
-        number = float(raw) if name == "wait" else int(raw)
+        number = float(raw) if name in ("wait", "drain") else int(raw)
     except ValueError as error:
         raise argparse.ArgumentTypeError(
-            "Expected info, baud=N, lines=N, wait=S"
+            "Expected info, baud=N, lines=N, wait=S, drain=S"
         ) from error
     if separator and (
         (name == "baud" and number in (9600, 115200))
         or (name == "lines" and number in range(4))
         or (name == "wait" and math.isfinite(number) and 0 <= number <= 30)
+        or (name == "drain" and math.isfinite(number) and 0 < number <= 30)
     ):
         return (name, number)
     raise argparse.ArgumentTypeError(
-        "Use baud=9600/115200, lines=0..3, wait=0..30, or info"
+        "Use baud=9600/115200, lines=0..3, wait=0..30, drain=S (0 < S <= 30), or info"
     )
 
 
@@ -282,6 +302,8 @@ def run_probe(device, args):
             log("step", name=name, value=value)
             if name == "wait":
                 time.sleep(value)
+            elif name == "drain":
+                drain_input(device, incoming, value)
             elif name == "info":
                 success = (
                     get_info(device, outgoing, incoming, args.timeout_ms) and success
@@ -331,7 +353,8 @@ def main():
         required=True,
         help=(
             "Ordered step: info, baud=9600/115200, lines=0..3 "
-            "(DTR bit 0, RTS bit 1), wait=seconds"
+            "(DTR bit 0, RTS bit 1), wait=seconds, drain=seconds "
+            "(record/discard queued input before a query)"
         ),
     )
     args = parser.parse_args()

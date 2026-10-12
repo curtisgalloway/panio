@@ -961,6 +961,12 @@ ch9329/          Rust crate: the *other* hid helper — a WCH CH9329 UART->USB-H
                    wrong `raddr`), GET_INFO, held-key/pointer state, and
                    `open()`'s baud probe (BAUD_CANDIDATES = 115200, 57600 — the
                    NanoKVM-USB default — then 9600; force one with -b).
+                   Failed Linux opens add a compatibility hint only for the
+                   selected USB 1a86:fe0c port (stable aliases resolved).
+                   `chip_version` is not a reliable Openterface firmware release;
+                   no minimum-version check is possible from it. Captured startup
+                   echo and the direct-USB drain workaround are recorded in
+                   notes/openterface-v2-linux-serial.md and docs/hid.md.
                    `open()` pushes an all-zero keyboard + mouse report once
                    GET_INFO confirms the chip, since the chip's own HID state
                    outlives the daemon process; `tap`/`combo`/`type_text` best-

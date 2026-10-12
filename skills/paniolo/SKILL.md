@@ -593,6 +593,13 @@ arguments to it and runs it on the channel's host:
   Mini-KVM and KVM-Go, Sipeed NanoKVM-USB): `paniolo hid set -t <name> --cmd
   "ch9329 -d <uart>"`. Same commands; it autodetects the link baud (115200 /
   57600 / 9600) and adds `info` (target USB enumeration + lock LEDs).
+  On Linux, failed connections to `1a86:fe0c` include a startup compatibility
+  warning. Do not interpret `chip_version` as a firmware release or flash an
+  image based on VID/PID alone. A captured Mini-KVM failure involved tty echo
+  of unsolicited startup bytes; another tty open after a cold cycle can repeat
+  it. The direct-USB drain workaround requires explicit device selection,
+  stopping port users, and restoring drivers: follow `docs/hid.md` →
+  "Openterface CDC on Linux" and `notes/openterface-v2-linux-serial.md`.
 - **`jetkvm`** — the JetKVM network KVM (Go helper): `paniolo hid set -t <name>
   --cmd "jetkvm -d <host>"`; the password comes from `JETKVM_PASSWORD`,
   `--password-file` or `--password-command`, never a flag. Same commands; its

@@ -3,203 +3,241 @@ SPDX-FileCopyrightText: 2026 Curtis Galloway
 SPDX-License-Identifier: Apache-2.0
 -->
 
-# Openterface Mini-KVM **V2** (CH32V208) — why its control port is silent on Linux
+# Openterface Mini-KVM V2: Linux startup echo and serial silence
 
-*Status: **bench-measured 2026-09-20** on a bare-metal x86_64 Linux host
-(Ubuntu 26.04, kernel 7.0), against paniolo 0.4.1 installed from the apt repo.
-The chip never answered on Linux under any condition tested. The **same unit,
-same cable, moved to a macOS host, answered on the first try and stayed
-reliable** — so the hardware is healthy and this is a platform gap, not a
-device fault. The root cause on the Linux side is **not yet established**.*
+**Updated 2026-10-11.** A captured Linux tty open echoed unsolicited startup
+data back into the device. A cold direct-USB trial that drained startup data
+before any tty open answered two GET_INFO queries; the ordinary helper then
+worked too. This makes startup echo and firmware parser recovery the leading
+explanation for [#238][issue], not a blanket Linux/kernel defect. The installed
+firmware remains unidentified; no fixed minimum release has been established.
 
-> **This note corrects two claims made elsewhere in these notes.** See
-> "What we had wrong" below before trusting
-> [openterface-deep-control.md](openterface-deep-control.md) or
-> [openterface-usb-mux-spec.md](openterface-usb-mux-spec.md) on the subject of
-> USB IDs.
+**Terms:** CDC-ACM is USB's virtual serial interface; `cdc_acm` exposes its
+Linux tty (terminal device). Bulk OUT sends bytes to the device; bulk IN returns
+them. Line coding sets serial parameters; DTR/RTS are separate control signals.
+usbmon records host-side USB requests and completions. See the
+[glossary](../docs/glossary.md).
 
-## Sources
+## Earlier measurements
 
-All citations are to **TechxArtisanStudio/Openterface_QT** — despite the chip
-naming, that repository is titled *"Openterface Mini-KVM: Host Applications for
-Windows and Linux"* — pinned at commit `0536836c0d6d` (2026-09-20). It is
-GPL-3.0; everything below is a description of observable behavior and of facts
-the vendor states in prose, not copied implementation.
+On 2026-09-20, paniolo 0.4.1 on x86_64 Ubuntu 26.04, kernel 7.0, could not
+communicate with a physically identified Mini-KVM exposing `1a86:fe0c`
+through `cdc_acm`, alongside MS2109 video (`345f:2109`). Target-side HID
+identified as `1a86:fe00`, KeyMod. The same unit and cable worked on macOS.
 
-| what | where |
+| Probe | Linux | macOS |
+|---|---|---|
+| Helper at 115200 / 57600 / 9600, three attempts each | 0/9 | — |
+| Helper autodetect | timeout | 6/6, succeeding at first candidate |
+| Forced 9600 then 115200, four cycles | — | 4/4 |
+| Raw GET_INFO through termios | no reply | — |
+| Clear RTS, then RTS and DTR after open | no reply | — |
+| Keyboard command observed at target input device | no event | — |
+| USB reset or replug | no reply | — |
+
+Further 2026-10-11 tests with paniolo 0.7.0 failed at all four DTR/RTS states,
+through different host USB connections, and after both cables were removed
+together. Whether that was the September unit was not recorded. No process held
+the tty and `ID_MM_DEVICE_IGNORE=1` was active. A cold restart followed by
+another tty open did not isolate what happened during that open.
+
+## Captured investigation
+
+The user identified the Mini-KVM connected to a powered Pi 4B's USB-A port.
+A second `1a86:fe0c` KVM-Go was left alone. Selected-device descriptors:
+configuration 1; communication interface 0, data interface 1; alternate 0;
+interrupt IN `0x81`, bulk OUT **`0x02`**, bulk IN `0x83`; endpoint packet
+sizes 64 bytes; `bcdDevice=1.00`; no serial-number string. USB addresses were
+re-enumerated after reconnection.
+
+On Ubuntu kernel `7.0.0-38-generic`, 2026-10-11 local time:
+
+1. A raw tty probe read checksum-valid `57ab008108020000050000000092`.
+   Initially this looked successful. **usbmon showed that frame arrived before
+   the query.** Its disconnected flag described queued startup data.
+2. Before raw mode took effect, tty echo sent these **17 bytes** back:
+   `57ab5e40815e485e425e405e405e455e40`. The header is still `57 ab`, but
+   byte 4 is `81`: a claimed 129-byte payload, or 135-byte total frame.
+   The subsequent six-byte GET_INFO completed on OUT without a fresh reply.
+3. The installed helper failed at fixed 115200, fixed 9600, and autodetect.
+   A second raw query failed. Captures showed successful line-coding and
+   DTR/RTS requests, and successful six-byte query writes.
+4. Warm direct USB after detaching `cdc_acm` also failed: no explicit line
+   coding, then 9600/8N1, then 115200/8N1 with one-second settling. Writes and
+   control requests completed; reads timed out after two seconds. Both original
+   driver bindings were restored after each trial. Earlier unprivileged attempts
+   failed before claiming interfaces and are not transport measurements.
+5. A same-session direct sequence at 115200, DTR/RTS values 0, 1, 3, 2,
+   produced four timeouts. Lines returned to 0 and drivers were restored.
+   These results have tool logs only: the timed capture ended before the trial.
+6. The user unplugged **both USB cables for about ten seconds** and reconnected.
+   No tty was opened. Direct USB drained the same 14-byte startup frame for a
+   250 ms interval, then queried twice. Both queries returned fresh
+   `57ab008108020100050000000093`, with target connected. A second drain
+   between queries was empty. Capture: 26 packets, zero drops.
+7. After driver restoration, normal `ch9329 -b 115200 info` succeeded with
+   `chip_version=0x02 target_connected=true`. Capture: 66 packets, zero
+   drops. No firmware update or target keystroke was used. The helper's normal
+   successful-open path sends all-keys/buttons-released reports.
+
+The successful trial still allowed kernel **probe-time** initialization before
+detachment. It isolates tty opening, not all kernel initialization. Missing:
+installed firmware identity, a cold helper-first capture, working macOS capture,
+and target keyboard-event verification after recovery. The first raw probe
+itself introduced captured echo, so later warm trials cannot establish whether
+earlier initialization independently caused a fault.
+
+## Source evidence pinned to revisions
+
+The [v0.0.5 release][release], published 2026-09-28, resolves to
+`321d4e4c847f47a6a70d200461653802a1cebc0c` and includes Mini-KVM, KVM-Go and
+KeyMod assets. Inspecting its source does not identify the installed binary.
+
+| Source | Verified finding |
 |---|---|
-| `FE0C` is the **V2 Mini-KVM** serial PID, not a KVM-Go marker | `device/platform/DeviceConstants.h` (`SERIAL_PID_V2`) |
-| chip selected by VID/PID | `serial/chipstrategy/ChipStrategyFactory.h` (`CH32V208 = 0x1A86FE0C`) |
-| the V2 chip is **fixed at 115200** | `serial/chipstrategy/CH32V208Strategy.cpp` (`supportedBaudrates()` returns one rate; `validateBaudrate()` warns and overrides anything else; `buildReconfigurationCommand()` returns empty — no command-based reconfiguration) |
-| **close/reopen wedges the chip** | `docs/hotplug-serial-fix.md` |
-| a separate Linux-only enumeration failure and its remedy | `host/UsbPortResetter.h` |
-| the tty mapping and the udev rules the vendor ships | `docs/tutorial/06-platform-guides.md`, `packaging/debian/postinst` |
+| [EP3 configuration fix][ep3], `3b105037b7df73df077f5c1f1eedb06593a0a442` | Enables response endpoint on configuration; present in release source. |
+| [Response-queue fix][queue], `4a90be4f7985846c6016eb1f4291f9278b1c00c2` | Re-enables disabled EP3 while draining responses and checks its busy flag; present in release source. |
+| [Parser and reply construction][parser] | Waits for advertised length before checksum validation, with no partial-frame timeout in this receive path. GET_INFO's first byte is a board selector, not a release tag. |
+| [Main loop][main] | Queues a GET_INFO-shaped startup response without a query. Consistent with the captured startup frame; not proof of identical installed code. |
+| [CDC descriptor][descriptor] | Published ACM path uses OUT `0x05`, IN `0x83`; our unit uses OUT `0x02`. Its startup payload also differs (`05` versus source `06`). |
+| [Line-coding handler][prop] and [UART initialization][uart] | Outside bridge mode, line coding calls UART initialization, changing DMA and buffer state. USB bulk transport does not make that request harmless. |
+| [Upstream baud report][baud] | Reports 9600 working while higher rates fail; proposes initialization side effects. An upstream report, not a reproduced cause here. |
+| [Busy-timeout report][regression] | Names introducing [`c9f1cb80293b7afe75d4303fe7878559c01554f4`][busy] and working merge [`bf0a4b5bf32f2bf3c6e0059985ba8e34c8edca9a`][working]. The patch adds 20 ms busy-flag recovery. **v0.0.5 still contains the mechanism and its main-loop call**; do not infer its proposed removal shipped. |
+| [Linux v7.0 CDC driver][linux], `028ef9c96e96197026887c0f092424679298aae8` | Initializes 9600/8N1 at probe; later sends line coding when cached settings differ. Ubuntu's exact patch set was not audited; captures independently show successful requests. |
+| [Linux arm64 report][linux-report] | Reports successful raw queries on current-generation Mini-KVMs. A comment reports CH583 bootloader identification despite host software's CH32V208 naming. |
+| [macOS strategy][mac], `1838cff670571b4a3e9fb4cc8ee8224e78e43c44` | Initializes firmware version as unknown, then formats its displayed version from `AppStatus.chipVersion`; no verified release mapping. |
 
-## The hardware in hand
+Release source routes endpoint data into a UART-named ring buffer, then
+`USB_DataRx_To_KMHandle`, `CH9329_RxBuffer_Add`, the length/checksum parser,
+and command dispatch. GET_INFO responses enter a response queue and leave EP3;
+keyboard commands enter target-HID queues. An input-parser stall can explain
+both absent replies and absent target input; an EP3-only fault cannot explain
+both without another failure. The observed 23 bytes (echo plus first query)
+would leave that published parser waiting for 135 bytes.
 
-Physically a Mini-KVM (confirmed by eye), enumerating as:
+The older QT evidence was pinned at
+`0536836c0d6d4bcd102e87f36d175df092c7d432`. Its fixed-115200 setting is
+application policy. Its close/reopen and enumeration reports remain leads,
+not proof of this failure. Neither USB identifiers nor the host's chip-strategy
+name establishes silicon identity or firmware compatibility.
 
-```
-Host USB-C ── HUB1 (1a40:0101) ─┬─ 345f:2109  MACROSILICON   (MS2109 video)
-                                └─ 1a86:fe0c  "USB Serial"   (CH32V208 → /dev/ttyACM0)
-Target USB-C ─ HUB2 (1a40:0101) ── 1a86:fe00  "KeyMod"       (emulated HID)
-```
+## Ranked hypotheses
 
-Note `/dev/tty**ACM**0`, not `/dev/ttyUSB*`: this is a CDC-ACM device on
-`cdc_acm`, not a CH340 on `ch341`. Commands written for the V1 board do not
-transfer verbatim.
+| Rank | Candidate | Support | Limits / contrary evidence | Decisive test |
+|---|---|---|---|---|
+| 1 | Startup echo stalls firmware parser | Captured malformed echo; published parser waits; cold drain succeeds, then normal helper works | Installed parser unidentified; warm trial was itself contaminated | Independent cold helper-first versus drain-first captures; test a vendor-confirmed parser recovery fix |
+| 2 | Initialization order / line-coding side effects | Upstream report and initialization code | Cold direct works despite prior kernel probe; explicit rates and delays did not recover warm state | Cold direct test with CDC binding prevented before enumeration |
+| 3 | EP3 response initialization or queue fault | Two verified upstream fixes | Startup IN and fresh cold replies work; response-only fault does not explain missing HID | Compare query-correlated IN and target HID after verifying installed firmware |
+| 4 | Busy-timeout regression | Upstream report and actual introducing patch | Report's HID still worked; release retains mechanism; hardware/source mismatch | Separately authorized comparison of compatible firmware builds |
+| 5 | Generic USB failure / tty read-path defect | Earlier tty timeouts | OUT completed; startup IN arrived; cold direct and subsequent tty worked | Fresh reply in capture but absent in app points to host buffering/parser |
 
-## What we had wrong
+## Diagnostic invocation and cleanup
 
-1. **`1A86:FE0C` does not mean "KVM-Go".** `openterface-usb-mux-spec.md` §B.4
-   states the runtime discriminator as *"`1A86:FE0C` (CH32V208, KVM-Go)"*, and
-   `openterface-kvm-go.md` presents that PID pair as the KVM-Go's signature.
-   The vendor's own constant is named `SERIAL_PID_V2`: it marks a **hardware
-   revision**, and a Mini-KVM shell can contain it. The PID still selects the
-   *chip strategy* correctly; it does not identify the *product*.
-2. **"No CH340, therefore this is the successor board"** was the wrong
-   inference, and it is the same shape of error the deep-control notes already
-   corrected once for the modem lines.
+[`scripts/openterface_probe.py`](../scripts/openterface_probe.py) uses
+PyUSB 1.3.1 and emits timestamped JSON Lines. `list` reads descriptors without
+opening a tty. `probe` requires an explicit current bus/address, derives the
+CDC interfaces and endpoints, and refuses ambiguous layouts.
 
-## Why the port is silent
+Run `uv run scripts/openterface_probe.py list`, identify the intended unit by
+physical topology, and stop its port users. After a cold cycle, re-enumerate
+and **do not open the tty first**. Start a selected-device usbmon capture.
+Invocation shape (substitute current enumeration values):
+`uv run scripts/openterface_probe.py probe --bus N --address N --detach --step drain=0.25 --step info`.
+For root USB access, use an existing Python environment containing PyUSB;
+an unqualified `sudo python` may use a different environment.
 
-The vendor's `docs/hotplug-serial-fix.md` gives the mechanism as its first root
-cause: **force-closing and reopening the serial port drives the CH32V208 into an
-unusable state.** Their described cascade: the chip takes an unexpected
-interruption, `CMD_RESET` then goes unanswered, the app reports *"the device
-does not recognize the command"*, **recovery via an RTS hardware reset fails**,
-and the port still reports Connected while the chip is dead. Each further
-connect attempt repeats the close/reopen and makes it worse.
-
-Two things do exactly that on Linux, before any deliberate use:
-
-- **ModemManager.** The CDC interface advertises `bInterfaceProtocol 1`
-  (AT-commands), so MM opens the port and probes it with AT strings on every
-  enumeration. Observed here: MM probed and released it, logging *"not supported
-  by any plugin"*. The probe is itself the poison.
-- **paniolo's own baud autodetection.** `ch9329`'s `Session::open()` opens the
-  port, sends `GET_INFO`, closes, and reopens at the next candidate — the
-  autodetect loop *is* a close/reopen loop, up to three per invocation.
-
-## Measurements
-
-All against a device that enumerated cleanly every time, with the target side
-attached and powered (`KeyMod` present, so the MCU was running).
-
-| probe | result |
+| Ordered step | Effect |
 |---|---|
-| `ch9329 info`, autodetect | timeout |
-| `ch9329 -b <rate> info`, 3× at each of 115200 / 57600 / 9600 | **0/9** |
-| raw `57 AB 00 01 00 03` (GET_INFO) via termios at 115200 | no reply |
-| same, with RTS cleared after open, 1.0 s and 2.5 s settle | no reply |
-| same, with RTS **and** DTR cleared | no reply |
-| raw keyboard frame, watching the target's own `/dev/input` event node | no keystroke |
-| `USBDEVFS_RESET` on the serial device, then re-probe 3× | no reply |
-| physical unplug/replug of both cables, then re-probe | no reply |
+| `drain=0.25` | Read and record queued bytes for 250 ms, without counting a reply |
+| `info` | Send exactly `57 ab 00 01 00 03`; validate header, address, command, length and checksum |
+| `baud=9600` / `baud=115200` | CDC request type `0x21`, request `0x20`, communication-interface index, seven-byte little-endian rate/8N1 payload |
+| `lines=0..3` | CDC request `0x22`; DTR bit 0, RTS bit 1 |
+| `wait=1` | Delay one second |
 
-The raw frame failing identically to the helper is what rules the helper out:
-nothing on that port was answering. `RTS` clearing failing is consistent with
-the vendor's statement that RTS recovery does not work once the chip is in this
-state — it is not evidence against the RTS wiring.
+An explicit-rate trial orders `baud=9600`, `wait=1`, `drain=0.25`,
+`info`; compare 115200 after an independent cold cycle. Same-session
+sequences do not reset firmware history. Draining reduces startup contamination,
+but there is no transaction ID: use capture timing to reject delayed replies.
+usbmon does not show every electrical handshake, so a timeout alone does not
+identify the device's bus-level response.
 
-## The macOS control — the measurement that settles it
+The tool reads active configuration and GET_INTERFACE. It never issues
+SET_CONFIGURATION, SET_INTERFACE, reset, mux, bootloader, or firmware-write
+commands. Exit codes: 0 valid replies, 1 missing/invalid reply, 2 error,
+130 interruption. `--detach` interrupts the selected serial connection;
+the tool releases interfaces and restores original bindings on normal exit,
+partial failure, Ctrl-C and SIGTERM. Restoration errors fail the command.
+Verify both interface driver links afterward. SIGKILL or unplugging can defeat
+cleanup; reconnect that unit and verify bindings before reuse. A trial whose
+interfaces were manually unbound starts with no bindings to restore.
 
-Moved to a macOS host, the identical unit enumerated as `/dev/cu.usbmodem51201`
-and answered immediately:
+Text usbmon access was denied under this host's kernel lockdown, but binary
+capture with tcpdump worked. Use USB_LINUX_MMAPPED captures with sufficient
+snapshot length (256 was enough here) and a filter for the selected device.
+Keep captures and device-identifying logs out of Git.
 
-```
-chip_version=0x02 target_connected=true num_lock=false caps_lock=false scroll_lock=false baud=115200
-```
+### Avoiding kernel probe-time initialization
 
-| probe (macOS) | result |
-|---|---|
-| `ch9329 -b 115200 info`, single open | answered first try |
-| `ch9329 info`, autodetect, 6 runs | **6/6** |
-| forced 9600, then forced 115200, 4 cycles | **4/4** — no poisoning |
+Detaching after enumeration is not kernel-clean. On a **dedicated test host
+with no other CDC users**, prevent `cdc_acm` loading before reconnecting the
+cold device, verify neither interface has a driver, and then claim via libusb.
+Restore the original module-loading policy and bind those interfaces afterward.
+A blacklist alone does not remove an already-loaded module. Do not unload a
+shared driver on a live control host. This procedure was not executed; the
+successful no-tty test made startup echo the more useful next investigation.
 
-Two things follow, and the second was a surprise:
+## Decision tree and next action
 
-1. **The device is fine and autodetect does not harm it — on macOS.** The
-   close/reopen wedging the vendor documents did not reproduce here at all.
-   Note the caveat on the 6/6: 115200 is autodetect's *first* candidate and this
-   chip uses it, so those runs succeeded on the first open and never exercised
-   the reopen path. The 4-cycle test was written to force that path.
-2. **Baud is a no-op on this device.** The forced-9600 probe, which the test
-   expected to fail, *answered* — every cycle. That is correct CDC-ACM
-   behavior: the line rate is a class request the firmware may ignore, and the
-   data rides bulk endpoints regardless. `openterface-usb-mux-spec.md` suspected
-   this ("whether the CDC firmware honours the requested line rate at all —
-   likely irrelevant"); it is now measured. It also contradicts
-   `CH32V208Strategy::supportedBaudrates()`, which reports a single supported
-   rate: that constraint is the app's policy, not the device's behavior.
+1. Bytes arriving before OUT are startup/queued data, not query success.
+2. Failed or short OUT: investigate access, ownership, endpoint selection and
+   transport before firmware parsing.
+3. Fresh response in capture but missing from application: investigate host
+   buffering and reply parsing.
+4. Cold direct works while tty-first fails: compare echo, line coding and
+   line-state ordering. Our finding belongs here.
+5. Cold direct also fails: compare target HID with response traffic to separate
+   parser/routing faults from response-endpoint faults.
 
-**A wrong baud therefore cannot be a failure mode on a CDC-ACM Openterface**,
-which makes baud autodetection there not merely unnecessary but meaningless.
+Use cold direct drain as a **bench workaround**, then the normal helper.
+Request a vendor-confirmed fix for partial-frame recovery and startup behavior
+on the actual hardware. Do not flash v0.0.5 just because it mentions EP3 fixes:
+it retains the implicated parser behavior and has a different OUT descriptor.
 
-## What this means for paniolo
+The helper warns only after failed Linux connections to the selected
+`1a86:fe0c` port, resolving stable aliases. It preserves the underlying error.
+Successful connections and unknown/unrelated identities do not get the hint.
+There is no numeric firmware threshold: `chip_version` is not a reliable
+release identifier, and no minimum fixed release has been verified.
 
-1. **Openterface V2 is effectively unsupported on Linux today.** That is the
-   headline. It is not a paniolo bug: a hand-built `GET_INFO` frame written
-   straight to the port through raw termios fails exactly as the helper does, so
-   the problem lives in the Linux CDC-ACM open path, not in this codebase.
-2. **Do not autodetect baud on a `1A86:FE0C` device** — but for a better reason
-   than the one first written here. Baud is a no-op on CDC-ACM (measured above),
-   so the loop cannot ever be *needed*; the helper should branch on the port's
-   VID/PID as `ChipStrategyFactory` does and open once. The stronger claim in
-   the first draft of this note — that the probing *is what breaks the chip* —
-   is **not supported**: autodetect is clean on macOS, 6/6. The vendor's wedging
-   mechanism stays on the list of Linux suspects, unproven.
-3. **#84's 300 ms settle addresses a loop that should not run** on this
-   hardware. It is not wrong, it is just aimed elsewhere.
-4. **Linux needs ModemManager kept off the port**, via a udev rule setting
-   `ID_MM_DEVICE_IGNORE=1` for `1a86:fe0c` (and `1a86:7523` for V1). The vendor
-   ships udev rules for permissions (`TAG+="uaccess"`); the MM exclusion is
-   ours to add. Worth shipping in the `.deb` postinst.
-5. **`host/UsbPortResetter.h` documents a second, distinct Linux-only failure**:
-   the CH32V208 failing to *enumerate* after a target restart (USB `-71`
-   EPROTO), recovered by a hub port reset. That is not what was seen here — the
-   device always enumerated — but it is the same chip misbehaving on the same
-   platform, and it is a no-op on Windows and macOS, which is consistent with
-   this whole class of problem being Linux-specific.
+## Corrections proposed for #238
 
-## Open
+No issue or upstream comment has been posted.
 
-- **The confirming probe was run on 2026-09-20, and it FAILED.** With the udev
-  rule verified active on the node (`ID_MM_DEVICE_IGNORE=1`), no process holding
-  the port, and no ModemManager probe in the log, a **single** open at a forced
-  115200 still drew no reply in three frames. So keeping ModemManager off the
-  port is necessary hygiene but is **not** sufficient, and the wedging mechanism
-  in `docs/hotplug-serial-fix.md` does not by itself explain this unit.
-- **A host-side replug may not power-cycle the MCU.** The deep-control notes
-  record that both VBUS rails feed the board through CH213K current limiters, so
-  it "survives target power cycles while the host side is connected" — the
-  converse should hold too. Any test that depends on a cold MCU must have **both**
-  cables out at once; a host-only replug leaves it powered from target VBUS.
-  Every "power cycle" above is suspect on this ground.
-- **Cold MCU, tested 2026-10-11: still silent.** A V2 Mini-KVM (`1a86:fe0c`;
-  possibly the same unit as above, which was not recorded) that had answered
-  on macOS earlier the same day
-  (`chip_version=0x02 target_connected=true baud=115200`), was moved to an
-  x86_64 Linux host (Ubuntu 26.04, kernel 7.0, paniolo 0.7.0) with the
-  target side cabled to a running board. Results:
+- Replace blanket kernel blame with the measured startup interaction.
+  Raw termios still uses the kernel tty path.
+- Replace “baud is always a no-op” with observed macOS rate tolerance;
+  line-coding requests can change firmware state.
+- `1a86:fe0c` identifies neither a unique product nor verified silicon.
+  `chip_version=0x02` does not establish firmware v0.0.2.
+- ModemManager exclusion is useful hygiene but was insufficient here.
+- Cold cycling followed by tty opening can immediately reproduce a fault.
+  A checksum-valid startup frame is not a successful query.
+- Earlier missing target keystrokes remain relevant; this session verified
+  GET_INFO recovery, not a new end-to-end HID test.
 
-  | probe (Linux) | result |
-  |---|---|
-  | `ch9329 info`, autodetect | timeout |
-  | raw `GET_INFO` via termios at 115200 / 57600 / 9600 | no reply |
-  | raw `GET_INFO`, DTR/RTS set to each of the four combinations | no reply |
-  | host-cable replug, two separate times | no reply |
-  | moved to a different host USB controller and hub | no reply |
-  | **both cables unplugged together** (kernel logged the disconnect, re-enumeration about 12 s later), then `ch9329 info` | **no reply** |
-
-  `ID_MM_DEVICE_IGNORE=1` was set on the node, no other process held the port,
-  and the device enumerated as a normal two-interface CDC-ACM (`cdc_acm` on
-  both). The MS2109 capture on the same unit worked throughout. So a cold MCU
-  does not fix it either: the unit works on macOS hours apart from failing on
-  Linux, which again points at the Linux host side, not the board.
-  What is still untested: a USB protocol capture of the Linux open (to see
-  whether the device ever returns bulk-IN data, or the host never sends the
-  CDC requests macOS sends).
-- **Issue #81 cannot be tested on this unit as written.** Its repro targets a
-  factory-baud CH9329 behind a CH340 at `/dev/ttyUSB2`; none of that exists on
-  V2 hardware. Whether the settle fix works on a real V1 board is still unproven.
+[issue]: https://github.com/curtisgalloway/paniolo/issues/238
+[release]: https://github.com/TechxArtisanStudio/Openterface_KM/releases/tag/v0.0.5
+[ep3]: https://github.com/TechxArtisanStudio/Openterface_KM/commit/3b105037b7df73df077f5c1f1eedb06593a0a442
+[queue]: https://github.com/TechxArtisanStudio/Openterface_KM/commit/4a90be4f7985846c6016eb1f4291f9278b1c00c2
+[parser]: https://github.com/TechxArtisanStudio/Openterface_KM/blob/321d4e4c847f47a6a70d200461653802a1cebc0c/APP/usbd_compostie_km.c
+[main]: https://github.com/TechxArtisanStudio/Openterface_KM/blob/321d4e4c847f47a6a70d200461653802a1cebc0c/APP/peripheral_main.c
+[descriptor]: https://github.com/TechxArtisanStudio/Openterface_KM/blob/321d4e4c847f47a6a70d200461653802a1cebc0c/APP/USBLIB/CONFIG/usb_desc.c
+[prop]: https://github.com/TechxArtisanStudio/Openterface_KM/blob/321d4e4c847f47a6a70d200461653802a1cebc0c/APP/USBLIB/CONFIG/usb_prop.c
+[uart]: https://github.com/TechxArtisanStudio/Openterface_KM/blob/321d4e4c847f47a6a70d200461653802a1cebc0c/APP/UART/UART.c
+[baud]: https://github.com/TechxArtisanStudio/Openterface_KM/blob/321d4e4c847f47a6a70d200461653802a1cebc0c/NEW_ISSUES.md
+[regression]: https://github.com/TechxArtisanStudio/Openterface_KM/blob/321d4e4c847f47a6a70d200461653802a1cebc0c/docs/bugfix-ch9329-command-response-failure.md
+[busy]: https://github.com/TechxArtisanStudio/Openterface_KM/commit/c9f1cb80293b7afe75d4303fe7878559c01554f4
+[working]: https://github.com/TechxArtisanStudio/Openterface_KM/commit/bf0a4b5bf32f2bf3c6e0059985ba8e34c8edca9a
+[linux]: https://github.com/torvalds/linux/blob/028ef9c96e96197026887c0f092424679298aae8/drivers/usb/class/cdc-acm.c
+[linux-report]: https://github.com/TechxArtisanStudio/Openterface_QT/issues/581
+[mac]: https://github.com/TechxArtisanStudio/Openterface_MacOS/blob/1838cff670571b4a3e9fb4cc8ee8224e78e43c44/openterface/Core/Control/CH32V208ControlChipset.swift
