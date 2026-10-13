@@ -146,8 +146,10 @@ Every channel also takes an optional `host = "<name>"` binding it to a remote co
   compares the actual running executable through `/proc/<pid>/exe`, including a
   deleted executable after an atomic install. The digest uses
   `/usr/bin/sha256sum` on Linux, `/usr/bin/shasum -a 256` on macOS, and
-  `Get-FileHash` from Windows PowerShell under
+  .NET streaming SHA-256 through Windows PowerShell under
   `%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe` on Windows.
+  The Windows adapter calls `SHA256.ComputeHash` on a read-only file stream and
+  disposes the stream and hashing object; it requires no PowerShell modules.
   The hash tool is resolved independently of the helper search `PATH`;
   hashing failures are reported as unknown identity. A proven content difference
   is flagged **stale** in `paniolo daemons`, `serial show`, and `video show`;

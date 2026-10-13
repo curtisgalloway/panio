@@ -521,7 +521,15 @@ fn content_digest(path: &Path) -> Option<String> {
             "-NoProfile",
             "-NonInteractive",
             "-Command",
-            "(Get-FileHash -LiteralPath $env:PANIOLO_HASH_FILE -Algorithm SHA256).Hash",
+            concat!(
+                "$ErrorActionPreference='Stop'; $stream=$null; $hash=$null; ",
+                "try { $stream=[System.IO.File]::OpenRead($env:PANIOLO_HASH_FILE); ",
+                "$hash=[System.Security.Cryptography.SHA256]::Create(); ",
+                "[System.BitConverter]::ToString($hash.ComputeHash($stream))",
+                ".Replace('-','').ToLowerInvariant() } ",
+                "finally { if ($null -ne $hash) { $hash.Dispose() }; ",
+                "if ($null -ne $stream) { $stream.Dispose() } }",
+            ),
         ]);
         cmd.env("PANIOLO_HASH_FILE", path);
         cmd
@@ -1613,10 +1621,27 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let installed = dir.path().join("sleep");
         std::fs::copy("/bin/sleep", &installed).unwrap();
-        let mut child = std::process::Command::new(&installed)
-            .arg("30")
-            .spawn()
-            .unwrap();
+        // Overlay filesystems and concurrent build subprocesses can briefly
+        // retain a write handle after the copy. Wait only for ETXTBSY readiness;
+        // other spawn errors fail immediately, and content assertions still run.
+        let mut command = std::process::Command::new(&installed);
+        command.arg("30");
+        let deadline = std::time::Instant::now() + Duration::from_millis(200);
+        let mut child = loop {
+            match command.spawn() {
+                Ok(child) => break child,
+                Err(error)
+                    if error.raw_os_error() == Some(libc::ETXTBSY)
+                        && std::time::Instant::now() < deadline =>
+                {
+                    std::thread::sleep(
+                        Duration::from_millis(10)
+                            .min(deadline.saturating_duration_since(std::time::Instant::now())),
+                    );
+                }
+                Err(error) => panic!("copied executable fixture failed to spawn: {error}"),
+            }
+        };
         let pid = child.id();
         let mut meta = fixture_meta(&installed, pid);
         meta.sha256 = None;
