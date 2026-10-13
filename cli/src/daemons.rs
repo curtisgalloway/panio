@@ -490,21 +490,26 @@ fn stat_identity(path: &Path) -> Option<(u128, u64)> {
     Some((mtime, md.len()))
 }
 
-/// Best-effort SHA-256 using the platform tools also used by release packaging.
+/// Best-effort SHA-256 using trusted OS tool paths rather than helper PATH.
 /// Unix tools read an already-open file on stdin, including deleted /proc exes.
 /// An unavailable tool leaves identity unknown; it never prevents capture.
 fn content_digest(path: &Path) -> Option<String> {
     #[cfg(target_os = "linux")]
-    let mut cmd = std::process::Command::new("sha256sum");
+    let mut cmd = std::process::Command::new("/usr/bin/sha256sum");
     #[cfg(target_os = "macos")]
     let mut cmd = {
-        let mut cmd = std::process::Command::new("shasum");
+        let mut cmd = std::process::Command::new("/usr/bin/shasum");
         cmd.args(["-a", "256"]);
         cmd
     };
     #[cfg(windows)]
     let mut cmd = {
-        let mut cmd = std::process::Command::new("powershell.exe");
+        let powershell = PathBuf::from(std::env::var_os("SystemRoot")?)
+            .join(r"System32\WindowsPowerShell\v1.0\powershell.exe");
+        if !powershell.is_absolute() {
+            return None;
+        }
+        let mut cmd = std::process::Command::new(powershell);
         cmd.args([
             "-NoProfile",
             "-NonInteractive",
@@ -1475,6 +1480,18 @@ mod tests {
             sha256: content_digest(path),
             pid: Some(pid),
         }
+    }
+
+    #[test]
+    fn content_digest_matches_sha256_vector() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("digest input with spaces");
+        std::fs::write(&path, b"abc").unwrap();
+        assert_eq!(
+            content_digest(&path).as_deref(),
+            Some("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"),
+            "the OS hash adapter must produce the standard SHA-256 abc vector"
+        );
     }
 
     #[test]

@@ -483,8 +483,10 @@ Python tree below:
   changes remain current. Missing identity or unavailable content is explicitly
   **binary identity unknown**, never a restart recommendation; metadata alone
   proves nothing. Digest fields are optional so legacy records still load.
-  The platform hash tools are best-effort (Linux sha256sum, macOS shasum,
-  Windows Get-FileHash); unavailable hashing keeps the status unknown.
+  The platform hash tools are best-effort and use OS paths independently of
+  helper PATH (Linux /usr/bin/sha256sum, macOS /usr/bin/shasum, Windows
+  Get-FileHash via SystemRoot/System32/WindowsPowerShell/v1.0/powershell.exe);
+  unavailable hashing keeps the status unknown.
   Automatic watch restarts and `--stale` select only proven content changes.
   `paniolo daemons restart [NAME…|--all|--stale]`
   cleanly cycles serialcap/hdmicap from the current binary (reusing the lab's

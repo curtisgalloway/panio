@@ -144,8 +144,11 @@ Every channel also takes an optional `host = "<name>"` binding it to a remote co
 - **Staleness.** The CLI records the daemon's SHA-256 content digest (a checksum
   of its executable bytes) and process ID at spawn in `binmeta.json`. Linux also
   compares the actual running executable through `/proc/<pid>/exe`, including a
-  deleted executable after an atomic install. The digest uses `sha256sum` on
-  Linux, `shasum -a 256` on macOS, and PowerShell `Get-FileHash` on Windows;
+  deleted executable after an atomic install. The digest uses
+  `/usr/bin/sha256sum` on Linux, `/usr/bin/shasum -a 256` on macOS, and
+  `Get-FileHash` from Windows PowerShell under
+  `%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe` on Windows.
+  The hash tool is resolved independently of the helper search `PATH`;
   hashing failures are reported as unknown identity. A proven content difference
   is flagged **stale** in `paniolo daemons`, `serial show`, and `video show`;
   identical bytes at another path or with different metadata remain current.
