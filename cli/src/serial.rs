@@ -246,6 +246,55 @@ fn preferred_alias(aliases: &[String]) -> Option<&String> {
         .or_else(|| aliases.iter().min())
 }
 
+/// Read-only health collection. Never starts, reclaims, or retries a daemon.
+pub fn health_snapshot(
+    target: &str,
+    channels: &[SerialChannel],
+    interface: Option<&str>,
+) -> Result<serde_json::Value> {
+    let configured: Vec<_> = channels
+        .iter()
+        .filter(|c| interface.is_none_or(|i| c.name == i))
+        .map(|c| serde_json::json!({"name": c.name, "device": c.device, "baud": c.baud, "host": c.host}))
+        .collect();
+    let observed_at_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+    let mut snapshot = serde_json::json!({
+        "target": target, "observed_at_ms": observed_at_ms,
+        "configured": configured, "process_live": false,
+        "daemon_state": "stopped", "pid": null, "active": null,
+        "command_execution": "not_assessed"
+    });
+    if let Some(endpoint) = daemon(target) {
+        snapshot["process_live"] = true.into();
+        snapshot["pid"] = endpoint.pid.into();
+        let path = interface.map_or_else(
+            || "/status".into(),
+            |i| format!("/status?interface={}", daemons::query_escape(i)),
+        );
+        match endpoint.get(&path).timeout(Duration::from_secs(5)).call() {
+            Ok(response) => {
+                let active: serde_json::Value = response
+                    .into_json()
+                    .map_err(|e| anyhow::anyhow!("invalid serial health response: {e}"))?;
+                snapshot["active"] = active;
+                snapshot["daemon_state"] = "reachable".into();
+            }
+            Err(e) => {
+                snapshot["daemon_state"] = "unreachable".into();
+                snapshot["diagnostic"] = e.to_string().into();
+            }
+        }
+    } else if let Some(process) = untracked(channels) {
+        snapshot["process_live"] = true.into();
+        snapshot["pid"] = process.pid.into();
+        snapshot["daemon_state"] = "untracked".into();
+    }
+    Ok(snapshot)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

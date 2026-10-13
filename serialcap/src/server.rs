@@ -130,12 +130,24 @@ fn resolve<'a>(serials: &'a Serials, name: &Option<String>) -> Option<&'a Serial
 }
 
 fn status_json(ns: &NamedSerial) -> serde_json::Value {
-    let st = ns.handle.status();
+    let mut st = ns.handle.status();
+    let observed_at_ms = crate::capture::now_ms();
+    let last_rx_age_ms = st
+        .health
+        .last_rx_at_ms
+        .map(|at| observed_at_ms.saturating_sub(at));
+    if !st.connected {
+        st.health.active_device = None;
+        st.health.active_baud = None;
+    }
     serde_json::json!({
         "name": ns.name,
         "device": st.device,
         "baud": st.baud,
         "connected": st.connected,
+        "health": st.health,
+        "observed_at_ms": observed_at_ms,
+        "last_rx_age_ms": last_rx_age_ms,
         "power_on": st.power_on,   // null when no sense signal is configured
     })
 }

@@ -354,6 +354,13 @@ fn cli_call(tool: &str, args: &Value) -> Result<CliCall, String> {
             }
             read(argv)
         }
+        "serial_status" => {
+            let mut argv = vec![s("serial"), s("status"), s("-t"), a.target()?];
+            if let Some(i) = a.opt_str("interface")? {
+                argv.extend([s("-i"), i]);
+            }
+            read(argv)
+        }
         "serial_log" => {
             let mut argv = vec![s("serial"), s("log"), s("-t"), a.target()?];
             if let Some(i) = a.opt_str("interface")? {
@@ -559,6 +566,12 @@ fn tool_list() -> Value {
                 ("timeout_ms", json!({ "type": "integer", "minimum": 0, "maximum": MAX_SHOT_TIMEOUT_MS, "description": "Longest stable wait, in ms (default 2000)." })),
             ]),
             "annotations": { "readOnlyHint": true },
+        },
+        {
+            "name": "serial_status",
+            "description": "Read configured and active serial identity, process liveness, port connection, capture epoch and RX/TX progress as JSON. Never starts or restarts a daemon. Driver acceptance and RX traffic do not prove target command execution. Older daemons may omit health fields; missing evidence is unknown.",
+            "inputSchema": schema(&[("interface", json!({"type": "string"}))]),
+            "annotations": {"readOnlyHint": true},
         },
         {
             "name": "serial_log",
@@ -827,6 +840,7 @@ mod tests {
                 "target_list",
                 "video_shot",
                 "video_read",
+                "serial_status",
                 "serial_log",
                 "serial_send",
                 "hid_send",
@@ -865,6 +879,10 @@ mod tests {
     /// One valid call per CLI-backed tool, with every optional argument set.
     fn sample_calls() -> Vec<(&'static str, Value)> {
         vec![
+            (
+                "serial_status",
+                json!({"target": "pi5", "interface": "console"}),
+            ),
             (
                 "video_read",
                 json!({ "target": "pi5", "stable": true, "timeout_ms": 500 }),

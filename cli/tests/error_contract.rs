@@ -580,3 +580,18 @@ fn hooks_do_not_inherit_the_json_request() {
         assert_eq!(error_object(&out)["child_exit"], 7, "{name}");
     }
 }
+
+#[test]
+fn serial_health_stopped_snapshot_is_read_only() {
+    let dir = scratch("serial_health_stopped", LAB);
+    let out = paniolo(&dir, true, &["serial", "status", "dut"]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let snapshot: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(snapshot["process_live"], false);
+    assert_eq!(snapshot["daemon_state"], "stopped");
+    assert!(snapshot["active"].is_null());
+    assert_eq!(snapshot["configured"][0]["device"], "/dev/ttyUSB-test");
+    assert_eq!(snapshot["command_execution"], "not_assessed");
+    assert_eq!(std::fs::read_to_string(dir.join("lab.toml")).unwrap(), LAB);
+    assert_eq!(std::fs::read_dir(dir.join("run")).unwrap().count(), 0);
+}

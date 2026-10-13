@@ -99,6 +99,22 @@ lists or runs one directly. If a different `paniolo` shadows the CLI on PATH
 `~/.cargo/bin` first or remove the other copy; `make install` warns when it
 detects a shadow.
 
+## Serial health evidence
+
+Read `paniolo serial status <target> [-i console]` (MCP: `serial_status`) before
+and after an action. It emits JSON without opening devices or starting a daemon:
+`configured` is the lab identity; `active` is the daemon identity; `process_live`
+and `daemon_state` separate stopped/untracked/unreachable/reachable processes.
+Each active interface reports port `connected`, capture `health.epoch`,
+connection generation, last RX chunk sequence/time/age, RX/TX byte counters,
+and capture-thread processing progress. Missing older-daemon fields are unknown.
+Linux's active identity is taken from the opened fd; other platforms report
+port name. Synthetic stream markers do not count as RX. Reconnect changes the
+generation; restart changes the epoch. Capture progress is an assembly watermark,
+not a disk durability acknowledgment. TX acceptance and new RX are evidence,
+not proof of target command execution; read the task-specific response separately.
+Never automatically restart, reset, or resend based on quiet traffic alone.
+
 ## Configure a target
 
 Config lives in one CLI-managed **lab file** (`~/.config/paniolo/lab.toml`, or

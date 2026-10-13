@@ -62,6 +62,60 @@ pub struct Status {
     /// Current power state as read from the configured modem-control sense line.
     /// `None` when no sense signal is configured for this interface.
     pub power_on: Option<bool>,
+    pub health: Health,
+}
+
+/// Receive identity and progress, independent of synthetic stream markers.
+#[derive(Clone, serde::Serialize)]
+pub struct Health {
+    pub epoch: String,
+    pub started_at_ms: u64,
+    pub connection_generation: u64,
+    pub active_device: Option<String>,
+    pub active_baud: Option<u32>,
+    pub identity_source: Option<String>,
+    pub connected_at_ms: Option<u64>,
+    pub last_rx_seq: u64,
+    pub last_rx_at_ms: Option<u64>,
+    pub rx_bytes: u64,
+    pub tx_bytes: u64,
+    pub capture_through_seq: u64,
+    pub capture_through_at_ms: Option<u64>,
+    pub capture_alive: bool,
+}
+
+impl Default for Health {
+    fn default() -> Self {
+        let started_at_ms = crate::capture::now_ms();
+        Self {
+            epoch: format!(
+                "{}-{}",
+                std::process::id(),
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos()
+            ),
+            started_at_ms,
+            connection_generation: 0,
+            active_device: None,
+            active_baud: None,
+            identity_source: None,
+            connected_at_ms: None,
+            last_rx_seq: 0,
+            last_rx_at_ms: None,
+            rx_bytes: 0,
+            tx_bytes: 0,
+            capture_through_seq: 0,
+            capture_through_at_ms: None,
+            capture_alive: true,
+        }
+    }
+}
+
+struct CaptureChunk {
+    bytes: Bytes,
+    received: Option<(u64, u64)>,
 }
 
 /// One serial interface the daemon owns: a stable `name` (used by the CLI, the
@@ -228,9 +282,10 @@ pub fn spawn_interface(
         connected: false,
         generation: 0,
         power_on: None,
+        health: Health::default(),
     }));
 
-    let line_tx = spawn_capture(capture_dir, buffer_lines);
+    let line_tx = spawn_capture(capture_dir, buffer_lines, status.clone());
 
     tokio::spawn(supervisor(
         spec,
@@ -258,8 +313,12 @@ pub fn spawn_interface(
 /// The log defers rewrites of its pending-line sidecar (see
 /// `LineLog::sidecar_due`); when one is outstanding the thread waits with a
 /// deadline so an idle port still gets its last partial line mirrored.
-fn spawn_capture(capture_dir: PathBuf, buffer_lines: u64) -> stdmpsc::Sender<Bytes> {
-    let (tx, rx) = stdmpsc::channel::<Bytes>();
+fn spawn_capture(
+    capture_dir: PathBuf,
+    buffer_lines: u64,
+    status: Arc<Mutex<Status>>,
+) -> stdmpsc::Sender<CaptureChunk> {
+    let (tx, rx) = stdmpsc::channel::<CaptureChunk>();
     std::thread::Builder::new()
         .name("serialcap-capture".into())
         .spawn(move || {
@@ -271,7 +330,14 @@ fn spawn_capture(capture_dir: PathBuf, buffer_lines: u64) -> stdmpsc::Sender<Byt
                     Some(wait) => rx.recv_timeout(wait),
                 };
                 match next {
-                    Ok(chunk) => log.ingest(&chunk),
+                    Ok(chunk) => {
+                        log.ingest(&chunk.bytes);
+                        if let Some((seq, at)) = chunk.received {
+                            let mut st = status.lock().unwrap();
+                            st.health.capture_through_seq = seq;
+                            st.health.capture_through_at_ms = Some(at);
+                        }
+                    }
                     Err(RecvTimeoutError::Timeout) => log.flush_sidecar(),
                     // Every sender has dropped: the daemon is shutting down.
                     Err(RecvTimeoutError::Disconnected) => {
@@ -352,6 +418,21 @@ fn open_baud(device: &str, baud: u32) -> u32 {
         0
     } else {
         baud
+    }
+}
+
+/// Linux reports the actual opened handle, even if a stable alias is retargeted.
+fn opened_device(port: &tokio_serial::SerialStream) -> Option<String> {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::fd::AsRawFd;
+        std::fs::read_link(format!("/proc/self/fd/{}", port.as_raw_fd()))
+            .ok()
+            .map(|p| p.to_string_lossy().into_owned())
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        port.name()
     }
 }
 
@@ -561,7 +642,7 @@ async fn supervisor(
     mut dtr_rx: mpsc::Receiver<(u64, oneshot::Sender<Result<(), String>>)>,
     ring: Arc<Mutex<VecDeque<u8>>>,
     status: Arc<Mutex<Status>>,
-    line_tx: stdmpsc::Sender<Bytes>,
+    line_tx: stdmpsc::Sender<CaptureChunk>,
 ) {
     let InterfaceSpec {
         device,
@@ -605,6 +686,18 @@ async fn supervisor(
                     let mut st = status.lock().unwrap();
                     st.generation = st.generation.wrapping_add(1);
                     st.connected = true;
+                    st.health.connection_generation = st.generation;
+                    st.health.active_device = opened_device(&p);
+                    st.health.identity_source = Some(
+                        if cfg!(target_os = "linux") {
+                            "opened_fd"
+                        } else {
+                            "port_name"
+                        }
+                        .into(),
+                    );
+                    st.health.active_baud = Some(baud);
+                    st.health.connected_at_ms = Some(crate::capture::now_ms());
                     if let Some(sig) = &power_sense_signal {
                         st.power_on = read_power_sense(&mut p, sig);
                     }
@@ -666,7 +759,19 @@ async fn supervisor(
                             tokio::time::sleep(Duration::from_millis(1)).await;
                         }
                         Ok(n) => {
-                            publish(&ring, &to_clients, &line_tx, Bytes::copy_from_slice(&buf[..n]));
+                            let at = crate::capture::now_ms();
+                            let seq = {
+                                let mut st = status.lock().unwrap();
+                                st.health.last_rx_seq += 1;
+                                st.health.last_rx_at_ms = Some(at);
+                                st.health.rx_bytes += n as u64;
+                                st.health.last_rx_seq
+                            };
+                            let chunk = Bytes::copy_from_slice(&buf[..n]);
+                            if line_tx.send(CaptureChunk { bytes: chunk.clone(), received: Some((seq, at)) }).is_err() {
+                                status.lock().unwrap().health.capture_alive = false;
+                            }
+                            publish_live(&ring, &to_clients, chunk);
                         }
                         Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                             tokio::time::sleep(Duration::from_millis(1)).await;
@@ -677,7 +782,10 @@ async fn supervisor(
                     // its turn while a large paste drains (see `Outbox`).
                     written = wr.write(outbox.front()), if outbox.ready() => match written {
                         Ok(0) => tokio::time::sleep(Duration::from_millis(1)).await,
-                        Ok(n) => outbox.consume(n),
+                        Ok(n) => {
+                            status.lock().unwrap().health.tx_bytes += n as u64;
+                            outbox.consume(n);
+                        },
                         Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                             tokio::time::sleep(Duration::from_millis(1)).await;
                         }
@@ -798,7 +906,7 @@ pub(crate) fn marker_line(label: &str, code: u8) -> Bytes {
 fn emit_marker(
     ring: &Arc<Mutex<VecDeque<u8>>>,
     to_clients: &broadcast::Sender<Bytes>,
-    line_tx: &stdmpsc::Sender<Bytes>,
+    line_tx: &stdmpsc::Sender<CaptureChunk>,
     label: &str,
     code: u8,
 ) {
@@ -815,12 +923,26 @@ fn emit_marker(
 fn publish(
     ring: &Arc<Mutex<VecDeque<u8>>>,
     to_clients: &broadcast::Sender<Bytes>,
-    line_tx: &stdmpsc::Sender<Bytes>,
+    line_tx: &stdmpsc::Sender<CaptureChunk>,
     chunk: Bytes,
 ) {
-    if line_tx.send(chunk.clone()).is_err() {
+    if line_tx
+        .send(CaptureChunk {
+            bytes: chunk.clone(),
+            received: None,
+        })
+        .is_err()
+    {
         warn!("capture thread dead — bytes lost");
     }
+    publish_live(ring, to_clients, chunk);
+}
+
+fn publish_live(
+    ring: &Arc<Mutex<VecDeque<u8>>>,
+    to_clients: &broadcast::Sender<Bytes>,
+    chunk: Bytes,
+) {
     let mut r = ring.lock().unwrap();
     push_ring(&mut r, &chunk);
     // Err just means no subscribers; that's fine.
@@ -926,7 +1048,7 @@ mod tests {
 
         let ring = Arc::new(Mutex::new(VecDeque::new()));
         let (to_clients, _) = broadcast::channel::<Bytes>(BROADCAST_CAP);
-        let (line_tx, line_rx) = stdmpsc::channel::<Bytes>();
+        let (line_tx, line_rx) = stdmpsc::channel::<CaptureChunk>();
         let stop = Arc::new(AtomicBool::new(false));
         let producer = {
             let (ring, to_clients, stop) = (ring.clone(), to_clients.clone(), stop.clone());
@@ -960,6 +1082,7 @@ mod tests {
                 connected: true,
                 generation: 1,
                 power_on: None,
+                health: Health::default(),
             })),
             dtr_tx: mpsc::channel(1).0,
         };
@@ -1185,6 +1308,7 @@ mod tests {
             connected: false,
             generation: 0,
             power_on: None,
+            health: Health::default(),
         }));
         let handle = SerialHandle {
             to_clients,
@@ -1535,6 +1659,83 @@ mod tests {
                 return got;
             }
         }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn health_separates_quiet_rx_capture_and_disconnect() {
+        let (handle, mut far, dir) = spawn_on_pty("health");
+        let (_, mut rx) = handle.attach();
+        recv_until(&mut rx, b"serial connected").await;
+        let quiet = handle.status();
+        assert!(quiet.connected);
+        assert_eq!(quiet.health.last_rx_seq, 0);
+        assert_eq!(quiet.health.rx_bytes, 0);
+        assert_eq!(quiet.health.connection_generation, 1);
+        assert!(quiet.health.active_device.is_some());
+        std::io::Write::write_all(&mut far, b"prompt> ").unwrap();
+        recv_until(&mut rx, b"prompt> ").await;
+        let active = handle.status();
+        assert_eq!(active.health.epoch, quiet.health.epoch);
+        assert_eq!(active.health.rx_bytes, 8);
+        assert!(active.health.last_rx_at_ms.is_some());
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while handle.status().health.capture_through_seq != active.health.last_rx_seq {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        drop(far);
+        recv_until(&mut rx, b"serial disconnected").await;
+        assert!(!handle.status().connected);
+        assert_eq!(handle.status().health.rx_bytes, 8);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn health_reconnect_preserves_epoch_but_changes_open_identity() {
+        use std::os::unix::{fs::symlink, io::FromRawFd};
+        let (first_fd, first_path) = open_pty_master();
+        let first = unsafe { std::fs::File::from_raw_fd(first_fd) };
+        let dir = tmp_dir("health-reconnect");
+        let alias = dir.join("console");
+        symlink(&first_path, &alias).unwrap();
+        let handle = spawn_interface(
+            InterfaceSpec {
+                name: "console".into(),
+                device: alias.to_string_lossy().into_owned(),
+                baud: 115200,
+                power_sense_signal: None,
+            },
+            dir.join("capture"),
+            100,
+        );
+        let (_, mut rx) = handle.attach();
+        recv_until(&mut rx, b"serial connected").await;
+        let before = handle.status();
+        let (second_fd, second_path) = open_pty_master();
+        let second = unsafe { std::fs::File::from_raw_fd(second_fd) };
+        std::fs::remove_file(&alias).unwrap();
+        symlink(&second_path, &alias).unwrap();
+        assert_eq!(
+            handle.status().health.active_device,
+            before.health.active_device
+        );
+        drop(first);
+        recv_until(&mut rx, b"serial reconnected").await;
+        let after = handle.status();
+        assert_eq!(after.health.epoch, before.health.epoch);
+        assert_eq!(after.health.connection_generation, 2);
+        assert_eq!(after.health.last_rx_seq, 0);
+        #[cfg(target_os = "linux")]
+        assert_eq!(
+            after.health.active_device.as_deref(),
+            Some(second_path.as_str())
+        );
+        drop(second);
+        std::fs::remove_dir_all(dir).ok();
     }
 
     /// Review M18. A large write must not stop the port being read. The

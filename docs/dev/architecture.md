@@ -1,5 +1,9 @@
 # Paniolo — System architecture
 
+**Terms:** a daemon is a background device owner; a channel is a configured
+control or observation path; a capture epoch identifies one serial supervisor
+lifetime. See the [glossary](../glossary.md).
+
 > Paniolo's design as it stands. For command-level detail see the [subsystem guides](../README.md);
 > module notes are in [`AGENTS.md`](https://github.com/curtisgalloway/paniolo/blob/main/AGENTS.md); the planned
 > hardware-CI design is under [`ci-integration/`](../README.md#hardware-ci-integration-in-design).
@@ -420,3 +424,10 @@ test framework, with no verdicts of its own.
 
 Where they overlap (raw-socket serial, discrete power verbs, a driver abstraction), labgrid
 validates paniolo's CI-integration direction. Full comparison: [`ci-integration/related-work.md`](ci-integration/related-work.md).
+
+Serial health is available through `paniolo serial status` and MCP
+`serial_status`: lab identity is separate from daemon identity, and process
+liveness is separate from port connection and receive traffic. serialcap tracks
+an epoch per interface supervisor, reconnect generation, receive chunk counters
+and capture-thread processing progress. The snapshot does not start or restart
+a daemon, and a capture watermark does not assert durable disk writes.
