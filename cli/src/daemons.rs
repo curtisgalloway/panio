@@ -504,9 +504,16 @@ fn content_digest(path: &Path) -> Option<String> {
     };
     #[cfg(windows)]
     let mut cmd = {
-        let powershell = PathBuf::from(std::env::var_os("SystemRoot")?)
-            .join(r"System32\WindowsPowerShell\v1.0\powershell.exe");
+        let Some(system_root) = std::env::var_os("SystemRoot") else {
+            #[cfg(test)]
+            report_hash_failure("SystemRoot is absent", None);
+            return None;
+        };
+        let powershell =
+            PathBuf::from(system_root).join(r"System32\WindowsPowerShell\v1.0\powershell.exe");
         if !powershell.is_absolute() {
+            #[cfg(test)]
+            report_hash_failure("SystemRoot does not resolve to an absolute tool path", None);
             return None;
         }
         let mut cmd = std::process::Command::new(powershell);
@@ -530,14 +537,55 @@ fn content_digest(path: &Path) -> Option<String> {
         cmd.stdin(std::fs::File::open(path).ok()?);
         #[cfg(windows)]
         cmd.stdin(std::process::Stdio::null());
-        let output = cmd.stderr(std::process::Stdio::null()).output().ok()?;
+        #[cfg(test)]
+        cmd.stderr(std::process::Stdio::piped());
+        #[cfg(not(test))]
+        cmd.stderr(std::process::Stdio::null());
+        let output = match cmd.output() {
+            Ok(output) => output,
+            Err(error) => {
+                #[cfg(test)]
+                report_hash_failure(&format!("tool spawn failed: {error}"), None);
+                #[cfg(not(test))]
+                let _ = error;
+                return None;
+            }
+        };
         if !output.status.success() {
+            #[cfg(test)]
+            report_hash_failure("tool returned a failing status", Some(&output));
             return None;
         }
-        let text = String::from_utf8(output.stdout).ok()?;
-        let digest = text.split_whitespace().next()?;
-        (digest.len() == 64 && digest.bytes().all(|b| b.is_ascii_hexdigit()))
-            .then(|| digest.to_ascii_lowercase())
+        let Ok(text) = std::str::from_utf8(&output.stdout) else {
+            #[cfg(test)]
+            report_hash_failure("stdout was not UTF-8", Some(&output));
+            return None;
+        };
+        let Some(digest) = text.split_whitespace().next() else {
+            #[cfg(test)]
+            report_hash_failure("stdout contained no digest", Some(&output));
+            return None;
+        };
+        if digest.len() != 64 || !digest.bytes().all(|b| b.is_ascii_hexdigit()) {
+            #[cfg(test)]
+            report_hash_failure("stdout contained an invalid SHA-256 digest", Some(&output));
+            return None;
+        }
+        Some(digest.to_ascii_lowercase())
+    }
+}
+
+/// Bounded, test-only evidence; never prints command arguments or environment.
+#[cfg(test)]
+fn report_hash_failure(reason: &str, output: Option<&std::process::Output>) {
+    eprintln!("content_digest failure: {reason}");
+    if let Some(output) = output {
+        eprintln!(
+            "hash status={} stdout_bytes(first 512)={:?} stderr_bytes(first 512)={:?}",
+            output.status,
+            &output.stdout[..output.stdout.len().min(512)],
+            &output.stderr[..output.stderr.len().min(512)],
+        );
     }
 }
 
