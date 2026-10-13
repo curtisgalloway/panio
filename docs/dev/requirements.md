@@ -61,6 +61,7 @@ received bytes and driver-accepted transmitted bytes. See the
 
 | ID | Requirement | Pri | Status | Notes |
 |---|---|---|---|---|
+| SER-WAIT | Finite fresh serial acquisition after an epoch/RX boundary, with raw/output caps, complete-row follow and explicit incomplete outcomes | S | ☑ | `serial wait`, MCP `serial_wait`; task verdict stays with the caller (#281) |
 | SER-HEALTH | Read-only configured/active identity, process/port state, epoch, reconnect and RX/TX/capture progress through CLI and MCP | S | ☑ | `serial status`, MCP `serial_status`; task-specific response remains the caller's judgment (#279) |
 | SER-EVIDENCE | Immutable exact-byte receive evidence with original timestamps, epoch/generation cursors, byte caps and explicit retention/fault diagnostics | S | ☑ | `serial evidence`, MCP `serial_evidence`; separate from line/pending view (#280) |
 | SER-A | `serialcap` daemon owns the port exclusively; supervisor fans out reads | M | ☑ | `serialcap/`; lockfile |

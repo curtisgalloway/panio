@@ -440,3 +440,10 @@ liveness is separate from port connection and receive traffic. serialcap tracks
 an epoch per interface supervisor, reconnect generation, receive chunk counters
 and capture-thread processing progress. The snapshot does not start or restart
 a daemon, and a capture watermark does not assert durable disk writes.
+
+`serial wait` forwards a finite receive-boundary acquisition to serialcap on
+that channel's host. The helper reads its immutable journal and authenticated
+status, preserving accepted chunks on timeout/disconnect/cap. It delivers
+optional completed-row NDJSON and a final evidence object; the total encoded
+stdout budget covers both. No wait path opens the serial port or changes the
+daemon. MCP returns the collected result through its normal command adapter.

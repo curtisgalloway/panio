@@ -38,6 +38,12 @@ A command re-run on a control host exits with the **remote** code (a missing
 channel on `bench1` is 3 locally too); only an SSH failure is reported locally,
 as 4.
 
+`serial wait` is an observation command: a valid result exits 0 and reports
+`matched`, `timeout`, `cap`, disconnect, epoch or capture failure in its JSON
+`status`. These are acquisition outcomes, not target-task verdicts or the error
+kinds above. Accepted raw evidence survives an incomplete acquisition; see
+[bounded serial wait](serial.md#bounded-fresh-wait-and-follow).
+
 ## The JSON error object
 
 Set `PANIOLO_JSON_ERRORS=1`, or put `--json-errors` **before** any trailing

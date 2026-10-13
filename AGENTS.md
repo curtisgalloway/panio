@@ -514,7 +514,10 @@ cli/src/
                 legacy ~/.cargo/bin), hook_path, daemon.json discovery
                 (Endpoint = port + token; get/post attach the bearer header,
                 http_url/ws_url carry it as ?token= for a browser), wait
-  serial.rs     serialcap orchestration + tio exec + /input + device listing
+  serial.rs     bounded `serial wait` forwards a receive boundary/deadline/raw
+                and total-output caps to serialcap without opening devices;
+                MCP serial_wait maps the same read-only surface.
+                serialcap orchestration + tio exec + /input + device listing
                 + read-only health_snapshot (`serial status`, MCP serial_status)
                  + offline read_evidence (`serial evidence`, MCP serial_evidence)
   video.rs      hdmicap orchestration (daemon start/stop, client passthrough)
@@ -815,6 +818,10 @@ serialcap/       Rust crate: serial console daemon (parallels hdmicap)
                  (`resolve_links`, read_link-based — canonicalize needs the
                  target to exist) before the path-prefix test, so a stable
                  symlink to a pty (e.g. hidrig's console bridge) is recognized
+    wait.rs      bounded fresh acquisition after epoch/RX seq; exact immutable
+                 chunks, literal patterns, explicit incomplete outcomes, NDJSON
+                 completed rows and optional final pending. Output budget includes
+                 every follow event and final JSON; no input/reset/restart.
     capture.rs   line assembler: splits bytes into timestamped, sequence-numbered
                  lines; appends them to a rotating on-disk JSONL log under
                  capture/<name>/ (survives restarts; resumes the seq counter);

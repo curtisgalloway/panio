@@ -31,6 +31,7 @@ mod evidence;
 mod platform;
 mod serial_io;
 mod server;
+mod wait;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -155,6 +156,41 @@ enum Cmd {
         #[arg(long, default_value_t = evidence::DEFAULT_MAX_BYTES)]
         max_bytes: u64,
     },
+    /// Acquire fresh raw output until a pattern, deadline or byte cap.
+    /// Returns JSON evidence and an explicit status even on timeout/disconnect;
+    /// never sends input, resets hardware or restarts a daemon.
+    Wait {
+        /// Configured serial interface to observe.
+        #[arg(long, short = 'i')]
+        interface: String,
+
+        /// Capture epoch from serial status/evidence; prevents stale data matching.
+        #[arg(long, value_parser = clap::builder::NonEmptyStringValueParser::new())]
+        epoch: String,
+        /// Exclusive RX chunk sequence boundary within that epoch.
+        #[arg(long)]
+        since: u64,
+        /// Finite acquisition deadline in ms (0 = one immediate observation; max 1 hour).
+        #[arg(long, default_value_t = 30000, value_parser = clap::value_parser!(u64).range(0..=3600000))]
+        timeout_ms: u64,
+        /// Raw evidence byte cap, including fault bytes (1..=1048576).
+        #[arg(long, default_value_t = 65536, value_parser = clap::value_parser!(u64).range(1..=1048576))]
+        max_bytes: u64,
+        /// Total JSON stdout byte cap, including follow events (4096..=8388608).
+        #[arg(long, default_value_t = 8388608, value_parser = clap::value_parser!(u64).range(4096..=8388608))]
+        max_output_bytes: u64,
+        /// Stop when this literal UTF-8 string appears in fresh raw bytes.
+        /// A match is observation, not proof of target command execution.
+        #[arg(long, value_parser = clap::builder::NonEmptyStringValueParser::new())]
+        pattern: Option<String>,
+        /// Include the trailing unterminated bytes acquired after the boundary.
+        #[arg(long)]
+        include_pending: bool,
+        /// Deliver newline-terminated rows as NDJSON before the final result.
+        /// The first row may start mid-line and is marked prefix_unknown.
+        #[arg(long)]
+        follow: bool,
+    },
     /// List available serial devices and exit (no daemon needed).
     Devices,
     /// Ask the running daemon to shut down using its authentication token.
@@ -208,6 +244,29 @@ fn main() -> Result<()> {
             since,
             max_bytes,
         } => evidence::cmd_evidence(interface, epoch, since, max_bytes),
+        Cmd::Wait {
+            interface,
+            epoch,
+            since,
+            timeout_ms,
+            max_bytes,
+            max_output_bytes,
+            pattern,
+            include_pending,
+            follow,
+        } => wait::cmd_wait(
+            interface,
+            wait::Request {
+                epoch,
+                since,
+                timeout_ms,
+                max_bytes,
+                max_output_bytes,
+                pattern,
+                include_pending,
+                follow,
+            },
+        ),
         Cmd::Devices => cmd_devices(),
         Cmd::Stop => cmd_stop(),
     }

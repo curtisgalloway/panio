@@ -207,7 +207,7 @@ enum Command {
     ///
     /// Speaks newline-delimited JSON-RPC on stdin/stdout until stdin closes;
     /// configure it in the harness as a stdio server whose command is
-    /// `paniolo mcp`. Tools: target_list, video_shot, video_read, serial_status, serial_evidence, serial_log,
+    /// `paniolo mcp`. Tools: target_list, video_shot, video_read, serial_status, serial_evidence, serial_wait, serial_log,
     /// serial_send, hid_send, power_state, power_on, power_off, power_cycle.
     /// Each tool runs the
     /// matching paniolo command, so remote targets dispatch over SSH as usual.
@@ -530,6 +530,43 @@ enum SerialCmd {
         /// Stops before oversized chunks and reports a continuation cursor.
         #[arg(long, default_value_t = serial::DEFAULT_EVIDENCE_BYTES, value_parser = clap::value_parser!(u64).range(1..=serial::MAX_EVIDENCE_BYTES))]
         max_bytes: u64,
+    },
+    /// Acquire fresh serial evidence until a pattern, deadline or byte cap.
+    /// Returns JSON with timing, raw records and explicit stop status;
+    /// never sends input, resets hardware or restarts a daemon.
+    Wait {
+        #[command(flatten)]
+        target: TargetArg,
+        /// Interface name (optional when only one is configured).
+        #[arg(long, short)]
+        interface: Option<String>,
+
+        /// Capture epoch from serial status/evidence; prevents stale data matching.
+        #[arg(long, value_parser = clap::builder::NonEmptyStringValueParser::new())]
+        epoch: String,
+        /// Exclusive RX chunk sequence boundary within that epoch.
+        #[arg(long)]
+        since: u64,
+        /// Finite acquisition deadline in ms (0 = one immediate observation; max 1 hour).
+        #[arg(long, default_value_t = 30000, value_parser = clap::value_parser!(u64).range(0..=3600000))]
+        timeout_ms: u64,
+        /// Raw evidence byte cap, including fault bytes (1..=1048576).
+        #[arg(long, default_value_t = 65536, value_parser = clap::value_parser!(u64).range(1..=1048576))]
+        max_bytes: u64,
+        /// Total JSON stdout byte cap, including follow events (4096..=8388608).
+        #[arg(long, default_value_t = 8388608, value_parser = clap::value_parser!(u64).range(4096..=8388608))]
+        max_output_bytes: u64,
+        /// Stop when this literal UTF-8 string appears in fresh raw bytes.
+        /// A match is observation, not proof of target command execution.
+        #[arg(long, value_parser = clap::builder::NonEmptyStringValueParser::new())]
+        pattern: Option<String>,
+        /// Include the trailing unterminated bytes acquired after the boundary.
+        #[arg(long)]
+        include_pending: bool,
+        /// Deliver newline-terminated rows as NDJSON before the final result.
+        /// The first row may start mid-line and is marked prefix_unknown.
+        #[arg(long)]
+        follow: bool,
     },
     /// List available serial devices on this machine.
     Devices,
@@ -2397,6 +2434,40 @@ fn serial_cmd(lab_flag: Option<&str>, cmd: SerialCmd) -> Result<()> {
                 serial::read_evidence(&target, &channel.name, epoch.as_deref(), since, max_bytes)?
             );
             Ok(())
+        }
+        SerialCmd::Wait {
+            target,
+            interface,
+            epoch,
+            since,
+            timeout_ms,
+            max_bytes,
+            max_output_bytes,
+            pattern,
+            include_pending,
+            follow,
+        } => {
+            let (target, serials) = serial_runtime(
+                lab_flag,
+                target.name(),
+                interface.as_deref(),
+                dispatch::Mode::Reexec,
+            )?;
+            let channel = pick_serial(&target, &serials, interface.as_deref())?;
+            serial::wait_for_evidence(
+                &target,
+                &channel.name,
+                serial::WaitOptions {
+                    epoch: &epoch,
+                    since,
+                    timeout_ms,
+                    max_bytes,
+                    max_output_bytes,
+                    pattern: pattern.as_deref(),
+                    include_pending,
+                    follow,
+                },
+            )
         }
         SerialCmd::Devices => {
             let devices = serial::list_devices();
@@ -5681,6 +5752,8 @@ mod tests {
         &["serial", "stop"],
         &["serial", "show"],
         &["serial", "status"],
+        &["serial", "evidence"],
+        &["serial", "wait", "--epoch", "capture-a", "--since", "0"],
         &["serial", "log"],
         &["serial", "dtr"],
         &["serial", "reset"],
