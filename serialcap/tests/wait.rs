@@ -190,7 +190,22 @@ fn output_cap_never_skips_omitted_record() {
 #[test]
 fn daemon_failure_keeps_already_acquired_evidence() {
     let fixture = Fixture::new("dead", &[record(1, b"fault\xff")], true);
-    let output = fixture.run(&["--include-pending"]);
+    let output = Command::new(env!("CARGO_BIN_EXE_serialcap"))
+        .args([
+            "wait",
+            "--interface",
+            "console",
+            "--epoch",
+            "capture-a",
+            "--since",
+            "0",
+            "--timeout-ms",
+            "5000",
+            "--include-pending",
+        ])
+        .env("PANIOLO_RUNTIME_DIR", &fixture.dir)
+        .output()
+        .unwrap();
     let final_result = result(&output);
     assert_eq!(final_result["status"], "daemon_unavailable");
     assert_eq!(
@@ -198,4 +213,26 @@ fn daemon_failure_keeps_already_acquired_evidence() {
         json!(b"fault\xff".to_vec())
     );
     assert_eq!(final_result["pending"], json!(b"fault\xff".to_vec()));
+}
+
+#[test]
+fn closed_status_listener_cannot_outlive_the_wait_budget() {
+    let fixture = Fixture::new("connect-deadline", &[record(1, b"before close")], true);
+    let output = fixture.run(&[]);
+    let final_result = result(&output);
+    assert!(
+        matches!(
+            final_result["status"].as_str(),
+            Some("timeout" | "daemon_unavailable")
+        ),
+        "{final_result}"
+    );
+    assert!(
+        final_result["elapsed_ms"].as_u64().unwrap() < 1500,
+        "connection setup ignored the finite deadline: {final_result}"
+    );
+    assert_eq!(
+        final_result["records"][0]["bytes"],
+        json!(b"before close".to_vec())
+    );
 }

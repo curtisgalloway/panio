@@ -335,7 +335,12 @@ pub fn run(
         let state = match health(health_timeout) {
             Ok(value) => value,
             Err(e) => {
-                if request.timeout_ms > 0 && Instant::now() >= deadline {
+                let timed_out = e.chain().any(|cause| {
+                    cause
+                        .downcast_ref::<std::io::Error>()
+                        .is_some_and(|io| io.kind() == std::io::ErrorKind::TimedOut)
+                });
+                if timed_out && request.timeout_ms > 0 && Instant::now() >= deadline {
                     break "timeout";
                 }
                 diagnostics.push(json!({"kind":"daemon_unavailable", "message":e.to_string()}));
@@ -419,11 +424,19 @@ fn interface_health(interface: &str, timeout: Duration) -> Result<Value> {
         return Err(anyhow!("serialcap process is not live"));
     }
     let encoded: String = interface.bytes().map(|b| format!("%{b:02X}")).collect();
-    let mut req = ureq::get(&format!(
-        "http://127.0.0.1:{}/status?interface={encoded}",
-        discovery.port
-    ))
-    .timeout(timeout);
+    // The client's default connect timeout takes precedence over a request
+    // deadline. Bound it explicitly so an absent listener cannot wait 30 s.
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(timeout)
+        .timeout_read(timeout)
+        .timeout_write(timeout)
+        .build();
+    let mut req = agent
+        .get(&format!(
+            "http://127.0.0.1:{}/status?interface={encoded}",
+            discovery.port
+        ))
+        .timeout(timeout);
     if let Some(token) = discovery.token {
         req = req.set("Authorization", &format!("Bearer {token}"));
     }
@@ -621,7 +634,11 @@ mod tests {
             |_, _| Ok(json!({"records":[record(11, b"before deadline")]})),
             |remaining| {
                 std::thread::sleep(remaining + Duration::from_millis(5));
-                Err(anyhow!("status request exceeded remaining deadline"))
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "status request exceeded remaining deadline",
+                )
+                .into())
             },
             |_| Ok(()),
         )
