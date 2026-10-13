@@ -361,6 +361,53 @@ fn cli_call(tool: &str, args: &Value) -> Result<CliCall, String> {
             }
             read(argv)
         }
+        "serial_wait" => {
+            let epoch = a
+                .opt_str("epoch")?
+                .filter(|s| !s.is_empty())
+                .ok_or("serial_wait needs a nonempty epoch")?;
+            let since = a
+                .opt_u64("since", u64::MAX)?
+                .ok_or("serial_wait needs since")?;
+            let mut argv = vec![
+                s("serial"),
+                s("wait"),
+                s("-t"),
+                a.target()?,
+                s("--epoch"),
+                epoch,
+                s("--since"),
+                since.to_string(),
+            ];
+            if let Some(i) = a.opt_str("interface")? {
+                argv.extend([s("-i"), i]);
+            }
+            for (name, flag, max, min) in [
+                ("timeout_ms", "--timeout-ms", 3600000, 0),
+                ("max_bytes", "--max-bytes", 1048576, 1),
+                ("max_output_bytes", "--max-output-bytes", 8388608, 4096),
+            ] {
+                if let Some(value) = a.opt_u64(name, max)? {
+                    if value < min {
+                        return Err(format!("serial_wait: {name} must be >= {min}"));
+                    }
+                    argv.extend([s(flag), value.to_string()]);
+                }
+            }
+            if let Some(pattern) = a.opt_str("pattern")? {
+                if pattern.is_empty() {
+                    return Err("serial_wait: pattern must be nonempty".into());
+                }
+                argv.extend([s("--pattern"), pattern]);
+            }
+            if a.opt_bool("include_pending")?.unwrap_or(false) {
+                argv.push(s("--include-pending"));
+            }
+            if a.opt_bool("follow")?.unwrap_or(false) {
+                argv.push(s("--follow"));
+            }
+            read(argv)
+        }
         "serial_evidence" => {
             let mut argv = vec![s("serial"), s("evidence"), s("-t"), a.target()?];
             if let Some(i) = a.opt_str("interface")? {
@@ -596,6 +643,22 @@ fn tool_list() -> Value {
             "description": "Read configured and active serial identity, process liveness, port connection, capture epoch and RX/TX progress as JSON. Never starts or restarts a daemon. Driver acceptance and RX traffic do not prove target command execution. Older daemons may omit health fields; missing evidence is unknown.",
             "inputSchema": schema(&[("interface", json!({"type": "string"}))]),
             "annotations": {"readOnlyHint": true},
+        },
+        {
+            "name": "serial_wait",
+            "description": "Acquire immutable raw serial evidence after a required epoch/RX boundary until a literal pattern, finite deadline or byte cap. Returns timing, records and explicit stop status; optional complete-line follow events and final pending bytes. Timeout/disconnect retain acquired bytes. Matching is observation, not target execution. Never sends input, resets, restarts or retries an action.",
+            "inputSchema": schema_requiring(&["epoch", "since"], &[
+                ("interface", json!({"type":"string"})),
+                ("epoch", json!({"type":"string", "minLength":1})),
+                ("since", json!({"type":"integer", "minimum":0})),
+                ("timeout_ms", json!({"type":"integer", "minimum":0, "maximum":3600000})),
+                ("max_bytes", json!({"type":"integer", "minimum":1, "maximum":1048576})),
+                ("max_output_bytes", json!({"type":"integer", "minimum":4096, "maximum":8388608})),
+                ("pattern", json!({"type":"string", "minLength":1})),
+                ("include_pending", json!({"type":"boolean"})),
+                ("follow", json!({"type":"boolean", "description":"NDJSON line events; MCP returns them together after the call completes."})),
+            ]),
+            "annotations": {"readOnlyHint":true},
         },
         {
             "name": "serial_evidence",
@@ -876,6 +939,7 @@ mod tests {
                 "video_shot",
                 "video_read",
                 "serial_status",
+                "serial_wait",
                 "serial_evidence",
                 "serial_log",
                 "serial_send",
@@ -915,6 +979,10 @@ mod tests {
     /// One valid call per CLI-backed tool, with every optional argument set.
     fn sample_calls() -> Vec<(&'static str, Value)> {
         vec![
+            (
+                "serial_wait",
+                json!({"target":"pi5", "interface":"console", "epoch":"capture-a", "since":1, "timeout_ms":200, "max_bytes":4096, "max_output_bytes":8192, "pattern":"done", "include_pending":true, "follow":true}),
+            ),
             (
                 "serial_evidence",
                 json!({"target":"pi5", "interface":"console", "epoch":"capture-1", "since":0, "max_bytes":4096}),
@@ -965,6 +1033,27 @@ mod tests {
                 panic!("{tool}: {argv:?} rejected:\n{e}");
             }
         }
+    }
+
+    #[test]
+    fn serial_wait_requires_fresh_boundary_and_finite_budgets() {
+        for args in [
+            json!({"target":"pi5"}),
+            json!({"target":"pi5","epoch":"a"}),
+            json!({"target":"pi5","epoch":"a","since":0,"timeout_ms":3600001}),
+            json!({"target":"pi5","epoch":"a","since":0,"max_output_bytes":4095}),
+            json!({"target":"pi5","epoch":"a","since":0,"pattern":""}),
+        ] {
+            assert!(cli_call("serial_wait", &args).is_err());
+        }
+        assert!(
+            !cli_call(
+                "serial_wait",
+                &json!({"target":"pi5","epoch":"a","since":0})
+            )
+            .unwrap()
+            .writes
+        );
     }
 
     #[test]

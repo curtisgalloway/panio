@@ -424,3 +424,69 @@ Save a status before input and compare later status in the same epoch. Driver
 acceptance (`tx_bytes`) does not prove receipt by the target, and receive
 traffic does not prove command execution. Verify the task-specific response
 in the captured output. The status command never restarts or retries anything.
+
+## Bounded fresh wait and follow
+
+A receive boundary is an epoch plus an exclusive RX chunk sequence, as defined
+in the [glossary](glossary.md). Save `health.epoch` and `health.last_rx_seq` from
+`serial status` before input, then give both to `serial wait`. A line-log sequence
+is a different counter and must not be used here.
+
+```bash
+paniolo serial wait target-machine -i console \
+    --epoch capture-example --since 42 --pattern 'test complete' \
+    --timeout-ms 30000 --max-bytes 65536 --max-output-bytes 8388608 \
+    --include-pending --follow
+```
+
+The example boundary must be replaced with the saved status values. Matching
+uses a literal UTF-8 string against exact newly acquired bytes and can span
+receive chunks; it does not strip ANSI codes or classify test success. No
+pattern collects until the deadline or a cap. The command never sends input,
+opens the serial port, resets hardware, restarts a daemon, or retries an action.
+MCP `serial_wait` exposes the same options and result.
+
+`--timeout-ms` defaults to 30000, is limited to one hour, and uses a monotonic
+clock; zero performs one immediate observation. Waiting and status requests
+are bounded by the remaining deadline; bounded journal reading, JSON processing
+and output add processing overhead. `--max-bytes` limits raw acquisition
+(1–1048576 bytes, default 65536). `--max-output-bytes` is an independent hard
+limit on total UTF-8 stdout, including every follow event and the final JSON
+object (4096–8388608, default 8388608). MCP transport framing is additional.
+A whole record that cannot fit is left for a later read: `through_rx_seq` stays
+before it, and `next_record_bytes` / `required_output_bytes` explain the cap.
+
+The final `type: result` object always retains accepted immutable `records`,
+the receive cursor, `started_at_ms`, `finished_at_ms`, `elapsed_ms`, raw byte
+counts, `complete_lines`, diagnostics, and optional final `pending` byte array.
+All byte arrays preserve invalid UTF-8 and control bytes. `pending` contains
+only bytes acquired after the boundary, not a copied historical prompt. Fault
+diagnostics are bounded too; `diagnostics_truncated`, `raw_truncated`,
+`raw_length`, and `diagnostic_count` disclose omitted detail. Use `serial evidence`
+to replay retained journal fault details with a larger cap.
+
+`status` is an observation outcome, independent of the target task:
+
+| Status | Meaning |
+|---|---|
+| `matched` | The literal pattern appeared in newly acquired bytes. |
+| `timeout` | The finite deadline ended; accepted bytes remain in the result. |
+| `cap` | The raw or total-output cap stopped acquisition; the cursor can resume. |
+| `disconnected`, `reconnected` | The port is disconnected or its connection generation changed. |
+| `daemon_unavailable` | Process discovery, liveness or authenticated status failed. |
+| `epoch_changed`, `epoch_missing` | The daemon restarted, or the selected epoch was unavailable/expired. |
+| `gap`, `capture_error`, `read_error` | Retention, journal/capture faults, or reading prevented complete evidence. |
+| `unsupported` | The daemon lacks the required epoch evidence. |
+
+For a valid observation these statuses return exit 0; inspect `status` in the
+JSON. Configuration/argument/helper-launch failures use the normal CLI error
+contract. Pattern matches, new receive bytes and a completed wait do not prove
+that a target command executed; judge its task-specific response separately.
+
+With `--follow`, each newline-terminated row is delivered as a `type: line`
+JSON object before the final result (NDJSON: one JSON object per line). The
+first row has `prefix_unknown: true` when a nonzero boundary might start
+mid-line. Later complete rows need no partial-row merging. The final pending
+bytes are included only with `--include-pending`. The MCP server returns its
+collected follow objects after the tool call finishes; it does not stream them
+as protocol notifications.

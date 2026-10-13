@@ -12,6 +12,8 @@ each term briefly on first use; this page is the longer reference.
 
 | Term | Meaning |
 |---|---|
+| **receive boundary** | A capture epoch and exclusive RX chunk sequence; only later received chunks from that epoch belong to an acquisition. |
+| **follow / NDJSON** | Deliver completed rows as separate JSON objects, one per line, then a final result object. A row beginning at an arbitrary receive boundary may have an unknown prefix. |
 | **capture epoch** | Identifier for one serial interface supervisor lifetime. Receive chunk counters restart with a new epoch. |
 | **receive record / evidence cursor** | An immutable chunk of exact bytes received from a target, identified by a capture epoch and RX sequence. It preserves the original receive time; later reads have their own observation time. This cursor is different from a line-log sequence. |
 | **connection generation** | Successful port-open count within an epoch; increments on reconnect. |

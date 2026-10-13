@@ -84,6 +84,62 @@ pub fn read_evidence(
     Ok(serde_json::from_slice(&output.stdout)?)
 }
 
+/// Bounds and receive boundary for one read-only wait.
+pub struct WaitOptions<'a> {
+    pub epoch: &'a str,
+    pub since: u64,
+    pub timeout_ms: u64,
+    pub max_bytes: u64,
+    pub max_output_bytes: u64,
+    pub pattern: Option<&'a str>,
+    pub include_pending: bool,
+    pub follow: bool,
+}
+
+pub fn wait_for_evidence(target: &str, interface: &str, options: WaitOptions<'_>) -> Result<()> {
+    let binary =
+        daemons::find_binary(DAEMON).ok_or_else(|| crate::error::helper_missing(DAEMON))?;
+    let mut cmd = Command::new(binary);
+    cmd.args([
+        "wait",
+        "--interface",
+        interface,
+        "--epoch",
+        options.epoch,
+        "--since",
+        &options.since.to_string(),
+        "--timeout-ms",
+        &options.timeout_ms.to_string(),
+        "--max-bytes",
+        &options.max_bytes.to_string(),
+        "--max-output-bytes",
+        &options.max_output_bytes.to_string(),
+    ]);
+    if let Some(pattern) = options.pattern {
+        cmd.args(["--pattern", pattern]);
+    }
+    if options.include_pending {
+        cmd.arg("--include-pending");
+    }
+    if options.follow {
+        cmd.arg("--follow");
+    }
+    let status = cmd
+        .envs(daemons::helper_env(DAEMON, Some(target)))
+        .stdin(Stdio::null())
+        .status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(
+            crate::error::hook_failed(status, "serialcap wait failed".to_string())
+                .target(target)
+                .channel("serial")
+                .into(),
+        )
+    }
+}
+
 /// Default daemon port: 0 = OS-assigned. The discovery file carries the actual
 /// port and every consumer reads it, so a fixed default buys nothing and
 /// collides with stale `ssh -L` dashboard tunnels squatting the old 8724.

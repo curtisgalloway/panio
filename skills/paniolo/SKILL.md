@@ -99,6 +99,36 @@ lists or runs one directly. If a different `paniolo` shadows the CLI on PATH
 `~/.cargo/bin` first or remove the other copy; `make install` warns when it
 detects a shadow.
 
+## Bounded fresh serial acquisition
+
+Use `paniolo serial wait <target> [-i console] --epoch E --since N` (MCP:
+`serial_wait`) with `health.epoch` and `health.last_rx_seq` saved before input.
+These are RX chunk counters, not line-log sequence numbers. Optional
+`--pattern TEXT` matches literal UTF-8 across fresh raw chunks. Omit it to
+collect until the deadline/cap; a match never establishes task success.
+
+The wait is read-only and finite: `--timeout-ms` defaults to 30000 (0 is one
+immediate observation, max 3600000). `--max-bytes` caps raw evidence at
+1..1048576 (default 65536); `--max-output-bytes` caps total JSON stdout,
+including all follow events and final result, at 4096..8388608 (default 8388608).
+MCP framing adds transport overhead. Whole records that cannot fit remain in
+the journal; `through_rx_seq` does not skip them. Inspect `next_record_bytes`
+and `required_output_bytes` before resuming with a larger cap.
+
+Read the JSON `status`: matched/timeout/cap, disconnected/reconnected,
+daemon_unavailable, epoch_changed/epoch_missing, gap/capture_error/read_error,
+or unsupported. Valid observations return exit0 even on an incomplete wait;
+accepted immutable records and timing survive. Diagnostic truncation is explicit
+(`diagnostics_truncated`, `raw_truncated`, `raw_length`, `diagnostic_count`);
+replay fault details with `serial evidence` if needed.
+
+`--follow` emits completed rows as NDJSON before the final `type:result` object;
+`prefix_unknown` marks a first row that may start mid-line at the boundary.
+`--include-pending` adds trailing bytes acquired after the boundary. Raw byte
+arrays preserve controls and invalid UTF-8. MCP returns the follow objects
+when its call finishes. Never automatically send input, reset or restart a
+quiet/disconnected target; verify the task-specific response yourself.
+
 ## Serial health evidence
 
 Read `paniolo serial status <target> [-i console]` (MCP: `serial_status`) before
