@@ -13,6 +13,7 @@ each term briefly on first use; this page is the longer reference.
 | Term | Meaning |
 |---|---|
 | **capture epoch** | Identifier for one serial interface supervisor lifetime. Receive chunk counters restart with a new epoch. |
+| **receive record / evidence cursor** | An immutable chunk of exact bytes received from a target, identified by a capture epoch and RX sequence. It preserves the original receive time; later reads have their own observation time. This cursor is different from a line-log sequence. |
 | **connection generation** | Successful port-open count within an epoch; increments on reconnect. |
 | **RX / TX** | Bytes received from the target / bytes accepted by the host serial driver. Neither proves command execution. |
 | **capture watermark** | Last receive chunk processed by the capture thread; does not guarantee durable disk writes. |

@@ -115,6 +115,27 @@ not a disk durability acknowledgment. TX acceptance and new RX are evidence,
 not proof of target command execution; read the task-specific response separately.
 Never automatically restart, reset, or resend based on quiet traffic alone.
 
+For immutable raw received chunks use `paniolo serial evidence <target>
+[-i console] [--epoch E] [--since RX_SEQ] [--max-bytes N]` (MCP:
+`serial_evidence`). Each JSON record preserves exact integer-array bytes,
+original `rx_at_ms`, `captured_at_ms`, epoch, RX sequence and connection
+generation; `observed_at_ms` belongs to the later read. The pre-send prompt
+remains a separate immutable witness when later echo/completion arrives.
+Synthetic stream markers are excluded. `--since` requires `--epoch`; these
+are RX cursors, not the mutable pending line's sequence. Omitted epoch selects
+the latest known epoch, even if quiet. Read-only: no hardware opens or sends.
+
+The raw cap defaults to 65536 bytes (1–1048576). A whole chunk that does not
+fit is omitted; `capped`/`next_record_bytes` explain why and `continuation`
+stays before it. Increase the cap and resume there, never at `latest` when
+capped. Check `gap`, `epoch_missing`, `capture_pending` and `diagnostics`;
+retention/corruption/write failures are incomplete evidence, not silence.
+JSON overhead is additionally bounded (1024 times the raw cap plus 1 MiB).
+The journal holds five 1 MiB segments, appends across restarts, and preserves
+invalid UTF-8 and control bytes. `health.evidence_through_seq` tracks successful
+journal writes; `health.evidence_error` reports faults. Consult live health
+too: an offline journal cannot establish that storage saved every RX byte.
+
 ## Configure a target
 
 Config lives in one CLI-managed **lab file** (`~/.config/paniolo/lab.toml`, or
@@ -363,6 +384,7 @@ paniolo serial watch [target]                  # run the daemon for ALL interfac
 paniolo serial send [target] "text"            # send one line of input through
                                                #   the running daemon (see below)
 paniolo serial log [target] [-i name] [options] # print captured output (timestamped)
+paniolo serial evidence [target] [-i name] [--epoch E] [--since N] [--max-bytes N]
 paniolo serial show [target]                   # list interfaces + daemon status
 paniolo serial stop [target]                   # release the ports (on the target's host)
 paniolo serial devices                         # list serial devices on the host

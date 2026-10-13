@@ -3,6 +3,8 @@
 **Terms:** a capture epoch identifies one interface supervisor's lifetime;
 RX is bytes received from the target, TX is bytes accepted by the serial driver;
 a connection generation counts successful opens within an epoch.
+A receive record is one immutable byte chunk; its evidence cursor is the
+pair of capture epoch and RX sequence, distinct from line-log sequences.
 See the [glossary](glossary.md).
 
 | Mode | Command | What you get |
@@ -180,6 +182,60 @@ Each interface has its own log:
 `/tmp/paniolo-<uid>/serialcap/<target>/capture/<name>/serial.jsonl`.
 
 ---
+
+## Immutable receive evidence
+
+Use `paniolo serial evidence target-machine -i console` (MCP:
+`serial_evidence`) when exact received bytes and their original times matter.
+This opt-in JSON representation reads the journal without opening the port,
+starting a daemon, sending input, or changing the existing line/pending view.
+The daemon always journals RX; older daemons report unavailable evidence.
+
+Each `records` entry has `epoch`, `rx_seq`, `connection_generation`,
+`rx_at_ms`, `captured_at_ms`, and `bytes` (an array of integers 0–255).
+Invalid UTF-8, ANSI escapes and control bytes survive exactly. Synthetic
+connected/disconnected markers are excluded. A prompt received before a send
+keeps its original receive time even when it is read after a later echo or
+completion. `observed_at_ms` timestamps this read separately.
+
+The envelope includes `available_epochs`, selected `epoch`, retained
+`earliest`/`latest` cursors, `continuation`, `raw_bytes`, `capped`,
+`next_record_bytes`, `capture_pending`, `gap`, `epoch_missing`, and
+`diagnostics`. Reconnect changes generation within the same epoch; a daemon
+restart starts a new epoch and RX counter. Omitted `--epoch` selects the
+newest known epoch, including a quiet epoch with no RX yet. Use the returned
+epoch with `--since N` to request chunks strictly after N; `--since` requires
+`--epoch`, so a restarted counter cannot silently reuse an old cursor.
+The epoch list shows up to 64 newest epochs (`epochs_truncated` reports the
+limit); explicit epoch selection still searches every retained record.
+
+`--max-bytes N` limits the raw byte count, including raw diagnostic bytes
+(default 65536, range 1–1048576). Records are indivisible: a chunk that would
+exceed the remaining cap is omitted, `capped` becomes true, and
+`continuation` stays at the last included RX sequence. `next_record_bytes`
+gives the minimum size needed for that chunk. Increase the cap and use that
+same continuation; never advance to `latest` when capped. JSON integer arrays
+use up to four characters per byte; per-record metadata adds overhead. The
+output is bounded by 1024 times the raw cap plus 1 MiB of envelope and
+diagnostic metadata. Diagnostic byte truncation is explicit (`raw_truncated`,
+original `raw_length`, segment and byte offset); it never implies complete
+evidence. Treat caps, gaps, missing epochs and faults as incomplete evidence.
+
+The owner-only journal retains five segments, each at most 1 MiB of encoded
+JSON (an individual RX chunk is at most 64 KiB). It appends across restarts
+until rotation expires older records. Retention and discontinuous sequences
+set `gap`; completed corrupt records retain exact fault bytes in diagnostics.
+An in-progress append remains `capture_pending`, without advancing a cursor
+or inventing a corruption gap. A checkpoint advertises the received and
+persisted cursors. The status field `health.evidence_through_seq` advances
+only after journal append, flush and checkpoint; `health.evidence_error`
+retains a write fault. Up to five first-fault receive snapshots retain exact
+failed-chunk bytes across restarts; later failed chunks may be unavailable
+when storage writes fail. These are process-level writes, not an fsync or
+power-loss durability guarantee. If storage cannot even record its own fault,
+only live health can report it; an offline journal cannot prove that every
+byte ever received was saved. Consult `serial status` as well when capture
+completeness matters. No automatic restart, reset or resend follows a fault.
 
 ## Sending input
 

@@ -82,6 +82,10 @@ pub struct Health {
     pub capture_through_seq: u64,
     pub capture_through_at_ms: Option<u64>,
     pub capture_alive: bool,
+    /// First raw-journal write fault; never cleared by a later successful write.
+    pub evidence_error: Option<String>,
+    /// Last chunk successfully appended to the raw receive journal (not fsync).
+    pub evidence_through_seq: u64,
 }
 
 impl Default for Health {
@@ -109,13 +113,15 @@ impl Default for Health {
             capture_through_seq: 0,
             capture_through_at_ms: None,
             capture_alive: true,
+            evidence_error: None,
+            evidence_through_seq: 0,
         }
     }
 }
 
 struct CaptureChunk {
     bytes: Bytes,
-    received: Option<(u64, u64)>,
+    received: Option<crate::evidence::ReceiveRecord>,
 }
 
 /// One serial interface the daemon owns: a stable `name` (used by the CLI, the
@@ -323,7 +329,12 @@ fn spawn_capture(
         .name("serialcap-capture".into())
         .spawn(move || {
             use stdmpsc::RecvTimeoutError;
+            let mut journal = crate::evidence::Journal::open(capture_dir.clone());
             let mut log = LineLog::open(capture_dir, buffer_lines);
+            let epoch = status.lock().unwrap().health.epoch.clone();
+            if let Err(e) = journal.start_epoch(epoch) {
+                status.lock().unwrap().health.evidence_error = Some(e.to_string());
+            }
             loop {
                 let next = match log.sidecar_due(Instant::now()) {
                     None => rx.recv().map_err(|_| RecvTimeoutError::Disconnected),
@@ -332,10 +343,20 @@ fn spawn_capture(
                 match next {
                     Ok(chunk) => {
                         log.ingest(&chunk.bytes);
-                        if let Some((seq, at)) = chunk.received {
+                        if let Some(mut record) = chunk.received {
+                            record.captured_at_ms = crate::capture::now_ms();
+                            let persisted = journal.append(&record);
                             let mut st = status.lock().unwrap();
-                            st.health.capture_through_seq = seq;
-                            st.health.capture_through_at_ms = Some(at);
+                            if let Err(e) = persisted {
+                                warn!("raw serial evidence write failed: {e}");
+                                st.health
+                                    .evidence_error
+                                    .get_or_insert_with(|| e.to_string());
+                            } else {
+                                st.health.evidence_through_seq = record.rx_seq;
+                            }
+                            st.health.capture_through_seq = record.rx_seq;
+                            st.health.capture_through_at_ms = Some(record.rx_at_ms);
                         }
                     }
                     Err(RecvTimeoutError::Timeout) => log.flush_sidecar(),
@@ -760,15 +781,22 @@ async fn supervisor(
                         }
                         Ok(n) => {
                             let at = crate::capture::now_ms();
-                            let seq = {
+                            let record = {
                                 let mut st = status.lock().unwrap();
                                 st.health.last_rx_seq += 1;
                                 st.health.last_rx_at_ms = Some(at);
                                 st.health.rx_bytes += n as u64;
-                                st.health.last_rx_seq
+                                crate::evidence::ReceiveRecord {
+                                    epoch: st.health.epoch.clone(),
+                                    rx_seq: st.health.last_rx_seq,
+                                    connection_generation: st.health.connection_generation,
+                                    rx_at_ms: at,
+                                    captured_at_ms: 0,
+                                    bytes: buf[..n].to_vec(),
+                                }
                             };
                             let chunk = Bytes::copy_from_slice(&buf[..n]);
-                            if line_tx.send(CaptureChunk { bytes: chunk.clone(), received: Some((seq, at)) }).is_err() {
+                            if line_tx.send(CaptureChunk { bytes: chunk.clone(), received: Some(record) }).is_err() {
                                 status.lock().unwrap().health.capture_alive = false;
                             }
                             publish_live(&ring, &to_clients, chunk);
@@ -1663,6 +1691,71 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn receive_journal_preserves_prompt_before_send_and_later_binary_echo() {
+        use std::io::{Read, Write};
+        let (handle, mut far, dir) = spawn_on_pty("evidence-prompt");
+        let (_, mut rx) = handle.attach();
+        recv_until(&mut rx, b"serial connected").await;
+        far.write_all(b"prompt> ").unwrap();
+        recv_until(&mut rx, b"prompt> ").await;
+        wait_for_evidence(&handle).await;
+        let epoch = handle.status().health.epoch;
+        let before = crate::evidence::read(&dir, Some(&epoch), Some(0), 4096).unwrap();
+        assert_eq!(
+            before.records.len(),
+            1,
+            "synthetic connected marker is not RX"
+        );
+        handle
+            .write_paced(Bytes::from_static(b"command\r"), Duration::ZERO)
+            .await
+            .unwrap();
+        let mut input = [0; 8];
+        far.read_exact(&mut input).unwrap();
+        assert_eq!(&input, b"command\r");
+        far.write_all(b"command\r\n\xff\x00\x1b[31mdone\n").unwrap();
+        recv_until(&mut rx, b"done\n").await;
+        wait_for_evidence(&handle).await;
+        let after = crate::evidence::read(&dir, Some(&epoch), Some(0), 4096).unwrap();
+        assert_eq!(after.records[0], before.records[0]);
+        let subsequent: Vec<u8> = after
+            .records
+            .iter()
+            .skip(1)
+            .flat_map(|r| r.bytes.iter().copied())
+            .collect();
+        assert_eq!(subsequent, b"command\r\n\xff\x00\x1b[31mdone\n");
+        assert!(after.records.iter().all(|r| r.connection_generation == 1));
+        assert_eq!(
+            after.latest.unwrap().rx_seq,
+            handle.status().health.last_rx_seq
+        );
+        drop(far);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[cfg(unix)]
+    async fn wait_for_evidence(handle: &SerialHandle) {
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                let health = handle.status().health;
+                assert!(
+                    health.evidence_error.is_none(),
+                    "{:?}",
+                    health.evidence_error
+                );
+                if health.evidence_through_seq == health.last_rx_seq {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn health_separates_quiet_rx_capture_and_disconnect() {
         let (handle, mut far, dir) = spawn_on_pty("health");
         let (_, mut rx) = handle.attach();
@@ -1698,7 +1791,7 @@ mod tests {
     async fn health_reconnect_preserves_epoch_but_changes_open_identity() {
         use std::os::unix::{fs::symlink, io::FromRawFd};
         let (first_fd, first_path) = open_pty_master();
-        let first = unsafe { std::fs::File::from_raw_fd(first_fd) };
+        let mut first = unsafe { std::fs::File::from_raw_fd(first_fd) };
         let dir = tmp_dir("health-reconnect");
         let alias = dir.join("console");
         symlink(&first_path, &alias).unwrap();
@@ -1714,9 +1807,12 @@ mod tests {
         );
         let (_, mut rx) = handle.attach();
         recv_until(&mut rx, b"serial connected").await;
+        std::io::Write::write_all(&mut first, b"before").unwrap();
+        recv_until(&mut rx, b"before").await;
+        wait_for_evidence(&handle).await;
         let before = handle.status();
         let (second_fd, second_path) = open_pty_master();
-        let second = unsafe { std::fs::File::from_raw_fd(second_fd) };
+        let mut second = unsafe { std::fs::File::from_raw_fd(second_fd) };
         std::fs::remove_file(&alias).unwrap();
         symlink(&second_path, &alias).unwrap();
         assert_eq!(
@@ -1728,11 +1824,28 @@ mod tests {
         let after = handle.status();
         assert_eq!(after.health.epoch, before.health.epoch);
         assert_eq!(after.health.connection_generation, 2);
-        assert_eq!(after.health.last_rx_seq, 0);
+        assert_eq!(after.health.last_rx_seq, before.health.last_rx_seq);
         #[cfg(target_os = "linux")]
         assert_eq!(
             after.health.active_device.as_deref(),
             Some(second_path.as_str())
+        );
+        std::io::Write::write_all(&mut second, b"after").unwrap();
+        recv_until(&mut rx, b"after").await;
+        wait_for_evidence(&handle).await;
+        let records = crate::evidence::read(
+            &dir.join("capture"),
+            Some(&before.health.epoch),
+            Some(0),
+            4096,
+        )
+        .unwrap()
+        .records;
+        assert_eq!(records.first().unwrap().connection_generation, 1);
+        assert_eq!(records.last().unwrap().connection_generation, 2);
+        assert_eq!(
+            records.first().unwrap().epoch,
+            records.last().unwrap().epoch
         );
         drop(second);
         std::fs::remove_dir_all(dir).ok();

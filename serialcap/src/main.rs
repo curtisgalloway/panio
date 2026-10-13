@@ -17,12 +17,14 @@
 //! Subcommands:
 //!   daemon   own a serial port and serve it over a localhost WebSocket
 //!   log      print captured serial output (timestamped, by line range)
+//!   evidence read immutable exact-byte receive chunks and capture diagnostics
 //!   devices  list serial devices
 //!   stop     ask the running daemon to exit (authenticated HTTP)
 
 mod auth;
 mod capture;
 mod daemon;
+mod evidence;
 // The file is kept byte-identical across the crates that copy it, so a crate
 // may not use every primitive in it.
 #[allow(dead_code)]
@@ -135,6 +137,24 @@ enum Cmd {
         #[arg(long)]
         no_pending: bool,
     },
+    /// Read immutable received chunks as JSON without opening a device.
+    /// Original RX times and exact byte arrays are separate from observation
+    /// time. Defaults to the newest retained epoch; reports retention gaps.
+    Evidence {
+        /// Interface name (required when multiple interfaces were captured).
+        #[arg(long, short = 'i')]
+        interface: Option<String>,
+        /// Capture epoch to read; required with --since.
+        #[arg(long)]
+        epoch: Option<String>,
+        /// Return RX sequences strictly after this cursor within --epoch.
+        #[arg(long, requires = "epoch")]
+        since: Option<u64>,
+        /// Maximum raw bytes returned (1..=1048576); JSON overhead is additional.
+        /// Stops before an oversized chunk, returning its size and continuation.
+        #[arg(long, default_value_t = evidence::DEFAULT_MAX_BYTES)]
+        max_bytes: u64,
+    },
     /// List available serial devices and exit (no daemon needed).
     Devices,
     /// Ask the running daemon to shut down using its authentication token.
@@ -182,6 +202,12 @@ fn main() -> Result<()> {
             json,
             no_pending,
         }),
+        Cmd::Evidence {
+            interface,
+            epoch,
+            since,
+            max_bytes,
+        } => evidence::cmd_evidence(interface, epoch, since, max_bytes),
         Cmd::Devices => cmd_devices(),
         Cmd::Stop => cmd_stop(),
     }

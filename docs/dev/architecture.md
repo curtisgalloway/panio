@@ -253,7 +253,16 @@ a *supervisor* task owns the port (with a reconnect loop) and **fans every byte 
 1. broadcast to live WebSocket clients (`/stream`);
 2. a 64 KB scrollback ring for instant replay;
 3. a tee to a capture thread that writes **timestamped, sequence-numbered JSONL** lines to disk
-   (rotating, survives restarts).
+   (rotating, survives restarts) and a separate immutable exact-byte receive journal.
+
+The journal contains only actual RX chunks, carrying the supervisor's epoch,
+RX sequence, connection generation and original receive time. The capture
+thread supplies a separate capture time and writes owner-only
+`evidence.jsonl(.1..4)` segments plus `evidence-state.json` checkpoints.
+`serial evidence` / MCP `serial_evidence` read this journal offline, with raw
+byte caps and explicit epoch, retention, corruption and write-fault diagnostics;
+they do not change the existing line/pending contract. See
+[serial receive evidence](../serial.md#immutable-receive-evidence).
 
 WebSocket clients send bytes the supervisor writes to the port. `paniolo serial log` reads the
 JSONL **directly**, so it works with or without the daemon. `paniolo serial connect` execs `tio`

@@ -62,6 +62,7 @@ received bytes and driver-accepted transmitted bytes. See the
 | ID | Requirement | Pri | Status | Notes |
 |---|---|---|---|---|
 | SER-HEALTH | Read-only configured/active identity, process/port state, epoch, reconnect and RX/TX/capture progress through CLI and MCP | S | ☑ | `serial status`, MCP `serial_status`; task-specific response remains the caller's judgment (#279) |
+| SER-EVIDENCE | Immutable exact-byte receive evidence with original timestamps, epoch/generation cursors, byte caps and explicit retention/fault diagnostics | S | ☑ | `serial evidence`, MCP `serial_evidence`; separate from line/pending view (#280) |
 | SER-A | `serialcap` daemon owns the port exclusively; supervisor fans out reads | M | ☑ | `serialcap/`; lockfile |
 | SER-B | Timestamped rolling JSONL capture log, addressable by seq; rotation | M | ☑ | `capture.rs`; `serial log` |
 | SER-C | Interactive terminal via `tio` (`serial connect`) | M | ☑ | |

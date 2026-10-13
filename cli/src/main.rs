@@ -207,7 +207,7 @@ enum Command {
     ///
     /// Speaks newline-delimited JSON-RPC on stdin/stdout until stdin closes;
     /// configure it in the harness as a stdio server whose command is
-    /// `paniolo mcp`. Tools: target_list, video_shot, video_read, serial_status, serial_log,
+    /// `paniolo mcp`. Tools: target_list, video_shot, video_read, serial_status, serial_evidence, serial_log,
     /// serial_send, hid_send, power_state, power_on, power_off, power_cycle.
     /// Each tool runs the
     /// matching paniolo command, so remote targets dispatch over SSH as usual.
@@ -510,6 +510,26 @@ enum SerialCmd {
         /// daemon only prints a warning on stderr: the log may be stale.
         #[arg(long)]
         require_live: bool,
+    },
+    /// Read immutable received chunks as JSON without opening a device.
+    /// Includes exact bytes, original RX times, capture epoch, generation,
+    /// observation time and explicit retention/corruption diagnostics.
+    Evidence {
+        #[command(flatten)]
+        target: TargetArg,
+        /// Interface name (optional when only one is configured).
+        #[arg(long, short)]
+        interface: Option<String>,
+        /// Capture epoch (defaults to latest retained); required with --since.
+        #[arg(long)]
+        epoch: Option<String>,
+        /// Return RX sequences strictly after this cursor within --epoch.
+        #[arg(long, requires = "epoch")]
+        since: Option<u64>,
+        /// Maximum raw bytes (1..=1048576, default 65536); JSON overhead is extra.
+        /// Stops before oversized chunks and reports a continuation cursor.
+        #[arg(long, default_value_t = serial::DEFAULT_EVIDENCE_BYTES, value_parser = clap::value_parser!(u64).range(1..=serial::MAX_EVIDENCE_BYTES))]
+        max_bytes: u64,
     },
     /// List available serial devices on this machine.
     Devices,
@@ -2358,6 +2378,26 @@ fn serial_cmd(lab_flag: Option<&str>, cmd: SerialCmd) -> Result<()> {
             no_pending,
             require_live,
         ),
+        SerialCmd::Evidence {
+            target,
+            interface,
+            epoch,
+            since,
+            max_bytes,
+        } => {
+            let (target, serials) = serial_runtime(
+                lab_flag,
+                target.name(),
+                interface.as_deref(),
+                dispatch::Mode::Reexec,
+            )?;
+            let channel = pick_serial(&target, &serials, interface.as_deref())?;
+            println!(
+                "{}",
+                serial::read_evidence(&target, &channel.name, epoch.as_deref(), since, max_bytes)?
+            );
+            Ok(())
+        }
         SerialCmd::Devices => {
             let devices = serial::list_devices();
             if devices.is_empty() {

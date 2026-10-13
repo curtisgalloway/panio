@@ -108,7 +108,7 @@ fn sanitize(name: &str) -> String {
 }
 
 /// Names of interfaces that have a capture sub-directory under `base`.
-fn list_interface_dirs(base: &Path) -> Vec<String> {
+pub(crate) fn list_interface_dirs(base: &Path) -> Vec<String> {
     let mut names = Vec::new();
     if let Ok(entries) = fs::read_dir(base) {
         for e in entries.flatten() {
@@ -352,7 +352,7 @@ fn utf8_floor_boundary(bytes: &[u8]) -> usize {
 /// so a fresh file must be unreadable by other users on its own, not only by
 /// virtue of the runtime base's 0700. As with any `open(2)`, the mode applies
 /// at creation; an existing file keeps what it has.
-fn open_private_append(path: &Path) -> std::io::Result<File> {
+pub(crate) fn open_private_append(path: &Path) -> std::io::Result<File> {
     let mut o = OpenOptions::new();
     o.create(true).append(true);
     #[cfg(unix)]
@@ -362,7 +362,7 @@ fn open_private_append(path: &Path) -> std::io::Result<File> {
 
 /// `fs::write`, but creating the file 0600 on Unix (see
 /// [`open_private_append`]).
-fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+pub(crate) fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let mut o = OpenOptions::new();
     o.create(true).write(true).truncate(true);
     #[cfg(unix)]
