@@ -28,7 +28,7 @@ each term briefly on first use; this page is the longer reference.
 | **hook** | A shell command in the lab file that paniolo runs for an action, such as `on_cmd`, `off_cmd` and `state_cmd` for power. |
 | **daemon** | A helper that keeps running in the background and holds a device open. `hdmicap` (video) and `serialcap` (serial) are the main ones. |
 | **discovery file** | The small file a daemon writes in the runtime directory with its address, PID and token. paniolo's only record that the daemon is running. |
-| **stale / untracked daemon** | *Stale*: still running an old binary after an upgrade. *Untracked*: still running after its discovery file was deleted. |
+| **stale / untracked daemon** | *Stale*: running executable content proven different from the installed helper; a metadata or inode replacement alone does not establish this. *Untracked*: still running after its discovery file was deleted. |
 | **passthrough command** | A command that hands back another program's exit status unchanged, such as `paniolo helper <name>` or `paniolo adb run`. See [Exit status and errors](errors.md#passthrough-commands). |
 | **credential source** | Where a helper reads a secret such as the AMT password: an environment variable, a file (`--password-file`) or a command whose output is the secret (`--password-command`). The first one set wins. |
 | **link mode** | The host side of the direct USB-Ethernet link to a target. `paniolo netif` puts it in one of four modes: netboot, link, ffx or off. |

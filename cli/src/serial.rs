@@ -194,10 +194,7 @@ pub fn start_daemon(
             "serialcap not found (libexec or PATH) — run `paniolo setup`".to_string(),
         )
     })?;
-    // Record which binary this daemon runs, so a later upgrade/rebuild can be
-    // detected as stale (see daemons::binary_is_stale).
-    daemons::record_binmeta(&binary, DAEMON, Some(target));
-    let mut cmd = Command::new(binary);
+    let mut cmd = Command::new(&binary);
     cmd.arg("daemon").arg("--port").arg(port.to_string());
     cmd.envs(daemons::helper_env(DAEMON, Some(target)));
     for ch in ifaces {
@@ -209,7 +206,10 @@ pub fn start_daemon(
     cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(log);
     // Detach into its own process group so it survives this CLI exiting.
     crate::platform::detach(&mut cmd);
-    Ok(cmd.spawn()?)
+    let child = cmd.spawn()?;
+    // Stamp actual running content after successful exec, not just its path.
+    daemons::record_binmeta(&binary, DAEMON, Some(target), child.id());
+    Ok(child)
 }
 
 /// Stop the target's running daemon via `serialcap stop` (it owns the clean

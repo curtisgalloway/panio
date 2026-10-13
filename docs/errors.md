@@ -79,7 +79,9 @@ variable is not passed to hooks, helpers or daemons.
 **Version skew.** A control host on paniolo 0.4.x or older exits 1 for every
 error and rejects `--json-errors` with exit 2
 (`unexpected argument '--json-errors'`) without running the command. Upgrade
-it (`apt upgrade`, then `paniolo daemons restart --stale`).
+it (`apt upgrade`, then deliberately restart the affected capture daemon by
+name, such as `paniolo daemons restart serialcap`). `--stale` selects only
+proven content differences and skips unknown binary identity.
 
 ## Passthrough commands
 

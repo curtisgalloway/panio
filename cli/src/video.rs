@@ -199,9 +199,6 @@ pub fn start_daemon(
             "hdmicap not found (libexec or PATH) — run `paniolo setup`".to_string(),
         )
     })?;
-    // Record which binary this daemon runs, so a later upgrade/rebuild can be
-    // detected as stale (see daemons::binary_is_stale).
-    daemons::record_binmeta(&binary, DAEMON, Some(target));
     let hid_discovery = if device == crate::model::RFB_HID_DEVICE {
         Some(hid_discovery_file(target)?)
     } else {
@@ -223,7 +220,10 @@ pub fn start_daemon(
     let log = daemons::create_log(DAEMON, Some(target))?;
     cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(log);
     crate::platform::detach(&mut cmd);
-    Ok(cmd.spawn()?)
+    let child = cmd.spawn()?;
+    // Stamp actual running content after successful exec, not just its path.
+    daemons::record_binmeta(&binary, DAEMON, Some(target), child.id());
+    Ok(child)
 }
 
 /// The discovery file the target's hid daemon publishes (its channel name,

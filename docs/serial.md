@@ -124,10 +124,19 @@ There is **one serialcap daemon per target**, owning all its interfaces, so
 several targets can capture at once on one host. It prints its URL on start;
 the [dashboard](dashboard.md) shows it too.
 
-**Stale daemons.** A daemon running an old binary after an upgrade shows as
-**stale** in `paniolo serial show` and `paniolo daemons`. `paniolo serial
-watch` restarts it automatically, or run `paniolo daemons restart serialcap`
-(see [architecture](dev/architecture.md)).
+**Stale daemons.** A proven difference between the running and installed
+executable content shows as **stale** in `paniolo serial show` and
+`paniolo daemons`. `paniolo serial watch` restarts it automatically, or run
+`paniolo daemons restart --stale`. An identical reinstall, path change, or
+modification time change does not count as changed content.
+
+A successful content comparison reports **binary content matches installed**
+when the bytes are equal, including after an identical reinstall.
+
+If executable content cannot be compared, the commands report **binary identity
+unknown** with the reason. Unknown identity never triggers automatic restart and
+is excluded from `--stale`; `paniolo daemons restart serialcap` still intentionally
+restarts it. See [architecture](dev/architecture.md).
 
 **Untracked daemons.** A daemon whose discovery file was deleted keeps
 running and holding the ports. On Linux, systemd's `/tmp` cleanup
@@ -366,7 +375,7 @@ curl -s -H "Authorization: Bearer $(jq -r .token "$d")" \
 ```
 
 A daemon from a paniolo older than the token accepts unauthenticated
-requests; `paniolo daemons restart --stale` replaces it.
+requests; `paniolo daemons restart serialcap` replaces it.
 
 `serialcap stop` uses `POST /stop` and never signals the PID. To stop an
 older daemon without that endpoint, run `paniolo daemons stop serialcap`.

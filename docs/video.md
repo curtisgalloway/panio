@@ -130,7 +130,7 @@ discovery file ([Runtime paths](#runtime-paths)), new on each start.
 paniolo's commands (`shot`, `read`, `console`, …) send it automatically. By
 hand, send `Authorization: Bearer <token>` or `?token=<token>`. The daemon
 also requires a loopback `Host` and `Origin`. A daemon from a paniolo older
-than the token has none; `paniolo daemons restart --stale` replaces it.
+than the token has none; `paniolo daemons restart hdmicap` replaces it.
 
 **`video preview` is the only command that prints the URL with the token.**
 `show`, `console` and `watch` print `http://127.0.0.1:<port>` only, to keep
@@ -153,10 +153,21 @@ unrelated process. Stop a daemon too old for the endpoint with
 
 ### Stale and untracked daemons
 
-**Stale.** A daemon running an old binary after an upgrade shows as **stale**
-in `paniolo video show` and `paniolo daemons`. `watch` restarts it
-automatically (no `--restart` needed), or run
-`paniolo daemons restart hdmicap` (see [architecture](dev/architecture.md)).
+**Stale.** A daemon whose running executable content differs from the installed
+helper shows as **stale** in `paniolo video show` and `paniolo daemons`.
+`watch` restarts it automatically (no `--restart` needed), or run
+`paniolo daemons restart --stale`. Reinstalling identical bytes, changing a
+modification time, or moving the same binary does not make it stale.
+
+A successful content comparison reports **binary content matches installed**
+when the bytes are equal, including after an identical reinstall.
+
+If content cannot be compared, the commands report **binary identity unknown**
+with a reason (missing recorded identity, inaccessible executable, or metadata
+changes without readable content). Unknown identity does not recommend or trigger
+a restart and is excluded from `--stale`; an intentional
+`paniolo daemons restart hdmicap` or `video watch --restart` still works.
+See [architecture](dev/architecture.md) for content identity details.
 
 **Untracked.** A daemon whose discovery file was deleted keeps running and
 holding the device. On Linux, systemd's `/tmp` cleanup

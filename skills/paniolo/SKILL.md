@@ -855,7 +855,7 @@ paniolo daemons stop zigplug serialcap   # stop specific daemons (SIGTERM)
 paniolo daemons stop 'serialcap[pi5]'    # one target's instance, as listed (quote: [] globs)
 paniolo daemons stop --all               # stop every daemon + TERM strays
 paniolo daemons stop --all --force       # …and SIGKILL whatever survives 3 s
-paniolo daemons restart --stale          # restart capture daemons on an old binary
+paniolo daemons restart --stale          # restart capture daemons with proven content changes
 paniolo daemons restart serialcap        # restart a named capture daemon
 paniolo daemons restart --all            # restart every serialcap/hdmicap
 ```
@@ -866,11 +866,18 @@ sweep-the-bench view.
 
 **Stale daemons after an upgrade.** A daemon keeps the binary it started from;
 `make install` / `apt install` replaces the binary on disk but not the running
-process. `paniolo daemons` flags such a daemon **stale** (also shown on
-`serial show` / `video show`), and `paniolo daemons restart [--all|--stale|NAME]`
-cleanly cycles serialcap/hdmicap from the current binary, reusing the lab's
-channel config. `serial watch` / `video watch` also auto-restart a stale
-instance. netbootd is excluded — cycle it via `paniolo netboot start/stop`.
+process. `paniolo daemons` flags **stale** only when executable content differs
+(also shown on `serial show` / `video show`). A SHA-256 checksum records content
+at spawn; Linux can also read the actual running executable through `/proc`.
+Identical bytes remain current after reinstalling, moving paths, or changing
+modification times. Missing identity, inaccessible executable content, or
+metadata changes without comparable content show **binary identity unknown**
+with a reason. Do not infer a required restart from an unknown identity.
+`paniolo daemons restart --stale` and automatic `serial watch` / `video watch`
+restarts select only proven content changes. Named restart, `--all`, and
+`video watch --restart` still intentionally restart a capture daemon, reusing
+its lab channel config. netbootd is excluded — cycle it via
+`paniolo netboot start/stop`.
 
 **Untracked daemons: `show` says stopped, `watch` says already running.** A
 daemon's discovery file is paniolo's only record of it, and on Linux `/tmp` is
@@ -916,7 +923,7 @@ the device is free just because a daemon is gone from the tracked list.
   your transcript — so do not paste it into a browser and expect the page to
   work. If no browser could be launched, `console` writes the full URL to a
   `0600` file and prints that path — never the URL itself. A daemon left over from an older paniolo has no token —
-  `paniolo daemons restart --stale`.
+  a named `paniolo daemons restart` (unknown identity is excluded from `--stale`).
 - Netboot requires passwordless `sudo` (`ip` on Linux, `ifconfig` on macOS).
 - netboot and ffx are mutually exclusive on the link — use `paniolo netif mode`
   to switch; entering ffx mode stops netboot so a power-cycle boots from SD.

@@ -439,32 +439,46 @@ fn pid_alive(pid: i32) -> bool {
 }
 
 // ── binary staleness ─────────────────────────────────────────────────────────
-//
-// A daemon is a long-lived process running a snapshot of its helper binary. An
-// upgrade (`apt install`, `make install`) or a dev rebuild (`cargo install`)
-// replaces that binary on disk, but the running process keeps the old code —
-// and its on-disk runtime/protocol contract can diverge from the new CLI's
-// (the per-target-daemon move did exactly this, stranding old daemons that
-// held capture devices while the new CLI couldn't see them). The package can't
-// reap these (they're per-user processes, not packaged services), so the CLI
-// records the binary's identity at spawn and flags a running daemon as stale
-// once the binary changes underneath it.
 
-/// Identity of the binary a daemon was spawned from. Written next to the
-/// daemon's discovery file as `binmeta.json` by [`record_binmeta`].
+/// Identity recorded at spawn. Legacy records without a digest still load.
 #[derive(serde::Serialize, serde::Deserialize)]
 struct BinMeta {
-    /// Helper basename, used to re-resolve the *current* install for comparison.
     bin: String,
-    /// Absolute path the daemon was launched from.
     path: String,
-    /// Modification time, nanoseconds since the Unix epoch.
     mtime_ns: u128,
-    /// Size in bytes.
     size: u64,
+    #[serde(default)]
+    sha256: Option<String>,
+    #[serde(default)]
+    pid: Option<u32>,
 }
 
-/// `(mtime_ns, size)` for `path`, or `None` if it can't be stat'd.
+/// Content comparison for a running helper, including explicit uncertainty.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BinaryStatus {
+    Current,
+    Changed,
+    Unknown(&'static str),
+}
+
+impl BinaryStatus {
+    pub fn is_stale(self) -> Option<bool> {
+        match self {
+            Self::Current => Some(false),
+            Self::Changed => Some(true),
+            Self::Unknown(_) => None,
+        }
+    }
+
+    pub fn note(self) -> String {
+        match self {
+            Self::Current => " (binary content matches installed)".into(),
+            Self::Changed => " (stale: binary content changed; `paniolo daemons restart`)".into(),
+            Self::Unknown(reason) => format!(" (binary identity unknown: {reason})"),
+        }
+    }
+}
+
 fn stat_identity(path: &Path) -> Option<(u128, u64)> {
     let md = std::fs::metadata(path).ok()?;
     let mtime = md
@@ -476,26 +490,136 @@ fn stat_identity(path: &Path) -> Option<(u128, u64)> {
     Some((mtime, md.len()))
 }
 
-/// True when the binary now at `current` differs from what `meta` recorded —
-/// a different path, or the same path with a changed mtime/size. Pure, so the
-/// comparison is unit-testable without spawning anything.
-fn meta_differs(meta: &BinMeta, current: &Path) -> bool {
-    match stat_identity(current) {
-        Some((mtime_ns, size)) => {
-            current.to_string_lossy() != meta.path || mtime_ns != meta.mtime_ns || size != meta.size
+/// Best-effort SHA-256 using trusted OS tool paths rather than helper PATH.
+/// Unix tools read an already-open file on stdin, including deleted /proc exes.
+/// An unavailable tool leaves identity unknown; it never prevents capture.
+fn content_digest(path: &Path) -> Option<String> {
+    #[cfg(target_os = "linux")]
+    let mut cmd = std::process::Command::new("/usr/bin/sha256sum");
+    #[cfg(target_os = "macos")]
+    let mut cmd = {
+        let mut cmd = std::process::Command::new("/usr/bin/shasum");
+        cmd.args(["-a", "256"]);
+        cmd
+    };
+    #[cfg(windows)]
+    let mut cmd = {
+        let Some(system_root) = std::env::var_os("SystemRoot") else {
+            #[cfg(test)]
+            report_hash_failure("SystemRoot is absent", None);
+            return None;
+        };
+        let powershell =
+            PathBuf::from(system_root).join(r"System32\WindowsPowerShell\v1.0\powershell.exe");
+        if !powershell.is_absolute() {
+            #[cfg(test)]
+            report_hash_failure("SystemRoot does not resolve to an absolute tool path", None);
+            return None;
         }
-        // The recorded binary is gone — definitely not what's running now.
-        None => true,
+        let mut cmd = std::process::Command::new(powershell);
+        cmd.args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            concat!(
+                "$ErrorActionPreference='Stop'; $stream=$null; $hash=$null; ",
+                "try { $stream=[System.IO.File]::OpenRead($env:PANIOLO_HASH_FILE); ",
+                "$hash=[System.Security.Cryptography.SHA256]::Create(); ",
+                "[System.BitConverter]::ToString($hash.ComputeHash($stream))",
+                ".Replace('-','').ToLowerInvariant() } ",
+                "finally { if ($null -ne $hash) { $hash.Dispose() }; ",
+                "if ($null -ne $stream) { $stream.Dispose() } }",
+            ),
+        ]);
+        cmd.env("PANIOLO_HASH_FILE", path);
+        cmd
+    };
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+    {
+        let _ = path;
+        return None;
+    }
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+    {
+        #[cfg(unix)]
+        cmd.stdin(std::fs::File::open(path).ok()?);
+        #[cfg(windows)]
+        cmd.stdin(std::process::Stdio::null());
+        #[cfg(test)]
+        cmd.stderr(std::process::Stdio::piped());
+        #[cfg(not(test))]
+        cmd.stderr(std::process::Stdio::null());
+        let output = match cmd.output() {
+            Ok(output) => output,
+            Err(error) => {
+                #[cfg(test)]
+                report_hash_failure(&format!("tool spawn failed: {error}"), None);
+                #[cfg(not(test))]
+                let _ = error;
+                return None;
+            }
+        };
+        if !output.status.success() {
+            #[cfg(test)]
+            report_hash_failure("tool returned a failing status", Some(&output));
+            return None;
+        }
+        let Ok(text) = std::str::from_utf8(&output.stdout) else {
+            #[cfg(test)]
+            report_hash_failure("stdout was not UTF-8", Some(&output));
+            return None;
+        };
+        let Some(digest) = text.split_whitespace().next() else {
+            #[cfg(test)]
+            report_hash_failure("stdout contained no digest", Some(&output));
+            return None;
+        };
+        if digest.len() != 64 || !digest.bytes().all(|b| b.is_ascii_hexdigit()) {
+            #[cfg(test)]
+            report_hash_failure("stdout contained an invalid SHA-256 digest", Some(&output));
+            return None;
+        }
+        Some(digest.to_ascii_lowercase())
     }
 }
 
-/// Record the identity of the binary `bin` we are about to spawn for the daemon
-/// instance, so [`binary_is_stale`] can later tell whether it changed. Best
-/// effort: on any failure staleness simply reports "unknown" (never a false
-/// positive), so a stamping hiccup can't block a daemon from starting.
-pub fn record_binmeta(bin: &Path, name: &str, instance: Option<&str>) {
+/// Bounded, test-only evidence; never prints command arguments or environment.
+#[cfg(test)]
+fn report_hash_failure(reason: &str, output: Option<&std::process::Output>) {
+    eprintln!("content_digest failure: {reason}");
+    if let Some(output) = output {
+        eprintln!(
+            "hash status={} stdout_bytes(first 512)={:?} stderr_bytes(first 512)={:?}",
+            output.status,
+            &output.stdout[..output.stdout.len().min(512)],
+            &output.stderr[..output.stderr.len().min(512)],
+        );
+    }
+}
+
+/// On Linux this is the actual running executable, even after an atomic install.
+fn running_digest(pid: u32) -> Option<String> {
+    #[cfg(target_os = "linux")]
+    {
+        content_digest(Path::new(&format!("/proc/{pid}/exe")))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = pid;
+        None
+    }
+}
+
+/// Called after successful spawn, so Linux can stamp the executable actually run.
+/// A pid binds the digest to this start, preventing reuse of a previous record.
+pub fn record_binmeta(bin: &Path, name: &str, instance: Option<&str>, pid: u32) {
     let Some((mtime_ns, size)) = stat_identity(bin) else {
         return;
+    };
+    let sha256 = if cfg!(target_os = "linux") {
+        running_digest(pid)
+    } else {
+        content_digest(bin)
     };
     let meta = BinMeta {
         bin: bin
@@ -505,26 +629,74 @@ pub fn record_binmeta(bin: &Path, name: &str, instance: Option<&str>) {
         path: bin.to_string_lossy().into_owned(),
         mtime_ns,
         size,
+        sha256,
+        pid: Some(pid),
     };
     if let Ok(dir) = ensure_runtime_dir(name, instance) {
-        if let Ok(text) = serde_json::to_string(&meta) {
-            let _ = std::fs::write(dir.join("binmeta.json"), text);
+        if let Ok(text) = serde_json::to_vec(&meta) {
+            if let Ok(mut file) = tempfile::NamedTempFile::new_in(&dir) {
+                use std::io::Write;
+                if file.write_all(&text).is_ok() {
+                    let _ = file.persist(dir.join("binmeta.json"));
+                }
+            }
         }
     }
 }
 
-/// Whether the daemon instance's binary has changed on disk since it started
-/// (an upgrade or rebuild left the running process stale). `None` when it can't
-/// be determined — no recorded identity, e.g. a daemon started by an older CLI;
-/// callers treat unknown as "not stale" so the signal never cries wolf.
-pub fn binary_is_stale(name: &str, instance: Option<&str>) -> Option<bool> {
+fn compare_binary(
+    meta: &BinMeta,
+    current: &Path,
+    pid: u32,
+    running: Option<String>,
+) -> BinaryStatus {
+    let Some(current_digest) = content_digest(current) else {
+        return BinaryStatus::Unknown("installed executable unavailable or hashing failed");
+    };
+    let recorded = (meta.pid == Some(pid))
+        .then_some(meta.sha256.as_ref())
+        .flatten()
+        .filter(|digest| digest.len() == 64 && digest.bytes().all(|b| b.is_ascii_hexdigit()))
+        .map(|digest| digest.to_ascii_lowercase());
+    let Some(start_digest) = running.or(recorded) else {
+        return if current.to_string_lossy() != meta.path
+            || stat_identity(current) != Some((meta.mtime_ns, meta.size))
+        {
+            BinaryStatus::Unknown("metadata changed; running content unavailable")
+        } else {
+            BinaryStatus::Unknown("running executable content unavailable")
+        };
+    };
+    if current_digest == start_digest {
+        BinaryStatus::Current
+    } else {
+        BinaryStatus::Changed
+    }
+}
+
+pub fn binary_status(name: &str, instance: Option<&str>) -> BinaryStatus {
     let dir = runtime_base().join(runtime_rel(name, instance));
-    let text = std::fs::read_to_string(dir.join("binmeta.json")).ok()?;
-    let meta: BinMeta = serde_json::from_str(&text).ok()?;
-    // Compare against the binary the CLI would resolve today; fall back to the
-    // recorded path when the helper no longer resolves by name.
+    let Some(pid) = std::fs::read_to_string(dir.join("daemon.json"))
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .and_then(|v| v.get("pid")?.as_u64())
+        .and_then(|p| u32::try_from(p).ok())
+    else {
+        return BinaryStatus::Unknown("discovery identity unavailable");
+    };
+    let Some(meta) = std::fs::read_to_string(dir.join("binmeta.json"))
+        .ok()
+        .and_then(|s| serde_json::from_str::<BinMeta>(&s).ok())
+    else {
+        return BinaryStatus::Unknown("no recorded binary identity");
+    };
     let current = find_binary(&meta.bin).unwrap_or_else(|| PathBuf::from(&meta.path));
-    Some(meta_differs(&meta, &current))
+    compare_binary(&meta, &current, pid, running_digest(pid))
+}
+
+/// Only proven content differences permit automatic or --stale restarts.
+pub fn binary_is_stale(name: &str, instance: Option<&str>) -> Option<bool> {
+    binary_status(name, instance).is_stale()
 }
 
 /// One live daemon found via its discovery file under the runtime base.
@@ -538,10 +710,8 @@ pub struct DaemonInfo {
     pub port: Option<u16>,
     /// Daemon-specific detail (e.g. zigplug's serial device), if published.
     pub detail: String,
-    /// `Some(true)` if the binary changed on disk since the daemon started
-    /// (upgrade/rebuild — the running process is stale), `Some(false)` if it
-    /// matches, `None` if unknown (no recorded identity).
-    pub stale: Option<bool>,
+    /// Content comparison with the currently installed helper.
+    pub binary_status: BinaryStatus,
 }
 
 /// Parse `<dir>/daemon.json` into a live [`DaemonInfo`], or `None` if the file
@@ -557,7 +727,7 @@ fn read_discovery(
     if !pid_alive(pid as i32) {
         return None;
     }
-    let stale = binary_is_stale(name, instance.as_deref());
+    let binary_status = binary_status(name, instance.as_deref());
     Some(DaemonInfo {
         name: name.to_string(),
         instance,
@@ -568,7 +738,7 @@ fn read_discovery(
             .and_then(|d| d.as_str())
             .unwrap_or_default()
             .to_string(),
-        stale,
+        binary_status,
     })
 }
 
@@ -884,8 +1054,8 @@ pub fn query_escape(s: &str) -> String {
 /// A running daemon's HTTP endpoint, as read from its discovery file: the
 /// loopback port and the bearer token every request must carry. `token` is
 /// `None` for a daemon started by a paniolo older than the token — it accepts
-/// unauthenticated requests, and `paniolo daemons restart --stale` replaces
-/// it with one that does not.
+/// unauthenticated requests; a named `paniolo daemons restart` replaces it.
+/// `--stale` excludes instances whose content identity cannot be compared.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Endpoint {
     pub pid: i32,
@@ -1356,31 +1526,140 @@ mod tests {
         assert_eq!(runtime_rel("hid", Some("nova-1.2")), "hid/nova-1.2");
     }
 
-    #[test]
-    fn meta_differs_detects_a_changed_binary() {
-        let dir = std::env::temp_dir();
-        let path = dir.join(format!("paniolo-binmeta-test-{}", std::process::id()));
-        std::fs::write(&path, b"v1").unwrap();
-        let (mtime_ns, size) = stat_identity(&path).unwrap();
-        let meta = BinMeta {
-            bin: "test-bin".to_string(),
+    fn fixture_meta(path: &Path, pid: u32) -> BinMeta {
+        let (mtime_ns, size) = stat_identity(path).unwrap();
+        BinMeta {
+            bin: "test-bin".into(),
             path: path.to_string_lossy().into_owned(),
             mtime_ns,
             size,
-        };
-        // Unchanged file: not stale.
-        assert!(!meta_differs(&meta, &path));
-        // A different path (even if it exists) counts as changed.
-        let other = dir.join(format!("paniolo-binmeta-other-{}", std::process::id()));
+            sha256: content_digest(path),
+            pid: Some(pid),
+        }
+    }
+
+    #[test]
+    fn content_digest_matches_sha256_vector() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("digest input with spaces");
+        std::fs::write(&path, b"abc").unwrap();
+        assert_eq!(
+            content_digest(&path).as_deref(),
+            Some("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"),
+            "the OS hash adapter must produce the standard SHA-256 abc vector"
+        );
+    }
+
+    #[test]
+    fn binary_content_comparison_ignores_metadata_and_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("helper");
+        std::fs::write(&path, b"v1").unwrap();
+        let meta = fixture_meta(&path, 42);
+        assert!(
+            meta.sha256.is_some(),
+            "platform SHA-256 tool must be available"
+        );
+        assert_eq!(
+            compare_binary(&meta, &path, 42, None),
+            BinaryStatus::Current
+        );
+        let other = dir.path().join("other");
         std::fs::write(&other, b"v1").unwrap();
-        assert!(meta_differs(&meta, &other));
-        // Replacing the file (new size, new mtime) is stale.
-        std::fs::write(&path, b"v2-larger").unwrap();
-        assert!(meta_differs(&meta, &path));
-        // A vanished binary is stale.
+        assert_eq!(
+            compare_binary(&meta, &other, 42, None),
+            BinaryStatus::Current
+        );
+        std::fs::rename(&other, &path).unwrap();
+        assert_eq!(
+            compare_binary(&meta, &path, 42, None),
+            BinaryStatus::Current
+        );
+        std::fs::write(&path, b"v2").unwrap();
+        assert_eq!(
+            compare_binary(&meta, &path, 42, None),
+            BinaryStatus::Changed
+        );
         std::fs::remove_file(&path).unwrap();
-        assert!(meta_differs(&meta, &path));
-        std::fs::remove_file(&other).ok();
+        assert_eq!(compare_binary(&meta, &path, 42, None).is_stale(), None);
+    }
+
+    #[test]
+    fn unknown_identity_never_recommends_or_selects_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("helper");
+        std::fs::write(&path, b"v1").unwrap();
+        let mut meta = fixture_meta(&path, 42);
+        let status = compare_binary(&meta, &path, 43, None);
+        assert_eq!(status.is_stale(), None, "digest belongs to another start");
+        meta.sha256 = Some("not-a-digest".into());
+        assert_eq!(compare_binary(&meta, &path, 42, None).is_stale(), None);
+        meta.sha256 = None;
+        assert_eq!(compare_binary(&meta, &path, 42, None).is_stale(), None);
+        std::fs::write(&path, b"v2-larger").unwrap();
+        let status = compare_binary(&meta, &path, 42, None);
+        assert_eq!(
+            status,
+            BinaryStatus::Unknown("metadata changed; running content unavailable")
+        );
+        assert_eq!(status.is_stale(), None);
+        assert!(!status.note().contains("restart"));
+        assert!(BinaryStatus::Unknown("no recorded binary identity")
+            .note()
+            .contains("unknown"));
+        let legacy: BinMeta = serde_json::from_value(serde_json::json!({
+            "bin": "helper", "path": "helper", "mtime_ns": 0, "size": 2
+        }))
+        .unwrap();
+        assert!(legacy.sha256.is_none());
+        assert!(legacy.pid.is_none());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn running_executable_compares_content_after_atomic_replacement() {
+        let dir = tempfile::tempdir().unwrap();
+        let installed = dir.path().join("sleep");
+        std::fs::copy("/bin/sleep", &installed).unwrap();
+        // Overlay filesystems and concurrent build subprocesses can briefly
+        // retain a write handle after the copy. Wait only for ETXTBSY readiness;
+        // other spawn errors fail immediately, and content assertions still run.
+        let mut command = std::process::Command::new(&installed);
+        command.arg("30");
+        let deadline = std::time::Instant::now() + Duration::from_millis(200);
+        let mut child = loop {
+            match command.spawn() {
+                Ok(child) => break child,
+                Err(error)
+                    if error.raw_os_error() == Some(libc::ETXTBSY)
+                        && std::time::Instant::now() < deadline =>
+                {
+                    std::thread::sleep(
+                        Duration::from_millis(10)
+                            .min(deadline.saturating_duration_since(std::time::Instant::now())),
+                    );
+                }
+                Err(error) => panic!("copied executable fixture failed to spawn: {error}"),
+            }
+        };
+        let pid = child.id();
+        let mut meta = fixture_meta(&installed, pid);
+        meta.sha256 = None;
+        meta.pid = None;
+        let replacement = dir.path().join("replacement");
+        std::fs::copy("/bin/sleep", &replacement).unwrap();
+        std::fs::rename(&replacement, &installed).unwrap();
+        let equal = compare_binary(&meta, &installed, pid, running_digest(pid));
+        std::fs::write(&installed, b"different executable").unwrap();
+        let changed = compare_binary(&meta, &installed, pid, running_digest(pid));
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert_eq!(equal, BinaryStatus::Current);
+        assert_eq!(changed, BinaryStatus::Changed);
+        assert!(
+            running_digest(pid).is_none(),
+            "exited executable is unavailable"
+        );
     }
 
     /// Helper lookup has to try `<name>.exe` on Windows: every caller names

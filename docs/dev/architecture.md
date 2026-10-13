@@ -141,9 +141,24 @@ Every channel also takes an optional `host = "<name>"` binding it to a remote co
   (`Authorization: Bearer` from the CLI, `?token=` from the dashboard), and daemons accept only
   loopback `Host`/`Origin`. Binding 127.0.0.1 keeps other machines out; token and origin checks
   keep other *web pages* out (`cli/src/daemons.rs` `Endpoint`, each daemon's `auth.rs`).
-- **Staleness.** The CLI records the daemon's binary identity at spawn (`binmeta.json`). A daemon
-  running an older binary is flagged **stale** in `paniolo daemons`; `paniolo daemons restart`
-  fixes it.
+- **Staleness.** The CLI records the daemon's SHA-256 content digest (a checksum
+  of its executable bytes) and process ID at spawn in `binmeta.json`. Linux also
+  compares the actual running executable through `/proc/<pid>/exe`, including a
+  deleted executable after an atomic install. The digest uses
+  `/usr/bin/sha256sum` on Linux, `/usr/bin/shasum -a 256` on macOS, and
+  .NET streaming SHA-256 through Windows PowerShell under
+  `%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe` on Windows.
+  The Windows adapter calls `SHA256.ComputeHash` on a read-only file stream and
+  disposes the stream and hashing object; it requires no PowerShell modules.
+  The hash tool is resolved independently of the helper search `PATH`;
+  hashing failures are reported as unknown identity. A proven content difference
+  is flagged **stale** in `paniolo daemons`, `serial show`, and `video show`;
+  identical bytes at another path or with different metadata remain current.
+  Legacy records without a digest remain readable. Missing identity or unavailable
+  content produces **binary identity unknown** with a reason. Metadata alone
+  cannot prove a content difference. `daemons restart --stale` and automatic
+  `watch` restarts select only proven changes; named restart, `--all`, and
+  `video watch --restart` remain deliberate restart controls.
 - **Instances.** Capture daemons (serialcap/hdmicap/hid) run one instance **per target**;
   zigplug/cambrionix/netbootd run one per host.
 - **Helper env vars.** Every helper invocation gets two pre-created directories:
@@ -402,7 +417,7 @@ it shares the signal handlers' cleanup and exit path.
 - **Daemons hard-exit on SIGTERM.** They serve infinite responses (`/preview` MJPEG, `/stream`
   WebSocket), so each removes its discovery file, waits ~300 ms, and calls `exit(0)`.
 - **Daemon APIs are authenticated** (§4); no `Access-Control-Allow-Origin: *`. A daemon from an
-  older paniolo has no token; replace it with `paniolo daemons restart --stale`.
+  older paniolo has no token; replace it with a named `paniolo daemons restart`.
 - **Interface configuration needs root.** Use NOPASSWD sudo for unattended agents.
 - **Link modes (netboot / link / ffx / off) are mutually exclusive.** netboot and ffx need
   incompatible host addressing; `paniolo netif mode` tears down one when entering the other.
