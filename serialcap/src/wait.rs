@@ -324,17 +324,27 @@ pub fn run(
         // Check the process/connection even if acquired bytes contain the
         // pattern: an interrupted acquisition must remain explicit.
         let remaining = deadline.saturating_duration_since(Instant::now());
-        let state = match health(
-            remaining
-                .max(Duration::from_millis(1))
-                .min(Duration::from_millis(250)),
-        ) {
+        if request.timeout_ms > 0 && remaining.is_zero() {
+            break "timeout";
+        }
+        let health_timeout = if request.timeout_ms == 0 {
+            Duration::from_millis(250)
+        } else {
+            remaining.min(Duration::from_millis(250))
+        };
+        let state = match health(health_timeout) {
             Ok(value) => value,
             Err(e) => {
+                if request.timeout_ms > 0 && Instant::now() >= deadline {
+                    break "timeout";
+                }
                 diagnostics.push(json!({"kind":"daemon_unavailable", "message":e.to_string()}));
                 break "daemon_unavailable";
             }
         };
+        if request.timeout_ms > 0 && Instant::now() >= deadline {
+            break "timeout";
+        }
         if state["health"]["epoch"].as_str() != Some(request.epoch.as_str()) {
             break if state["health"]["epoch"].is_null() {
                 "unsupported"
@@ -569,6 +579,77 @@ mod tests {
             .unwrap();
             assert_eq!(result["status"], expected);
         }
+    }
+
+    #[test]
+    fn reconnect_during_a_quiet_wait_retains_received_evidence() {
+        let mut req = request(None, 64);
+        req.timeout_ms = 1000;
+        let mut reads = 0;
+        let mut health_reads = 0;
+        let output = run(
+            &req,
+            |_, _| {
+                reads += 1;
+                Ok(json!({"records":[record(11, b"before reconnect")]}))
+            },
+            |_| {
+                health_reads += 1;
+                let mut state = healthy();
+                state["health"]["evidence_through_seq"] = json!(11);
+                state["health"]["connection_generation"] = json!(health_reads);
+                Ok(state)
+            },
+            |_| Ok(()),
+        )
+        .unwrap();
+        assert_eq!(output["status"], "reconnected");
+        assert_eq!(
+            output["records"][0]["bytes"],
+            json!(b"before reconnect".to_vec())
+        );
+        assert_eq!(reads, 1, "quiet capture should not rescan the journal");
+        assert_eq!(health_reads, 2);
+    }
+
+    #[test]
+    fn status_request_expiring_at_deadline_reports_timeout_and_keeps_bytes() {
+        let mut req = request(None, 64);
+        req.timeout_ms = 50;
+        let output = run(
+            &req,
+            |_, _| Ok(json!({"records":[record(11, b"before deadline")]})),
+            |remaining| {
+                std::thread::sleep(remaining + Duration::from_millis(5));
+                Err(anyhow!("status request exceeded remaining deadline"))
+            },
+            |_| Ok(()),
+        )
+        .unwrap();
+        assert_eq!(output["status"], "timeout");
+        assert_eq!(
+            output["records"][0]["bytes"],
+            json!(b"before deadline".to_vec())
+        );
+    }
+
+    #[test]
+    fn expired_deadline_does_not_match_a_late_batch() {
+        let mut req = request(Some("done"), 64);
+        req.timeout_ms = 1;
+        let output = run(
+            &req,
+            |_, _| {
+                std::thread::sleep(Duration::from_millis(5));
+                Ok(json!({"records":[record(11, b"done")]}))
+            },
+            |_| Ok(healthy()),
+            |_| Ok(()),
+        )
+        .unwrap();
+        assert_eq!(output["status"], "timeout");
+        assert_eq!(output["through_rx_seq"], 10);
+        assert!(output["records"].as_array().unwrap().is_empty());
     }
 
     #[test]
