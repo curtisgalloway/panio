@@ -361,6 +361,30 @@ fn cli_call(tool: &str, args: &Value) -> Result<CliCall, String> {
             }
             read(argv)
         }
+        "serial_evidence" => {
+            let mut argv = vec![s("serial"), s("evidence"), s("-t"), a.target()?];
+            if let Some(i) = a.opt_str("interface")? {
+                argv.extend([s("-i"), i]);
+            }
+            let epoch = a.opt_str("epoch")?;
+            let since = a.opt_u64("since", u64::MAX)?;
+            if since.is_some() && epoch.is_none() {
+                return Err("serial_evidence: since requires epoch".into());
+            }
+            if let Some(epoch) = epoch {
+                argv.extend([s("--epoch"), epoch]);
+            }
+            if let Some(since) = since {
+                argv.extend([s("--since"), since.to_string()]);
+            }
+            if let Some(max) = a.opt_u64("max_bytes", crate::serial::MAX_EVIDENCE_BYTES)? {
+                if max == 0 {
+                    return Err("serial_evidence: max_bytes must be positive".into());
+                }
+                argv.extend([s("--max-bytes"), max.to_string()]);
+            }
+            read(argv)
+        }
         "serial_log" => {
             let mut argv = vec![s("serial"), s("log"), s("-t"), a.target()?];
             if let Some(i) = a.opt_str("interface")? {
@@ -572,6 +596,17 @@ fn tool_list() -> Value {
             "description": "Read configured and active serial identity, process liveness, port connection, capture epoch and RX/TX progress as JSON. Never starts or restarts a daemon. Driver acceptance and RX traffic do not prove target command execution. Older daemons may omit health fields; missing evidence is unknown.",
             "inputSchema": schema(&[("interface", json!({"type": "string"}))]),
             "annotations": {"readOnlyHint": true},
+        },
+        {
+            "name": "serial_evidence",
+            "description": "Read immutable receive chunks from the offline journal as JSON. Exact byte arrays, original RX timestamps, epoch and connection generation are preserved. Reading never opens hardware. Includes cap, epoch and gap/corruption diagnostics; RX does not prove execution. since requires epoch; max_bytes caps raw bytes, with bounded extra JSON overhead.",
+            "inputSchema": schema(&[
+                ("interface", json!({"type":"string"})),
+                ("epoch", json!({"type":"string"})),
+                ("since", json!({"type":"integer", "minimum":0})),
+                ("max_bytes", json!({"type":"integer", "minimum":1, "maximum": crate::serial::MAX_EVIDENCE_BYTES})),
+            ]),
+            "annotations": {"readOnlyHint":true},
         },
         {
             "name": "serial_log",
@@ -841,6 +876,7 @@ mod tests {
                 "video_shot",
                 "video_read",
                 "serial_status",
+                "serial_evidence",
                 "serial_log",
                 "serial_send",
                 "hid_send",
@@ -879,6 +915,10 @@ mod tests {
     /// One valid call per CLI-backed tool, with every optional argument set.
     fn sample_calls() -> Vec<(&'static str, Value)> {
         vec![
+            (
+                "serial_evidence",
+                json!({"target":"pi5", "interface":"console", "epoch":"capture-1", "since":0, "max_bytes":4096}),
+            ),
             (
                 "serial_status",
                 json!({"target": "pi5", "interface": "console"}),
@@ -925,6 +965,35 @@ mod tests {
                 panic!("{tool}: {argv:?} rejected:\n{e}");
             }
         }
+    }
+
+    #[test]
+    fn serial_evidence_requires_epoch_and_rejects_unbounded_caps() {
+        use clap::Parser;
+        for args in [
+            json!({"target":"pi5", "since":1}),
+            json!({"target":"pi5", "max_bytes":0}),
+            json!({"target":"pi5", "max_bytes":1048577}),
+        ] {
+            assert!(cli_call("serial_evidence", &args).is_err());
+        }
+        assert!(crate::Cli::try_parse_from([
+            "paniolo", "serial", "evidence", "pi5", "--since", "1"
+        ])
+        .is_err());
+        assert!(crate::Cli::try_parse_from([
+            "paniolo",
+            "serial",
+            "evidence",
+            "pi5",
+            "--epoch",
+            "one",
+            "--since",
+            "1",
+            "--max-bytes",
+            "4096"
+        ])
+        .is_ok());
     }
 
     #[test]

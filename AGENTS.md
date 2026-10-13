@@ -516,6 +516,7 @@ cli/src/
                 http_url/ws_url carry it as ?token= for a browser), wait
   serial.rs     serialcap orchestration + tio exec + /input + device listing
                 + read-only health_snapshot (`serial status`, MCP serial_status)
+                 + offline read_evidence (`serial evidence`, MCP serial_evidence)
   video.rs      hdmicap orchestration (daemon start/stop, client passthrough)
   adb.rs        adb transport (argv build, shell exec, run/input passthrough,
                 exec-out screencap → PNG) — a generic transport in core, no helper
@@ -781,7 +782,15 @@ zigplug/         Python (uv) helper: Zigbee smart plug control via a CC2652 (ZNP
 serialcap/       Rust crate: serial console daemon (parallels hdmicap)
   src/
     main.rs      CLI subcommands: daemon (--interface NAME=DEV[@BAUD], repeatable),
-                 log (-i NAME), devices, stop
+                 log (-i NAME), evidence (-i NAME, --epoch, --since, --max-bytes), devices, stop
+    evidence.rs  Immutable exact-byte RX journal, distinct from line/pending.
+                 Records keep epoch/RX sequence, generation and original RX time;
+                 capture and observation times are separate. Five owner-only
+                 1 MiB segments append across restarts, with progress checkpoint.
+                 Offline reader caps raw bytes without skipping oversized chunks,
+                 reports continuation, retention/epoch gaps and raw fault diagnostics.
+                 Successful journal progress is health.evidence_through_seq;
+                 evidence_error is sticky. Process writes, not fsync durability.
     serial_io.rs Health tracks per-supervisor epoch, connection generation,
                  opened identity, RX/TX counters and capture processing watermark;
                  GET /status and `serial status` expose them without acting.

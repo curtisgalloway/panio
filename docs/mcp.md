@@ -53,6 +53,7 @@ server holds no state of its own, so restarting it loses nothing.
 | `video_shot` | `target` (required); `changed_since` (a hash); `stable` (bool); `timeout_ms` (0–120000, default 2000) | The screen as a PNG image, plus a text line `signal=<s>  hash=<h>`. |
 | `video_read` | `target`; `stable`; `timeout_ms` | The text on the screen (OCR), as `paniolo video read`. |
 | `serial_status` | `target`; `interface` | Read-only JSON: configured/active identity, process and port state, capture epoch and RX/TX progress. Missing evidence is unknown; none proves target command execution. |
+| `serial_evidence` | `target`; `interface`; `epoch`; `since` (requires epoch); `max_bytes` (1–1048576, default 65536) | Read-only JSON: immutable exact-byte receive records, original RX/capture times, observation time, epoch/generation, retained cursors and cap/gap/fault diagnostics. See [receive evidence](serial.md#immutable-receive-evidence). |
 | `serial_log` | `target`; `interface`; a window: `tail` (≤ 5000), `since`, `from`, `to` (sequence numbers) | Console lines `[time] #<seq> <text>`, as `paniolo serial log`; the last 200 when no window is given. |
 | `serial_send` | `target`; `text` (required); `interface`; `newline` (default true); `pace_ms` (≤ 10000) | Writes the text to the console, as `paniolo serial send`. |
 | `hid_send` | `target`; `command` (required): one HID command as an array of words, e.g. `["key", "ENTER"]` | Injects keyboard or mouse input, as `paniolo hid send`. |

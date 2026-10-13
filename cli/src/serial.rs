@@ -32,6 +32,57 @@ use crate::daemons;
 use crate::model::SerialChannel;
 
 pub const DAEMON: &str = "serialcap";
+pub const DEFAULT_EVIDENCE_BYTES: u64 = 65536;
+pub const MAX_EVIDENCE_BYTES: u64 = 1048576;
+
+/// Read an offline receive journal through the helper. Never touches discovery
+/// files, opens a device, or starts/restarts a daemon.
+pub fn read_evidence(
+    target: &str,
+    interface: &str,
+    epoch: Option<&str>,
+    since: Option<u64>,
+    max_bytes: u64,
+) -> Result<serde_json::Value> {
+    if since.is_some() && epoch.is_none() {
+        bail!("--since requires --epoch");
+    }
+    if max_bytes == 0 || max_bytes > MAX_EVIDENCE_BYTES {
+        bail!("--max-bytes must be 1..={MAX_EVIDENCE_BYTES}");
+    }
+    let binary = daemons::find_binary(DAEMON).ok_or_else(|| {
+        crate::error::PanioloError::not_configured("serialcap not found — run `paniolo setup`")
+    })?;
+    let mut cmd = Command::new(binary);
+    cmd.args([
+        "evidence",
+        "--interface",
+        interface,
+        "--max-bytes",
+        &max_bytes.to_string(),
+    ]);
+    if let Some(epoch) = epoch {
+        cmd.args(["--epoch", epoch]);
+    }
+    if let Some(since) = since {
+        cmd.args(["--since", &since.to_string()]);
+    }
+    cmd.envs(daemons::helper_env(DAEMON, Some(target)));
+    let output = cmd.output()?;
+    if !output.status.success() {
+        return Err(crate::error::hook_failed(
+            output.status,
+            format!(
+                "serialcap evidence failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            ),
+        )
+        .target(target)
+        .channel("serial")
+        .into());
+    }
+    Ok(serde_json::from_slice(&output.stdout)?)
+}
 
 /// Default daemon port: 0 = OS-assigned. The discovery file carries the actual
 /// port and every consumer reads it, so a fixed default buys nothing and
