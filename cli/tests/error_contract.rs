@@ -128,6 +128,58 @@ fn missing_channel_is_not_configured() {
 }
 
 #[test]
+fn missing_netboot_root_is_not_configured_without_touching_runtime_or_lab() {
+    for (name, root) in [
+        ("no_tftp_root", ""),
+        ("empty_tftp_root", "tftp_root = \"\"\n"),
+    ] {
+        let lab = format!(
+            "[hosts.control]\nssh = \"local\"\n\
+             [targets.dut]\n\
+             [targets.dut.netboot]\nhost = \"control\"\n\
+             interface = \"test-netboot-interface\"\n{root}"
+        );
+        let dir = scratch(name, &lab);
+        let out = paniolo(&dir, true, &["netboot", "tftp-root", "dut"]);
+        assert_eq!(out.status.code(), Some(3), "{out:?}");
+        assert!(out.stdout.is_empty(), "{out:?}");
+        let e = error_object(&out);
+        assert_eq!(e["kind"], "not_configured");
+        assert_eq!(e["code"], 3);
+        assert_eq!(e["target"], "dut");
+        assert_eq!(e["channel"], "netboot");
+        assert_eq!(e["host"], "control");
+        assert!(e["child_exit"].is_null());
+        assert!(e["message"]
+            .as_str()
+            .unwrap()
+            .contains("--tftp-root <path>"));
+
+        // A read-only preflight must flag this before probing the interface.
+        let out = paniolo(&dir, true, &["doctor", "dut"]);
+        assert_eq!(out.status.code(), Some(1), "{out:?}");
+        let report = String::from_utf8_lossy(&out.stdout);
+        assert!(report.contains("dut\tnetboot\t@control\tMISSING\tno tftp_root configured"));
+        assert_eq!(std::fs::read_to_string(dir.join("lab.toml")).unwrap(), lab);
+        assert_eq!(std::fs::read_dir(dir.join("run")).unwrap().count(), 0);
+    }
+}
+
+#[test]
+fn configured_netboot_root_prints_bare_path_without_starting_a_service() {
+    let dir = scratch(
+        "configured_tftp_root",
+        "[targets.dut.netboot]\ninterface = \"test-netboot-interface\"\n\
+         tftp_root = \"/srv/tftp/dut\"\n",
+    );
+    let out = paniolo(&dir, true, &["netboot", "tftp-root", "-t", "dut"]);
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    assert_eq!(out.stdout, b"/srv/tftp/dut\n");
+    assert!(out.stderr.is_empty(), "{out:?}");
+    assert_eq!(std::fs::read_dir(dir.join("run")).unwrap().count(), 0);
+}
+
+#[test]
 fn missing_serial_interface_is_not_configured() {
     expect(
         "no_iface",

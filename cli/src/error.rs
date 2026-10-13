@@ -26,7 +26,8 @@ Exit status:
   0    success
   1    negative answer only (doctor found problems); no error exits 1
   2    usage             bad flags or arguments
-  3    not_configured    no lab, or unknown target/channel/interface/host;
+  3    not_configured    no lab, unknown target/channel/interface/host or missing
+                         required channel configuration;
                          a hook or helper missing or not executable
   4    unreachable       control host not reachable over SSH
   22   timeout           no answer within a deadline; outcome unknown
@@ -45,7 +46,8 @@ pub enum Kind {
     /// Bad flags or arguments. Clap reports most of these itself.
     Usage,
     /// No lab file, an invalid one, or an unknown target, channel, interface
-    /// or host; a hook or helper that is missing or not executable.
+    /// or host; missing required channel configuration; a hook or helper
+    /// that is missing or not executable.
     NotConfigured,
     /// A control host that cannot be reached (paniolo does not probe device
     /// nodes itself; the daemons report those).

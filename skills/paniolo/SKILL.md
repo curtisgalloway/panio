@@ -58,7 +58,7 @@ text. `paniolo --help` prints the table.
 |---|---|---|
 | 1 | — | Only `doctor`: it found problems (not an error) |
 | 2 | `usage` | Fix the command line (`<cmd> --help`) |
-| 3 | `not_configured` | Wrong target/channel/interface name, or a hook/helper missing. Don't retry; check `paniolo config show`, and don't edit the lab to fix it — report it |
+| 3 | `not_configured` | Wrong target/channel/interface name, required configuration missing, or a hook/helper missing. Don't retry; check `paniolo config show`, and don't edit the lab to fix it — report it |
 | 4 | `unreachable` | The control host did not answer over SSH; the command may or may not have run |
 | 22 | `timeout` | Outcome unknown: check state (`power-state`, `serial log`, `video shot`) before repeating a power cycle or other mutation |
 | 100 | `daemon_down` | Start the daemon (`serial watch`, `video watch`); `paniolo daemons` lists what is running |
@@ -239,6 +239,11 @@ paniolo netboot stop [target]
 pi5`) — and both at once is refused. Omit it when the lab has one target. The
 *config* verbs (`set`, `add`, `rm`) require `-t` and do not take a positional.
 `paniolo doctor [target]` is positional-only: with no target it checks them all.
+
+An unset or empty `tftp_root` makes `tftp-root`, `start`, and `netif mode netboot`
+exit 3 (`not_configured`), with target/channel/host in the JSON error.
+`doctor` flags it as `MISSING` and exits 1 before probing the interface. Report
+the missing configuration; these commands never fill it in or create a directory.
 
 `start` refuses an interface that carries the system default route (a primary
 NIC) — the netboot link must be a dedicated USB-Ethernet adapter — and refuses

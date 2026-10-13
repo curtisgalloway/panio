@@ -165,7 +165,7 @@ enum Command {
         #[command(flatten)]
         target: TargetArg,
     },
-    /// Probe configured channels against reality over SSH (config vs hardware).
+    /// Check required configuration and probe channels against reality over SSH.
     Doctor {
         /// Target to check (default: all).
         target: Option<String>,
@@ -664,7 +664,7 @@ enum NetbootCmd {
         #[arg(long, short)]
         follow: bool,
     },
-    /// Print the target's TFTP root path.
+    /// Print the target's TFTP root path (exit 3 if no root is configured).
     TftpRoot {
         #[command(flatten)]
         target: TargetArg,
@@ -4070,19 +4070,15 @@ fn netboot_cmd(lab_flag: Option<&str>, cmd: NetbootCmd) -> Result<()> {
             Ok(())
         }
         NetbootCmd::Start { target } => {
+            let runtime = netboot_runtime(lab_flag, target.name())?;
+            let root = runtime.require_tftp_root()?.to_string();
             let NetbootRuntime {
                 target,
                 interface: iface,
                 host_ip,
-                tftp_root,
                 boot,
-            } = netboot_runtime(lab_flag, target.name())?;
-            let root = tftp_root.ok_or_else(|| {
-                anyhow!(
-                    "no tftp_root configured \
-                     (paniolo netboot set -t {target} --tftp-root <path>)"
-                )
-            })?;
+                ..
+            } = runtime;
             netboot::start(&target, &iface, &host_ip, &root, &boot)?;
             println!("netboot started for '{target}' on {iface} ({host_ip}, tftp {root}).");
             Ok(())
@@ -4129,14 +4125,9 @@ fn netboot_cmd(lab_flag: Option<&str>, cmd: NetbootCmd) -> Result<()> {
             cmd_netboot_logs(&target, tail, follow)
         }
         NetbootCmd::TftpRoot { target } => {
-            let NetbootRuntime { tftp_root, .. } = netboot_runtime(lab_flag, target.name())?;
-            match tftp_root {
-                Some(r) => {
-                    println!("{r}");
-                    Ok(())
-                }
-                None => bail!("no tftp_root configured"),
-            }
+            let runtime = netboot_runtime(lab_flag, target.name())?;
+            println!("{}", runtime.require_tftp_root()?);
+            Ok(())
         }
         NetbootCmd::Devices => {
             let ifaces = netif::list_usb_ethernet_interfaces();
@@ -4159,10 +4150,33 @@ fn netboot_cmd(lab_flag: Option<&str>, cmd: NetbootCmd) -> Result<()> {
 /// The resolved local netboot channel for a runtime command.
 struct NetbootRuntime {
     target: String,
+    host: String,
     interface: String,
     host_ip: String,
     tftp_root: Option<String>,
     boot: netboot::BootOptions,
+}
+
+impl NetbootRuntime {
+    /// Read required configuration before any interface or daemon operation.
+    fn require_tftp_root(&self) -> Result<&str> {
+        self.tftp_root
+            .as_deref()
+            .filter(|root| !root.is_empty())
+            .ok_or_else(|| {
+                error::channel_missing(
+                    &self.target,
+                    "netboot",
+                    format!(
+                        "no tftp_root configured \
+                         (paniolo netboot set -t {} --tftp-root <path>)",
+                        self.target
+                    ),
+                )
+                .host(&self.host)
+                .into()
+            })
+    }
 }
 
 /// Common preamble for netboot/netif runtime commands: resolve, dispatch to the
@@ -4211,6 +4225,7 @@ fn netboot_runtime(lab_flag: Option<&str>, target: Option<&str>) -> Result<Netbo
     })?;
     Ok(NetbootRuntime {
         target,
+        host: nb.host.unwrap_or(dh),
         interface,
         host_ip,
         tftp_root: nb.tftp_root,
@@ -4321,25 +4336,29 @@ fn netif_cmd(lab_flag: Option<&str>, cmd: NetifCmd) -> Result<()> {
                     netif::MODES.join(", ")
                 );
             }
+            let runtime = netboot_runtime(lab_flag, target.name())?;
             let NetbootRuntime {
                 target,
                 interface: iface,
                 host_ip,
-                tftp_root,
                 boot,
-            } = netboot_runtime(lab_flag, target.name())?;
+                ..
+            } = &runtime;
             match mode.as_str() {
                 "netboot" => {
-                    let root = tftp_root.clone().ok_or_else(|| {
-                        anyhow!("no tftp_root configured — netboot mode needs one")
-                    })?;
-                    netif::mode_netboot(&target, &iface, &host_ip, &root, &boot)?;
+                    netif::mode_netboot(
+                        target,
+                        iface,
+                        host_ip,
+                        runtime.require_tftp_root()?,
+                        boot,
+                    )?;
                 }
-                "link" => netif::mode_link(&target, &iface, &host_ip)?,
-                "ffx" => netif::mode_ffx(&target, &iface)?,
-                _ => netif::mode_off(&target, &iface, &host_ip)?,
+                "link" => netif::mode_link(target, iface, host_ip)?,
+                "ffx" => netif::mode_ffx(target, iface)?,
+                _ => netif::mode_off(target, iface, host_ip)?,
             }
-            print_netif_status(&target, &iface, &host_ip);
+            print_netif_status(target, iface, host_ip);
             Ok(())
         }
         NetifCmd::DownHard { target } => {

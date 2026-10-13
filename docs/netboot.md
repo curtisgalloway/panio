@@ -245,6 +245,13 @@ TFTP_ROOT=$(ssh control-mac "paniolo netboot tftp-root target-machine")
 scp kernel_2712.img control-mac:"${TFTP_ROOT}/kernel_2712.img"
 ```
 
+An unset or empty `tftp_root` exits **3** (`not_configured`), with the target,
+netboot channel, and channel host in the JSON error context. `netboot start`
+and `netif mode netboot` reject the same missing configuration before touching
+the interface or starting a daemon. `paniolo doctor [target]` reports it as
+`MISSING` and exits **1**; these checks never create a directory or edit the lab.
+Set the path explicitly with `paniolo netboot set -t <target> --tftp-root <dir>`.
+
 ---
 
 ## Expected TFTP sequence for Raspberry Pi 5

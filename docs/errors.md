@@ -19,7 +19,7 @@ program's status ([below](#passthrough-commands)).
 | 0 | — | Success. |
 | 1 | — | The command ran and the answer is "no": `doctor` found problems. No other paniolo command exits 1 (a [passthrough](#passthrough-commands) may, for its program), and **no error exits 1**. |
 | 2 | `usage` | Bad flags or arguments. |
-| 3 | `not_configured` | No lab file, an invalid one, or an unknown target, channel, interface or host; a hook or helper missing or not executable. Retrying will not help. |
+| 3 | `not_configured` | No lab file, an invalid one, or an unknown target, channel, interface or host; a required channel field missing (such as `tftp_root`); a hook or helper missing or not executable. Retrying will not help. |
 | 4 | `unreachable` | SSH to the control host failed. The command may not have run, or may have been killed part way. |
 | 22 | `timeout` | No answer within a deadline (daemon startup, a daemon request, an SSH port forward). The outcome is unknown: check state before repeating a change such as a power cycle. |
 | 100 | `daemon_down` | The channel's daemon is not running and the command needs it, or its record is stale. Start it with `paniolo serial watch` or `paniolo video watch`; `paniolo daemons` lists what is running. |
