@@ -104,6 +104,11 @@ Python (zigpy-znp). Any language works if it installs an executable into the
 libexec dir (`~/.local/libexec/paniolo/bin`). Helpers stay off PATH; run one
 by hand with `paniolo helper <name> …`.
 
+For a helper's own help, use `paniolo helper -- shellyplug --help`. Put the
+`--` separator before the helper name; otherwise `--help` shows paniolo's
+outer helper-command help. This is a way to discover a bundled helper's
+commands without opening hardware or starting its daemon.
+
 Take state and temp paths from `PANIOLO_STATE_DIR`/`PANIOLO_RUNTIME_DIR` (§1);
 zigplug's `default_db_path()` and `runtime_dir()` are the reference
 implementations, including lazy migration from a pre-API path.

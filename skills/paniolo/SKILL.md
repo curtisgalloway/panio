@@ -99,6 +99,13 @@ lists or runs one directly. If a different `paniolo` shadows the CLI on PATH
 `~/.cargo/bin` first or remove the other copy; `make install` warns when it
 detects a shadow.
 
+Discover installed helpers with `paniolo helper`. To read a helper's own
+help, put `--` before its name: `paniolo helper -- serialcap --help`.
+`paniolo helper --help` and `paniolo helper serialcap --help` show paniolo's
+outer command help instead. Listing helpers and reading a bundled helper's
+help do not open hardware or start a daemon; use these to discover its
+commands before invoking one.
+
 ## Bounded fresh serial acquisition
 
 Use `paniolo serial wait <target> [-i console] --epoch E --since N` (MCP:
@@ -919,6 +926,9 @@ the device is free just because a daemon is gone from the tracked list.
   (e.g. a Homebrew keg from the tap can shadow it). The helper binaries are
   *not* on PATH — they live in `~/.local/libexec/paniolo/bin`
   (`paniolo helper <name> …` to run one by hand).
+- Helper help needs the separator before the name:
+  `paniolo helper -- serialcap --help`. Without it, `--help` shows paniolo's
+  outer helper-command help.
 - `paniolo console` auto-starts the video daemon, and the serial daemon when
   the target has a serial channel (a KVM-only target opens as video + input,
   with no terminal pane), if they aren't running, and hands
