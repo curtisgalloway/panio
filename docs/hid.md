@@ -157,6 +157,9 @@ paniolo hid set -t pi5 --cmd "hidrig -d /dev/cu.usbmodemXXXX"
 # Channel on a remote control host
 paniolo hid set -t pi5 --cmd "hidrig -d /dev/ttyACM1" --host bench1
 
+# A fixed port for the hid daemon (0 clears; see dashboard.md "Fixed ports")
+paniolo hid set -t pi5 --cmd "hidrig -d /dev/ttyACM1" --port 8725
+
 # Remove the channel
 paniolo hid rm -t pi5
 ```

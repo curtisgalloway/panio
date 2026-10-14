@@ -239,6 +239,10 @@ pub struct SerialChannel {
     #[serde(default)]
     pub power_button: bool,
     pub host: Option<String>,
+    /// Fixed port for the target's serialcap daemon, which owns every
+    /// interface — so set it on any one interface; two interfaces naming
+    /// different ports is a validation error. Unset or 0 = OS-assigned.
+    pub port: Option<u16>,
 }
 
 #[derive(Debug, Default, Clone, Deserialize)]
@@ -280,6 +284,10 @@ pub struct VideoChannel {
     /// (16); 0 means exact: any differing pixel changes the hash. Measured
     /// noise on an unchanged H.264 (network KVM) screen was at most 8 levels.
     pub change_threshold: Option<u8>,
+    /// Fixed port for the hdmicap daemon, so a standing `ssh -L` (or
+    /// `LocalForward`) reaches the dashboard across restarts. Unset or 0 =
+    /// OS-assigned, which avoids collisions with stale tunnels.
+    pub port: Option<u16>,
 }
 
 /// USB HID input injection: an opaque helper command (e.g. `hidrig -d <uart>`)
@@ -289,6 +297,9 @@ pub struct VideoChannel {
 pub struct HidChannel {
     pub cmd: Option<String>,
     pub host: Option<String>,
+    /// Fixed port for the hid daemon (`<cmd> serve --port N`). Unset or 0 =
+    /// OS-assigned.
+    pub port: Option<u16>,
 }
 
 /// adb transport to an Android target (DUT). The device is named by its
@@ -336,6 +347,22 @@ impl Target {
     pub fn default_host(&self) -> &str {
         self.host.as_deref().unwrap_or(LOCAL)
     }
+
+    /// The serialcap daemon's fixed port: the first interface that sets a
+    /// nonzero `port` ([`validate`] refuses interfaces that disagree), else 0
+    /// (OS-assigned).
+    pub fn serial_port(&self) -> u16 {
+        self.serial
+            .iter()
+            .filter_map(|s| s.port)
+            .find(|p| *p != 0)
+            .unwrap_or(0)
+    }
+}
+
+/// A channel's fixed daemon port, 0 (OS-assigned) when unset.
+pub fn fixed_port(port: Option<u16>) -> u16 {
+    port.unwrap_or(0)
 }
 
 #[derive(Debug, Default, Clone, Deserialize)]
@@ -458,6 +485,7 @@ impl Lab {
             if s.power_button {
                 f.push(("power_button", "true".to_string()));
             }
+            push_opt(&mut f, "port", &s.port.map(|n| n.to_string()));
             channels.push(ResolvedChannel {
                 kind: ChannelKind::Serial,
                 name: s.name.clone(),
@@ -488,6 +516,7 @@ impl Lab {
                 "change_threshold",
                 &v.change_threshold.map(|n| n.to_string()),
             );
+            push_opt(&mut f, "port", &v.port.map(|n| n.to_string()));
             channels.push(ResolvedChannel {
                 kind: ChannelKind::Video,
                 name: "video".into(),
@@ -498,6 +527,7 @@ impl Lab {
         if let Some(h) = &t.hid {
             let mut f = Vec::new();
             push_opt(&mut f, "cmd", &h.cmd);
+            push_opt(&mut f, "port", &h.port.map(|n| n.to_string()));
             channels.push(ResolvedChannel {
                 kind: ChannelKind::Hid,
                 name: "hid".into(),
@@ -793,6 +823,49 @@ pub fn validate(lab: &Lab) -> Result<(), LabError> {
                 &declared,
                 &format!("target '{name}' serial '{}'", s.name),
             )?;
+        }
+        let serial_ports: BTreeSet<u16> = t
+            .serial
+            .iter()
+            .filter_map(|s| s.port)
+            .filter(|p| *p != 0)
+            .collect();
+        if serial_ports.len() > 1 {
+            return lab_err(format!(
+                "target '{name}': serial interfaces name different ports {serial_ports:?}, \
+                 but one serialcap daemon serves them all; set one port"
+            ));
+        }
+    }
+    check_fixed_ports(lab)
+}
+
+/// Two daemons on one host cannot listen on the same fixed port: refuse a lab
+/// where the video, serial or hid ports of any targets collide on a host.
+fn check_fixed_ports(lab: &Lab) -> Result<(), LabError> {
+    let mut claimed: BTreeMap<(String, u16), String> = BTreeMap::new();
+    for (name, t) in &lab.targets {
+        let dh = t.default_host();
+        let mut claims: Vec<(&str, &str, u16)> = Vec::new();
+        if let Some(v) = &t.video {
+            claims.push(("video", v.host.as_deref().unwrap_or(dh), fixed_port(v.port)));
+        }
+        if let Some(h) = &t.hid {
+            claims.push(("hid", h.host.as_deref().unwrap_or(dh), fixed_port(h.port)));
+        }
+        if let Some(s) = t.serial.iter().find(|s| s.port.is_some_and(|p| p != 0)) {
+            claims.push(("serial", s.host.as_deref().unwrap_or(dh), t.serial_port()));
+        }
+        for (kind, host, port) in claims {
+            if port == 0 {
+                continue;
+            }
+            let who = format!("target '{name}' {kind}");
+            if let Some(prev) = claimed.insert((host.to_string(), port), who.clone()) {
+                return lab_err(format!(
+                    "{who} and {prev} both use port {port} on host '{host}'"
+                ));
+            }
         }
     }
     Ok(())
@@ -1103,6 +1176,54 @@ mod tests {
             parse("[targets.t.usb]\ncmd = \"ch9329 -d /dev/x\"\nhost = \"ghost\"\n").unwrap_err();
         assert!(e.0.contains("target 't' usb"), "{}", e.0);
         assert!(e.0.contains("unknown host 'ghost'"), "{}", e.0);
+    }
+
+    #[test]
+    fn fixed_ports_parse_and_resolve() {
+        let lab = parse(
+            "[targets.t.video]\ndevice = \"cap\"\nport = 8723\n\
+             [targets.t.hid]\ncmd = \"hidrig\"\nport = 8725\n\
+             [[targets.t.serial]]\nname = \"a\"\ndevice = \"/da\"\n\
+             [[targets.t.serial]]\nname = \"b\"\ndevice = \"/db\"\nport = 8724\n",
+        )
+        .unwrap();
+        let t = &lab.targets["t"];
+        assert_eq!(fixed_port(t.video.as_ref().unwrap().port), 8723);
+        assert_eq!(fixed_port(t.hid.as_ref().unwrap().port), 8725);
+        // Set on one interface, it is the daemon's port.
+        assert_eq!(t.serial_port(), 8724);
+        // Unset means OS-assigned.
+        let lab = parse("[targets.u.video]\ndevice = \"cap\"\n").unwrap();
+        assert_eq!(fixed_port(lab.targets["u"].video.as_ref().unwrap().port), 0);
+        assert_eq!(lab.targets["u"].serial_port(), 0);
+    }
+
+    #[test]
+    fn validate_rejects_serial_interfaces_with_different_ports() {
+        let e = parse(
+            "[[targets.t.serial]]\nname = \"a\"\ndevice = \"/da\"\nport = 1\n\
+             [[targets.t.serial]]\nname = \"b\"\ndevice = \"/db\"\nport = 2\n",
+        )
+        .unwrap_err();
+        assert!(e.0.contains("different ports"), "{}", e.0);
+    }
+
+    #[test]
+    fn validate_rejects_a_port_claimed_twice_on_one_host() {
+        // Two targets' daemons on the same host.
+        let e = parse(
+            "[targets.a.video]\ndevice = \"x\"\nport = 9000\n\
+             [targets.b.hid]\ncmd = \"h\"\nport = 9000\n",
+        )
+        .unwrap_err();
+        assert!(e.0.contains("both use port 9000"), "{}", e.0);
+        // The same port on different hosts is fine.
+        parse(
+            "[hosts.h1]\nssh = \"h1\"\n[hosts.h2]\nssh = \"h2\"\n\
+             [targets.a]\nhost = \"h1\"\n[targets.a.video]\ndevice = \"x\"\nport = 9000\n\
+             [targets.b]\nhost = \"h2\"\n[targets.b.video]\ndevice = \"x\"\nport = 9000\n",
+        )
+        .unwrap();
     }
 
     #[test]

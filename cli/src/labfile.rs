@@ -262,6 +262,7 @@ impl LabFile {
         sense: Option<&str>,
         power_button: bool,
         host: Option<&str>,
+        port: Option<u16>,
     ) -> Result<(), LabError> {
         model::validate_name("serial interface", name)?;
         let t = self.target_mut(target)?;
@@ -287,6 +288,7 @@ impl LabFile {
             s.insert("power_button", value(true));
         }
         set_opt(&mut s, "host", host);
+        set_port(&mut s, port);
         aot.push(s);
         Ok(())
     }
@@ -301,6 +303,7 @@ impl LabFile {
         sense: Option<&str>,
         power_button: Option<bool>,
         host: Option<&str>,
+        port: Option<u16>,
     ) -> Result<(), LabError> {
         model::validate_name("serial interface", name)?;
         let t = self.target_mut(target)?;
@@ -329,6 +332,7 @@ impl LabFile {
             None => {}
         }
         set_opt(s, "host", host);
+        set_port(s, port);
         Ok(())
     }
 
@@ -454,20 +458,22 @@ impl LabFile {
         ocr_mode: Option<&str>,
         change_threshold: Option<u8>,
         host: Option<&str>,
+        port: Option<u16>,
     ) -> Result<(), LabError> {
         self.set_singleton(
             target,
             "video",
             &[("device", device), ("ocr_mode", ocr_mode), ("host", host)],
         )?;
+        let c = self
+            .target_mut(target)?
+            .get_mut("video")
+            .and_then(|i| i.as_table_mut())
+            .ok_or_else(|| LabError(format!("target '{target}': video is not a table")))?;
         if let Some(n) = change_threshold {
-            let c = self
-                .target_mut(target)?
-                .get_mut("video")
-                .and_then(|i| i.as_table_mut())
-                .ok_or_else(|| LabError(format!("target '{target}': video is not a table")))?;
             c.insert("change_threshold", value(i64::from(n)));
         }
+        set_port(c, port);
         Ok(())
     }
 
@@ -480,8 +486,16 @@ impl LabFile {
         target: &str,
         cmd: Option<&str>,
         host: Option<&str>,
+        port: Option<u16>,
     ) -> Result<(), LabError> {
-        self.set_singleton(target, "hid", &[("cmd", cmd), ("host", host)])
+        self.set_singleton(target, "hid", &[("cmd", cmd), ("host", host)])?;
+        let c = self
+            .target_mut(target)?
+            .get_mut("hid")
+            .and_then(|i| i.as_table_mut())
+            .ok_or_else(|| LabError(format!("target '{target}': hid is not a table")))?;
+        set_port(c, port);
+        Ok(())
     }
 
     pub fn remove_hid(&mut self, target: &str) -> Result<(), LabError> {
@@ -561,6 +575,20 @@ fn super_table<'a>(doc: &'a mut DocumentMut, key: &str) -> Result<&'a mut Table,
 }
 
 /// Set a key when the value is present; leave it untouched otherwise.
+/// A daemon `port`: `Some(0)` drops the key (back to OS-assigned), another
+/// `Some` sets it, `None` leaves it unchanged.
+fn set_port(t: &mut Table, port: Option<u16>) {
+    match port {
+        Some(0) => {
+            t.remove("port");
+        }
+        Some(p) => {
+            t.insert("port", value(i64::from(p)));
+        }
+        None => {}
+    }
+}
+
 fn set_opt(t: &mut Table, key: &str, v: Option<&str>) {
     if let Some(val) = v {
         t.insert(key, value(val));
@@ -618,6 +646,7 @@ mod tests {
             None,
             false,
             None,
+            None,
         )
         .unwrap();
         lf.add_serial(
@@ -627,6 +656,7 @@ mod tests {
             9600,
             Some("cts"),
             false,
+            None,
             None,
         )
         .unwrap();
@@ -723,10 +753,10 @@ mod tests {
         let (_d, path) = tmp();
         let mut lf = LabFile::create(&path);
         lf.add_target("t", None, None).unwrap();
-        lf.add_serial("t", "console", "/dev/a", 115200, None, false, None)
+        lf.add_serial("t", "console", "/dev/a", 115200, None, false, None, None)
             .unwrap();
         let e = lf
-            .add_serial("t", "console", "/dev/b", 115200, None, false, None)
+            .add_serial("t", "console", "/dev/b", 115200, None, false, None, None)
             .unwrap_err();
         assert!(e.0.contains("already exists"), "{}", e.0);
     }
@@ -788,7 +818,7 @@ mod tests {
         let (_d, path) = tmp();
         let mut lf = LabFile::create(&path);
         lf.add_target("t", None, None).unwrap();
-        lf.set_hid("t", Some("hidrig -d /dev/cu.usbserial-AB12"), None)
+        lf.set_hid("t", Some("hidrig -d /dev/cu.usbserial-AB12"), None, None)
             .unwrap();
         lf.save().unwrap();
         let lab = model::load(&path).unwrap();
@@ -842,7 +872,7 @@ mod tests {
         let (_d, path) = tmp();
         let mut lf = LabFile::create(&path);
         lf.add_target("t", None, None).unwrap();
-        lf.add_serial("t", "console", "/dev/a", 115200, None, false, None)
+        lf.add_serial("t", "console", "/dev/a", 115200, None, false, None, None)
             .unwrap();
         lf.remove_serial("t", "console").unwrap();
         lf.save().unwrap();
@@ -855,7 +885,7 @@ mod tests {
         let (_d, path) = tmp();
         let mut lf = LabFile::create(&path);
         lf.add_target("t", None, None).unwrap();
-        lf.set_video("t", Some("/dev/video0"), Some("gui"), None, None)
+        lf.set_video("t", Some("/dev/video0"), Some("gui"), None, None, None)
             .unwrap();
         lf.save().unwrap();
         let v = model::load(&path).unwrap().targets["t"]
@@ -865,7 +895,7 @@ mod tests {
         assert_eq!(v.device.as_deref(), Some("/dev/video0"));
         assert_eq!(v.ocr_mode.as_deref(), Some("gui"));
         // Changing only the device leaves the mode alone.
-        lf.set_video("t", Some("/dev/video1"), None, None, None)
+        lf.set_video("t", Some("/dev/video1"), None, None, None, None)
             .unwrap();
         lf.save().unwrap();
         let v = model::load(&path).unwrap().targets["t"]
@@ -875,7 +905,8 @@ mod tests {
         assert_eq!(v.device.as_deref(), Some("/dev/video1"));
         assert_eq!(v.ocr_mode.as_deref(), Some("gui"));
         // An unknown mode is refused at save, like any other bad field.
-        lf.set_video("t", None, Some("fast"), None, None).unwrap();
+        lf.set_video("t", None, Some("fast"), None, None, None)
+            .unwrap();
         assert!(lf.save().unwrap_err().0.contains("invalid ocr_mode 'fast'"));
     }
 
@@ -965,7 +996,7 @@ mod tests {
         .unwrap();
         let mut lf = LabFile::load(&path).unwrap();
         let e = lf
-            .set_video("t", Some("/dev/video0"), None, None, None)
+            .set_video("t", Some("/dev/video0"), None, None, None, None)
             .unwrap_err();
         assert!(
             e.0.contains("`targets.t` is not a standard table"),
@@ -974,7 +1005,7 @@ mod tests {
         );
         assert!(e.0.contains("[targets.t]"), "{}", e.0);
         // A sibling written the standard way is still editable.
-        lf.set_video("plain", Some("/dev/video0"), None, None, None)
+        lf.set_video("plain", Some("/dev/video0"), None, None, None, None)
             .unwrap();
         // And a whole inline `targets` is reported at that level.
         std::fs::write(&path, "targets = { t = { } }\n").unwrap();
@@ -1001,7 +1032,7 @@ mod tests {
         let e = lf.rename_target("ok", "not ok").unwrap_err();
         assert!(e.0.starts_with("invalid target name 'not ok'"), "{}", e.0);
         let e = lf
-            .add_serial("ok", "con sole", "/dev/a", 115200, None, false, None)
+            .add_serial("ok", "con sole", "/dev/a", 115200, None, false, None, None)
             .unwrap_err();
         assert!(
             e.0.starts_with("invalid serial interface name 'con sole'"),
@@ -1029,7 +1060,7 @@ mod tests {
             .unwrap();
         let e = lf.save().unwrap_err();
         assert!(e.0.contains("power.serial_interface 'console'"), "{}", e.0);
-        lf.add_serial("t", "console", "/dev/a", 115200, None, false, None)
+        lf.add_serial("t", "console", "/dev/a", 115200, None, false, None, None)
             .unwrap();
         lf.save().unwrap();
         lf.remove_serial("t", "console").unwrap();
@@ -1129,6 +1160,36 @@ mod tests {
         lf.save().unwrap();
     }
 
+    /// `--port N` writes the key, a later edit without it keeps it, and
+    /// `--port 0` drops it back to OS-assigned — on video, hid and serial.
+    #[test]
+    fn port_round_trips_and_zero_clears_it() {
+        let (_d, path) = tmp();
+        std::fs::write(&path, "[targets.t]\n").unwrap();
+        let mut lf = LabFile::load(&path).unwrap();
+        lf.set_video("t", Some("cap"), None, None, None, Some(8723))
+            .unwrap();
+        lf.set_hid("t", Some("hidrig"), None, Some(8725)).unwrap();
+        lf.add_serial("t", "c", "/dev/x", 115200, None, false, None, Some(8724))
+            .unwrap();
+        lf.save().unwrap();
+        let t = model::load(&path).unwrap().targets["t"].clone();
+        assert_eq!(t.video.as_ref().unwrap().port, Some(8723));
+        assert_eq!(t.hid.as_ref().unwrap().port, Some(8725));
+        assert_eq!(t.serial_port(), 8724);
+
+        lf.set_video("t", Some("cap2"), None, None, None, None)
+            .unwrap();
+        lf.update_serial("t", "c", None, None, None, None, None, Some(0))
+            .unwrap();
+        lf.set_hid("t", Some("hidrig"), None, Some(0)).unwrap();
+        lf.save().unwrap();
+        let t = model::load(&path).unwrap().targets["t"].clone();
+        assert_eq!(t.video.as_ref().unwrap().port, Some(8723), "kept");
+        assert_eq!(t.hid.as_ref().unwrap().port, None, "cleared");
+        assert_eq!(t.serial_port(), 0, "cleared");
+    }
+
     #[test]
     fn set_video_round_trips_change_threshold_and_keeps_comments() {
         let (_d, path) = tmp();
@@ -1138,7 +1199,7 @@ mod tests {
         )
         .unwrap();
         let mut lf = LabFile::load(&path).unwrap();
-        lf.set_video("t", None, None, Some(0), None).unwrap();
+        lf.set_video("t", None, None, Some(0), None, None).unwrap();
         lf.save().unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("# the capture dongle"), "{text}");
@@ -1151,7 +1212,7 @@ mod tests {
         assert_eq!(v.change_threshold, Some(0));
         assert_eq!(v.device.as_deref(), Some("/dev/video0"));
         // Leaving it out of a later edit keeps it.
-        lf.set_video("t", Some("/dev/video1"), None, None, None)
+        lf.set_video("t", Some("/dev/video1"), None, None, None, None)
             .unwrap();
         lf.save().unwrap();
         let v = model::load(&path).unwrap().targets["t"]

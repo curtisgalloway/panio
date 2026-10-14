@@ -123,6 +123,10 @@ paniolo video show  [target-machine]   # show daemon address and status
 `watch` starts `hdmicap daemon` detached and prints its address. To open the
 dashboard, run `paniolo video preview`.
 
+The port is OS-assigned unless the lab pins one (`video set --port N`;
+`video watch --port N` overrides it for one start). See
+[Fixed ports](dashboard.md#fixed-ports).
+
 ### The token and the dashboard URL
 
 **Every request to the daemon needs its token**, from `token` in the

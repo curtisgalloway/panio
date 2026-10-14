@@ -362,6 +362,12 @@ Python tree below:
   Composites (`console`) require co-located channels.
 - **Daemons bind OS-assigned ports** (port 0) and are found via their
   `daemon.json` discovery files — fixed defaults collided with stale tunnels.
+  A lab file can pin one per channel (`port` on `video`, `hid`, and any one
+  `[[serial]]` interface; `--port` on `video set`/`hid set`/`serial add|set`,
+  0 clears) so a standing `ssh -L` reaches the dashboard across restarts.
+  Every start path honors it (`watch`, `console`, `daemons restart`, the hid
+  daemon's `serve --port N`), the dispatch slice carries it, and validation
+  refuses interfaces that disagree or two daemons claiming one port on a host.
 - **Daemon APIs are authenticated.** Each daemon (serialcap, hdmicap, hidrig,
   ch9329) generates a 32-byte token at start and publishes it as `token` in
   its discovery file, written owner-only (0600, temp file + rename). Every

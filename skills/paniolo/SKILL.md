@@ -181,13 +181,17 @@ Config lives in one CLI-managed **lab file** (`~/.config/paniolo/lab.toml`, or
 ```
 paniolo target add <name> [--host <labhost>] [--description <text>]
 paniolo netboot set -t <name> --interface <iface> [--tftp-root <dir>] [--host-ip <ip>] [--boot-file grubaa64.efi] [--http-port 80] [--content-type <mime>]
-paniolo serial add console -t <name> --device <path> [--baud 115200] [--sense cts] [--power-button]
+paniolo serial add console -t <name> --device <path> [--baud 115200] [--sense cts] [--power-button] [--port N]
 paniolo power set -t <name> [--cycle-cmd C] [--on-cmd C] [--off-cmd C] [--state-cmd C] [--serial-interface console]
-paniolo video set -t <name> --device "<capture id or name>" [--ocr-mode text|gui] [--change-threshold N]
-paniolo hid set -t <name> --cmd "hidrig -d <uart>"   # USB HID injection helper
+paniolo video set -t <name> --device "<capture id or name>" [--ocr-mode text|gui] [--change-threshold N] [--port N]
+paniolo hid set -t <name> --cmd "hidrig -d <uart>" [--port N]   # USB HID injection helper
 paniolo usb set -t <name> --cmd "ch9329 -d <uart>"   # switchable USB media (KVM-Go microSD)
 paniolo adb set -t <name> [--serial <adb-id>] [--adb <path>]  # an Android DUT over adb
 ```
+
+`--port N` pins a daemon's port (video, hid, and serialcap — set on any one
+serial interface) so a human's standing `ssh -L` keeps working across
+restarts; leave it unset unless asked, and `--port 0` clears it.
 
 Every channel-config command also takes `[--host <labhost>]` to bind that
 channel to a remote control host (see the lab section below).
@@ -348,7 +352,7 @@ passwordless `sudo` requirement as netboot (`ip` on Linux, `ifconfig` on macOS).
 
 ```
 paniolo video devices                 # list capture devices (with stable ids)
-paniolo video set -t <target> --device "<id-or-name>" [--ocr-mode text|gui] [--change-threshold N]  # configure the video channel
+paniolo video set -t <target> --device "<id-or-name>" [--ocr-mode text|gui] [--change-threshold N] [--port N]  # configure the video channel
                                            #   --ocr-mode gui is a Linux-only accuracy switch
                                            #   for GUI screens (unset = platform default)
                                            #   --device rfb+hid: = the RFB video feed of this target's own
