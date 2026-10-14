@@ -22,6 +22,28 @@ it carries each daemon's token (hdmicap's as `?token=`, the others inside
 out of pasted output. If no browser launches, it writes the full URL to a
 `0600` `dashboard-url.txt` in the target's runtime dir and prints that path.
 
+### Viewing from another machine over SSH
+
+When `console` runs inside an SSH session (`SSH_CONNECTION`, `SSH_CLIENT` or
+`SSH_TTY` is set), it does not launch a browser on the control host. It prints
+the command that forwards every dashboard port to your own machine, each to the
+same port number so the URL works unchanged:
+
+```text
+Running over SSH, so no browser was opened here. To view the dashboard from your own machine, run this there and keep it running:
+  ssh -N -L 41001:127.0.0.1:41001 -L 41002:127.0.0.1:41002 bench1
+```
+
+The daemons accept only a loopback `Host` and `Origin`, which a tunnel to
+`127.0.0.1` satisfies. The URL itself goes to the `0600` file, with an
+`ssh bench1 cat …` line to fetch it. `--print-url` prints it instead; the
+output is then a credential in your scrollback. `--open` launches a browser
+on the control host anyway.
+
+To get the URL again after the dashboard is open, rerun
+`paniolo console <target> --print-url`: the daemons are already running, so it
+only rebuilds the URL from their discovery files.
+
 The page shows one terminal pane per serialcap interface. To pin one
 interface (single-pane mode):
 

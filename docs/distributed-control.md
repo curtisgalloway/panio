@@ -199,7 +199,10 @@ no changes to hdmicap or serialcap.
 
 That URL carries bearer tokens, so `paniolo console` hands it to the browser and
 prints only `http://127.0.0.1:<local-hdmi>`. `paniolo video preview` prints the
-openable video URL; `--open` skips printing it.
+openable video URL; `--open` skips printing it. Run inside an SSH session,
+`console` opens no browser and prints an `ssh -N -L …` command that forwards
+the tunnels' local ports onward ([dashboard.md](dashboard.md#viewing-from-another-machine-over-ssh));
+`--print-url` prints the URL itself.
 
 Having hdmicap reverse-proxy serialcap was rejected: it needs a cross-host
 connection, which principle 1 rules out.
