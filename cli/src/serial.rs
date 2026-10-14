@@ -413,6 +413,7 @@ mod tests {
             baud: 115200,
             power_sense_signal: sense.map(String::from),
             power_button: false,
+            port: None,
             host: None,
         }
     }

@@ -29,6 +29,10 @@ paniolo serial set console -t target-machine --sense cts
 # Optional: declare this interface's DTR line is wired to the J2 power button,
 # which enables `serial dtr` / `serial reset` on it (opt-in; see power.md)
 paniolo serial set console -t target-machine --power-button
+
+# Optional: a fixed port for this target's serialcap daemon (set on any one
+# interface; 0 clears). See dashboard.md "Fixed ports".
+paniolo serial set console -t target-machine --port 8724
 ```
 
 A target can have several named interfaces (e.g. `console`, `bmc`). Remove

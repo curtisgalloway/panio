@@ -71,6 +71,7 @@ pub fn build_slice(lab: &Lab, target: &str, host: &str) -> Result<String, LabErr
                 s.power_sense_signal.as_deref(),
                 s.power_button,
                 None,
+                s.port,
             )?;
         }
     }
@@ -95,12 +96,13 @@ pub fn build_slice(lab: &Lab, target: &str, host: &str) -> Result<String, LabErr
                 v.ocr_mode.as_deref(),
                 v.change_threshold,
                 None,
+                v.port,
             )?;
         }
     }
     if let Some(h) = &t.hid {
         if on(&h.host) {
-            lf.set_hid(target, h.cmd.as_deref(), None)?;
+            lf.set_hid(target, h.cmd.as_deref(), None, h.port)?;
         }
     }
     if let Some(a) = &t.adb {
@@ -620,16 +622,19 @@ mod tests {
             [[targets.fortune.serial]]
             name = "console"
             device = "/dev/ttyUSB0"
+            port = 8724
             [targets.fortune.video]
             device = "/dev/video0"
             ocr_mode = "gui"
             change_threshold = 4
+            port = 8723
             host = "bench2"
             [targets.fortune.usb]
             cmd = "ch9329 -d /dev/ttyUSB1"
             [targets.fortune.hid]
             cmd = "ch9329 -d /dev/ttyUSB1"
             host = "bench2"
+            port = 8725
             "#,
         )
         .unwrap()
@@ -688,6 +693,21 @@ mod tests {
         let reparsed = model::parse(&s).unwrap();
         let v = reparsed.targets["fortune"].video.as_ref().unwrap();
         assert_eq!(v.change_threshold, Some(4));
+    }
+
+    /// Fixed daemon ports have to reach the control host, which is where the
+    /// daemons start; a dropped one silently reverts to OS-assigned.
+    #[test]
+    fn slice_carries_fixed_daemon_ports() {
+        let s = build_slice(&lab(), "fortune", "bench2").unwrap();
+        let t = &model::parse(&s).unwrap().targets["fortune"];
+        assert_eq!(t.video.as_ref().unwrap().port, Some(8723));
+        assert_eq!(t.hid.as_ref().unwrap().port, Some(8725));
+        let s = build_slice(&lab(), "fortune", "bench1").unwrap();
+        assert_eq!(
+            model::parse(&s).unwrap().targets["fortune"].serial_port(),
+            8724
+        );
     }
 
     #[test]

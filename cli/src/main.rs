@@ -417,6 +417,10 @@ enum SerialCmd {
         power_button: bool,
         #[arg(long)]
         host: Option<String>,
+        /// Fixed port for the target's serialcap daemon (it serves every
+        /// interface, so set it on one). 0 or unset = OS-assigned.
+        #[arg(long)]
+        port: Option<u16>,
     },
     /// Update an existing serial interface (only the options you pass change).
     Set {
@@ -435,6 +439,10 @@ enum SerialCmd {
         power_button: Option<bool>,
         #[arg(long)]
         host: Option<String>,
+        /// Fixed port for the target's serialcap daemon; 0 clears it
+        /// (OS-assigned). Takes effect when the daemon next starts.
+        #[arg(long)]
+        port: Option<u16>,
     },
     /// Remove a named serial interface from a target.
     Rm {
@@ -758,6 +766,10 @@ enum HidCmd {
         cmd: String,
         #[arg(long)]
         host: Option<String>,
+        /// Fixed port for the hid daemon (`<cmd> serve --port N`); 0 clears
+        /// it (OS-assigned). Takes effect when the daemon next starts.
+        #[arg(long)]
+        port: Option<u16>,
     },
     /// Remove the target's hid channel.
     Rm {
@@ -917,6 +929,11 @@ enum VideoCmd {
         change_threshold: Option<u8>,
         #[arg(long)]
         host: Option<String>,
+        /// Fixed port for the hdmicap daemon, so a standing `ssh -L` reaches
+        /// the dashboard across restarts; 0 clears it (OS-assigned). Takes
+        /// effect when the daemon next starts (`video watch --restart`).
+        #[arg(long)]
+        port: Option<u16>,
     },
     /// Remove the target's video channel.
     Rm {
@@ -1578,6 +1595,13 @@ fn restart_capture_daemon(lab: &Lab, name: &str, target: &str) -> Result<String>
         bail!("'{name}' is not a restartable capture daemon");
     };
 
+    // A fixed port from the lab survives the restart; unset stays OS-assigned.
+    let t = lab.targets.get(target);
+    let serial_port = t.map_or(0, model::Target::serial_port);
+    let video_port = t
+        .and_then(|t| t.video.as_ref())
+        .map_or(0, |v| model::fixed_port(v.port));
+
     let replaced = stop_capture_daemon_and_wait(name, target)?;
 
     let hid_input = match &start {
@@ -1585,10 +1609,10 @@ fn restart_capture_daemon(lab: &Lab, name: &str, target: &str) -> Result<String>
         Start::Serial(_) => None,
     };
     let mut child = match start {
-        Start::Serial(serials) => serial::start_daemon(&serials, 0, target)?,
+        Start::Serial(serials) => serial::start_daemon(&serials, serial_port, target)?,
         Start::Video(device, mode, threshold) => video::start_daemon(
             &device,
-            0,
+            video_port,
             target,
             mode.as_deref(),
             threshold,
@@ -2274,6 +2298,7 @@ fn serial_cmd(lab_flag: Option<&str>, cmd: SerialCmd) -> Result<()> {
             sense,
             power_button,
             host,
+            port,
         } => {
             let sense = normalize_sense(sense.as_deref())?;
             edit_lab(lab_flag, |lf| {
@@ -2285,6 +2310,7 @@ fn serial_cmd(lab_flag: Option<&str>, cmd: SerialCmd) -> Result<()> {
                     sense.as_deref(),
                     power_button,
                     host.as_deref(),
+                    port,
                 )
             })?;
             println!("Serial '{name}' added to '{target}': {device} @ {baud}");
@@ -2298,6 +2324,7 @@ fn serial_cmd(lab_flag: Option<&str>, cmd: SerialCmd) -> Result<()> {
             sense,
             power_button,
             host,
+            port,
         } => {
             let sense = match sense.as_deref() {
                 None => None,
@@ -2318,6 +2345,7 @@ fn serial_cmd(lab_flag: Option<&str>, cmd: SerialCmd) -> Result<()> {
                     sense.as_deref(),
                     power_button,
                     host.as_deref(),
+                    port,
                 )
             })?;
             println!("Serial '{name}' updated on '{target}'.");
@@ -2886,7 +2914,7 @@ fn cmd_console(
         eprintln!("Starting video daemon…");
         let mut child = video::start_daemon(
             &device,
-            0,
+            model::fixed_port(v.port),
             &target,
             v.ocr_mode.as_deref(),
             v.change_threshold,
@@ -2917,7 +2945,11 @@ fn cmd_console(
             .into());
         }
         eprintln!("Starting serial daemon…");
-        let mut child = serial::start_daemon(&serials, 0, &target)?;
+        let port = lab
+            .targets
+            .get(&target)
+            .map_or(0, model::Target::serial_port);
+        let mut child = serial::start_daemon(&serials, port, &target)?;
         daemons::wait_for_daemon(
             serial::DAEMON,
             Some(&target),
@@ -3514,6 +3546,16 @@ fn cmd_serial_watch(lab_flag: Option<&str>, target: Option<&str>, port: u16) -> 
             reap_untracked(&orphan)?;
         }
     }
+    // `--port` wins; without it, the lab's fixed port (or OS-assigned).
+    let port = if port != 0 {
+        port
+    } else {
+        serials
+            .iter()
+            .filter_map(|s| s.port)
+            .find(|p| *p != 0)
+            .unwrap_or(0)
+    };
     let mut child = serial::start_daemon(&serials, port, &target)?;
     let names: Vec<&str> = serials.iter().map(|s| s.name.as_str()).collect();
     eprintln!(
@@ -3768,6 +3810,7 @@ fn video_cmd(lab_flag: Option<&str>, cmd: VideoCmd) -> Result<()> {
             ocr_mode,
             change_threshold,
             host,
+            port,
         } => {
             edit_lab(lab_flag, |lf| {
                 lf.set_video(
@@ -3776,6 +3819,7 @@ fn video_cmd(lab_flag: Option<&str>, cmd: VideoCmd) -> Result<()> {
                     ocr_mode.as_deref(),
                     change_threshold,
                     host.as_deref(),
+                    port,
                 )
             })?;
             println!("video channel set for '{target}'.");
@@ -3834,6 +3878,12 @@ fn video_cmd(lab_flag: Option<&str>, cmd: VideoCmd) -> Result<()> {
             }
             let hid_input = ensure_video_source(&load_for_read(lab_flag)?, &target, &device)?;
             eprintln!("Starting video daemon for '{target}' ('{device}')…");
+            // `--port` wins; without it, the lab's fixed port (or OS-assigned).
+            let port = if port != 0 {
+                port
+            } else {
+                model::fixed_port(v.port)
+            };
             let mut child = video::start_daemon(
                 &device,
                 port,
@@ -4464,9 +4514,14 @@ fn power_cmd(lab_flag: Option<&str>, cmd: PowerCmd) -> Result<()> {
 
 fn hid_cmd(lab_flag: Option<&str>, cmd: HidCmd) -> Result<()> {
     match cmd {
-        HidCmd::Set { target, cmd, host } => {
+        HidCmd::Set {
+            target,
+            cmd,
+            host,
+            port,
+        } => {
             edit_lab(lab_flag, |lf| {
-                lf.set_hid(&target, Some(&cmd), host.as_deref())
+                lf.set_hid(&target, Some(&cmd), host.as_deref(), port)
             })?;
             println!("hid channel set for '{target}'.");
             Ok(())
@@ -4628,7 +4683,9 @@ fn ensure_hid_daemon_local(lab: &Lab, target: &str) -> Result<Option<daemons::En
     })?;
     eprintln!("Starting hid daemon for '{target}'…");
     let log = daemons::create_log(HID_DAEMON, Some(target))?;
-    let mut command = platform::shell_command(&exec_prefixed(&format!("{cmd} serve --port 0")));
+    let port = model::fixed_port(h.port);
+    let mut command =
+        platform::shell_command(&exec_prefixed(&format!("{cmd} serve --port {port}")));
     command
         .env("PATH", daemons::hook_path())
         // The hid daemon's discovery dir is the channel name ("hid"), not

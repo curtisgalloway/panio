@@ -29,6 +29,34 @@ interface (single-pane mode):
 paniolo console -i bmc
 ```
 
+### Fixed ports
+
+The daemons take a port from the OS on every start, so the dashboard's ports
+change. To reach it through a standing SSH forward instead, pin each daemon's
+port in the lab file:
+
+```bash
+paniolo video set -t target-machine --device <dev> --port 8723
+paniolo serial set console -t target-machine --port 8724
+paniolo hid set -t target-machine --cmd "<helper>" --port 8725
+```
+
+Then, on the machine you browse from, forward them permanently in
+`~/.ssh/config`:
+
+```text
+Host bench1
+  LocalForward 8723 127.0.0.1:8723
+  LocalForward 8724 127.0.0.1:8724
+  LocalForward 8725 127.0.0.1:8725
+```
+
+serialcap is one daemon for all of a target's interfaces, so set its port on
+any one interface; interfaces naming different ports are refused. Two daemons
+on one host cannot share a port, so validation refuses that too. `--port 0`
+clears a pin. A new port takes effect when the daemon next starts (`paniolo
+daemons restart <name>`, or `video watch --restart`).
+
 ---
 
 ## Features
