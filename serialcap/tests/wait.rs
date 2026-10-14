@@ -41,6 +41,11 @@ impl Fixture {
             while !stopping.load(Ordering::Relaxed) {
                 match listener.accept() {
                     Ok((mut socket, _)) => {
+                        // Winsock hands out accepted sockets in the listener's
+                        // nonblocking mode (Unix does not), so without this a
+                        // read on Windows can fail with WouldBlock before the
+                        // request arrives.
+                        socket.set_nonblocking(false).unwrap();
                         socket
                             .set_read_timeout(Some(Duration::from_secs(2)))
                             .unwrap();
@@ -98,7 +103,12 @@ impl Drop for Fixture {
     fn drop(&mut self) {
         self.stopped.store(true, Ordering::Relaxed);
         if let Some(server) = self.server.take() {
-            server.join().unwrap();
+            let joined = server.join();
+            // A second panic while the test body is already unwinding aborts
+            // the whole test binary and hides the first panic's message.
+            if !std::thread::panicking() {
+                joined.unwrap();
+            }
         }
         std::fs::remove_dir_all(&self.dir).ok();
     }
