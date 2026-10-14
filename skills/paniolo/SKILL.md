@@ -937,7 +937,11 @@ the device is free just because a daemon is gone from the tracked list.
   What `console` *prints* is the token-free address, because that line lands in
   your transcript — so do not paste it into a browser and expect the page to
   work. If no browser could be launched, `console` writes the full URL to a
-  `0600` file and prints that path — never the URL itself. A daemon left over from an older paniolo has no token —
+  `0600` file and prints that path — never the URL itself. Inside an SSH
+  session it opens no browser and prints an `ssh -N -L …` forwarding command
+  for the human to run on their own machine. **Never pass `--print-url`**: it
+  prints the token-bearing URL into your transcript; it is for a human at a
+  terminal. A daemon left over from an older paniolo has no token —
   a named `paniolo daemons restart` (unknown identity is excluded from `--stale`).
 - Netboot requires passwordless `sudo` (`ip` on Linux, `ifconfig` on macOS).
 - netboot and ffx are mutually exclusive on the link — use `paniolo netif mode`
