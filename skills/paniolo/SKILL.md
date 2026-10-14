@@ -65,6 +65,10 @@ text. `paniolo --help` prints the table.
 | 101 | `helper_failed` | The hook/helper/daemon ran and failed; its message (and its own code in `child_exit`) says why. On Windows a *missing* hook also lands here (`cmd.exe` exits 1 for it) |
 | 109 | `internal` | Unclassified; read the message |
 
+Piping into a reader that quits early (`| head`, `| grep -q`) exits 0; before
+0.9.1 it exited 101 with a "failed printing to stdout" panic, which is not a
+helper failure.
+
 For a machine-readable reason, set `PANIOLO_JSON_ERRORS=1` (or put
 `--json-errors` right after `paniolo`, before any trailing arguments: after
 `hid send …` or `adb run …` it is taken as part of the payload): the **last line of stderr** is then one JSON object,

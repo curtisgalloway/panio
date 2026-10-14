@@ -460,10 +460,74 @@ pub fn report(err: &anyhow::Error) -> i32 {
     e.kind.exit_code()
 }
 
+/// Make a closed stdout a quiet success instead of a panic.
+///
+/// Rust ignores SIGPIPE, so when the reader goes away early (`paniolo skill |
+/// head -1`, `| grep -q`) the next `println!` panics with "failed printing to
+/// stdout: Broken pipe" and the process exits 101, a status outside the
+/// contract. The reader has already taken what it wanted, so exit 0 silently,
+/// as ripgrep does. Restoring SIGPIPE's default action instead would also kill
+/// the process on a write to a dead ssh child or socket, which the code
+/// handles as an ordinary error today.
+pub fn exit_quietly_on_closed_stdout() {
+    let default = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        if is_closed_stdout_panic(info.payload()) {
+            std::process::exit(0);
+        }
+        default(info);
+    }));
+}
+
+/// Whether a panic payload is std's `println!` failure on a closed pipe.
+/// It is matched exactly against the message std builds from each OS error
+/// that means "the reader is gone", so any other stdout failure (a full disk)
+/// still panics loudly. The closed-pipe test in `tests/error_contract.rs`
+/// fails if a future std words this differently.
+fn is_closed_stdout_panic(payload: &(dyn std::any::Any + Send)) -> bool {
+    let Some(msg) = payload
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| payload.downcast_ref::<&str>().copied())
+    else {
+        return false;
+    };
+    #[cfg(unix)]
+    let codes = [libc::EPIPE];
+    // ERROR_NO_DATA ("the pipe is being closed") and ERROR_BROKEN_PIPE.
+    #[cfg(windows)]
+    let codes = [232, 109];
+    codes.iter().any(|&code| {
+        msg == format!(
+            "failed printing to stdout: {}",
+            std::io::Error::from_raw_os_error(code)
+        )
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use anyhow::Context;
+
+    #[test]
+    fn only_a_closed_stdout_panic_is_quiet() {
+        #[cfg(unix)]
+        let closed = std::io::Error::from_raw_os_error(libc::EPIPE);
+        #[cfg(windows)]
+        let closed = std::io::Error::from_raw_os_error(232);
+        let quiet = format!("failed printing to stdout: {closed}");
+        assert!(is_closed_stdout_panic(&quiet));
+        let full = format!(
+            "failed printing to stdout: {}",
+            std::io::Error::from(std::io::ErrorKind::StorageFull)
+        );
+        assert!(!is_closed_stdout_panic(&full));
+        let stderr = quiet.replace("stdout", "stderr");
+        assert!(!is_closed_stdout_panic(&stderr));
+        assert!(!is_closed_stdout_panic(&"some other panic"));
+        assert!(!is_closed_stdout_panic(&42_u32));
+    }
 
     #[test]
     fn codes_follow_the_bands() {

@@ -34,6 +34,11 @@ Bands: 2–9 will fail the same way again; 20s may succeed on retry; 100 and up
 are paniolo-specific. Nothing exits 125 or above except a
 [passthrough](#passthrough-commands).
 
+**A reader that stops early is not a failure.** When whatever reads
+paniolo's stdout closes it first (`paniolo skill | head -1`, `| grep -q`),
+paniolo stops writing and exits 0 without a message. Before 0.9.1 it panicked
+and exited 101, which read as `helper_failed`.
+
 A command re-run on a control host exits with the **remote** code (a missing
 channel on `bench1` is 3 locally too); only an SSH failure is reported locally,
 as 4.
