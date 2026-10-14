@@ -1023,6 +1023,7 @@ enum VideoCmd {
 }
 
 fn main() {
+    error::exit_quietly_on_closed_stdout();
     let args: Vec<std::ffi::OsString> = std::env::args_os().collect();
     let cli = match Cli::try_parse_from(&args) {
         Ok(cli) => cli,

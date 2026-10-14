@@ -647,3 +647,25 @@ fn serial_health_stopped_snapshot_is_read_only() {
     assert_eq!(std::fs::read_to_string(dir.join("lab.toml")).unwrap(), LAB);
     assert_eq!(std::fs::read_dir(dir.join("run")).unwrap().count(), 0);
 }
+
+/// A reader that leaves early (`paniolo … | head -1`) is a quiet success, not
+/// a panic and exit 101. The pipe's read end is closed before the child
+/// starts, so its first write fails every time rather than by timing.
+#[test]
+fn a_closed_stdout_exits_zero_without_a_panic() {
+    let dir = scratch("closed-stdout", LAB);
+    let (reader, writer) = std::io::pipe().unwrap();
+    drop(reader);
+    let out = Command::new(env!("CARGO_BIN_EXE_paniolo"))
+        .arg("--lab")
+        .arg(dir.join("lab.toml"))
+        .args(["config", "path"])
+        .env("PANIOLO_RUNTIME_BASE", dir.join("run"))
+        .stdout(writer)
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!stderr.contains("panicked"), "{stderr}");
+    assert_eq!(out.status.code(), Some(0), "{stderr}");
+}
