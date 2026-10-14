@@ -148,12 +148,25 @@ enum Command {
         cmd: AdbCmd,
     },
     /// Open the combined video+serial dashboard, starting daemons if needed.
+    ///
+    /// Inside an SSH session (SSH_CONNECTION, SSH_CLIENT or SSH_TTY set) no
+    /// browser is launched on this machine: instead it prints the `ssh -N -L`
+    /// command that forwards every dashboard port to your own machine, and
+    /// writes the token-bearing URL to a 0600 file (or prints it with
+    /// `--print-url`).
     Console {
         #[command(flatten)]
         target: TargetArg,
         /// Serial interface name to preselect in the dashboard terminal.
         #[arg(long, short)]
         interface: Option<String>,
+        /// Launch a browser on this machine even inside an SSH session.
+        #[arg(long)]
+        open: bool,
+        /// Print the dashboard URL, token included. Treat the output as a
+        /// credential: it lands in your terminal's scrollback.
+        #[arg(long)]
+        print_url: bool,
     },
     /// Run the target's configured power-cycle command.
     PowerCycle {
@@ -1046,9 +1059,17 @@ fn run(cli: Cli) -> Result<()> {
         Command::Hid { cmd } => hid_cmd(lab_flag, cmd),
         Command::Usb { cmd } => usb_cmd(lab_flag, cmd),
         Command::Adb { cmd } => adb_cmd(lab_flag, cmd),
-        Command::Console { target, interface } => {
-            cmd_console(lab_flag, target.name(), interface.as_deref())
-        }
+        Command::Console {
+            target,
+            interface,
+            open,
+            print_url,
+        } => cmd_console(
+            lab_flag,
+            target.name(),
+            interface.as_deref(),
+            ConsoleView { open, print_url },
+        ),
         Command::PowerCycle { target } => cmd_power_cycle(lab_flag, target.name()),
         Command::PowerState { target } => cmd_power_state(lab_flag, target.name()),
         Command::Doctor { target, host } => {
@@ -2829,6 +2850,104 @@ fn write_private_url(target: &str, url: &str) -> Result<std::path::PathBuf> {
     Ok(path)
 }
 
+/// `console`'s two output switches (`--open`, `--print-url`).
+#[derive(Debug, Clone, Copy, Default)]
+struct ConsoleView {
+    open: bool,
+    print_url: bool,
+}
+
+/// Whether this process runs inside an SSH session, judged from the variables
+/// sshd sets. `get` is the environment lookup, so a test can supply one.
+///
+/// A browser launched here would open on the control host's display (or fail
+/// there), not in front of the person who typed the command — they are on the
+/// far end of the SSH connection.
+fn in_ssh_session(get: impl Fn(&str) -> Option<String>) -> bool {
+    ["SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY"]
+        .iter()
+        .any(|k| get(k).is_some_and(|v| !v.is_empty()))
+}
+
+/// This machine's name as `hostname` reports it, for the `ssh -L` hint.
+fn local_hostname() -> Option<String> {
+    let out = std::process::Command::new("hostname").output().ok()?;
+    let name = String::from_utf8(out.stdout).ok()?.trim().to_string();
+    (out.status.success() && !name.is_empty()).then_some(name)
+}
+
+/// The command that makes the dashboard reachable from the SSH client's own
+/// machine: one `-L` per port the dashboard URL names, each forwarded to the
+/// same port number so the URL works unchanged. The daemons accept only a
+/// loopback `Host` and `Origin`, which `127.0.0.1:<port>` on the far end of a
+/// tunnel satisfies.
+fn ssh_forward_hint(host: &str, ports: &[u16]) -> String {
+    let forwards: Vec<String> = ports
+        .iter()
+        .map(|p| format!("-L {p}:127.0.0.1:{p}"))
+        .collect();
+    format!(
+        "Running over SSH, so no browser was opened here. To view the dashboard \
+         from your own machine, run this there and keep it running:\n  \
+         ssh -N {} {host}",
+        forwards.join(" ")
+    )
+}
+
+/// Where to find the URL when it was neither opened nor printed: the 0600 file,
+/// fetched across the SSH connection.
+fn console_url_over_ssh(target: &str, host: &str, url: &str) -> String {
+    match write_private_url(target, url) {
+        Ok(path) => format!(
+            "The dashboard URL carries the daemons' tokens, so it is in {} (mode 0600) \
+             rather than printed. Fetch it from your machine with:\n  \
+             ssh {host} cat {}\nor rerun with --print-url.",
+            path.display(),
+            path.display()
+        ),
+        Err(e) => format!(
+            "Could not write the dashboard URL to a private file ({e}). Open this \
+             yourself — it carries the daemons' tokens, so treat it as a credential:\n{url}"
+        ),
+    }
+}
+
+/// Hand the dashboard to the reader: a browser here, unless this is an SSH
+/// session (or the launch fails), in which case the `ssh -L` hint and the URL
+/// (printed with `--print-url`, otherwise in a 0600 file).
+fn show_console(
+    target: &str,
+    video: &daemons::Endpoint,
+    url: &str,
+    ports: &[u16],
+    view: ConsoleView,
+) {
+    let over_ssh = !view.open && in_ssh_session(|k| std::env::var(k).ok());
+    if !over_ssh && open_in_browser(url) {
+        println!("{}", console_banner(video, url != video.base_url()));
+        if view.print_url {
+            println!("{url}");
+        }
+        return;
+    }
+    if !over_ssh {
+        // The launch itself failed on a machine with no SSH session.
+        if view.print_url {
+            println!("Could not launch a browser. Dashboard URL:\n{url}");
+        } else {
+            println!("{}", console_fallback(target, url));
+        }
+        return;
+    }
+    let host = local_hostname().unwrap_or_else(|| "<control-host>".to_string());
+    println!("{}", ssh_forward_hint(&host, ports));
+    if view.print_url {
+        println!("Then open:\n{url}");
+    } else {
+        println!("{}", console_url_over_ssh(target, &host, url));
+    }
+}
+
 /// Hand `url` to the OS opener. Returns whether the opener could be launched
 /// at all — false on a headless host, in a container, or anywhere `xdg-open`
 /// is not installed.
@@ -2888,6 +3007,7 @@ fn cmd_console(
     lab_flag: Option<&str>,
     target: Option<&str>,
     interface: Option<&str>,
+    view: ConsoleView,
 ) -> Result<()> {
     let lab = load_for_read(lab_flag)?;
     let target = resolve_single_target(&lab, target)?;
@@ -2897,7 +3017,7 @@ fn cmd_console(
     let (host_name, has_serial) = console_host(&rt, interface)?;
     let host = lab.host(&host_name);
     if !host.is_local(&host_name) {
-        return remote_console(&lab, &target, &host_name, interface, has_serial);
+        return remote_console(&lab, &target, &host_name, interface, has_serial, view);
     }
 
     // Local: ensure both daemons (OS-assigned ports; discovery finds them).
@@ -2982,12 +3102,18 @@ fn cmd_console(
         )
         .target(&target)
     })?;
-    let serial_ws = if has_serial {
-        serial::daemon(&target).map(|d| d.ws_url("/stream"))
+    let serial = if has_serial {
+        serial::daemon(&target)
     } else {
         None
     };
-    let hid_ws = hid.map(|d| d.ws_url("/hid"));
+    let serial_ws = serial.as_ref().map(|d| d.ws_url("/stream"));
+    let hid_ws = hid.as_ref().map(|d| d.ws_url("/hid"));
+    let ports: Vec<u16> = [Some(&video), serial.as_ref(), hid.as_ref()]
+        .into_iter()
+        .flatten()
+        .map(|d| d.port)
+        .collect();
     let url = dashboard_url(
         &video,
         &DashboardLinks {
@@ -2997,11 +3123,7 @@ fn cmd_console(
             video_only: !has_serial,
         },
     );
-    if open_in_browser(&url) {
-        println!("{}", console_banner(&video, url != video.base_url()));
-    } else {
-        println!("{}", console_fallback(&target, &url));
-    }
+    show_console(&target, &video, &url, &ports, view);
     Ok(())
 }
 
@@ -3011,6 +3133,7 @@ fn remote_console(
     host_name: &str,
     interface: Option<&str>,
     has_serial: bool,
+    view: ConsoleView,
 ) -> Result<()> {
     let host = lab.host(host_name);
     eprintln!("Starting daemons on {host_name}…");
@@ -3037,6 +3160,9 @@ fn remote_console(
         dispatch::remote_daemon_endpoint(&host, &daemons::runtime_rel("hdmicap", Some(target)))
             .ok_or_else(|| anyhow!("could not read the hdmicap daemon port on {host_name}"))?;
     let fwd_video = ssh::forward(&host, video.port)?;
+    // The local ends of every tunnel, for the `ssh -L` hint when this command
+    // itself runs inside an SSH session.
+    let mut ports = vec![fwd_video.local_port];
     // Through the tunnels the daemons answer on local ports; their tokens
     // travel unchanged.
     let video = daemons::Endpoint {
@@ -3052,6 +3178,7 @@ fn remote_console(
         )
         .ok_or_else(|| anyhow!("could not read the serialcap daemon port on {host_name}"))?;
         let fwd = ssh::forward(&host, serial.port)?;
+        ports.push(fwd.local_port);
         let serial = daemons::Endpoint {
             port: fwd.local_port,
             ..serial
@@ -3089,6 +3216,7 @@ fn remote_console(
                     ..ep
                 }
                 .ws_url("/hid");
+                ports.push(fwd.local_port);
                 _fwd_hid = Some(fwd);
                 url
             }),
@@ -3110,11 +3238,7 @@ fn remote_console(
             video_only: !has_serial,
         },
     );
-    if open_in_browser(&url) {
-        println!("{}", console_banner(&video, url != video.base_url()));
-    } else {
-        println!("{}", console_fallback(target, &url));
-    }
+    show_console(target, &video, &url, &ports, view);
     println!("Tunnels to {host_name} open. Press Ctrl-C to close.");
     loop {
         std::thread::sleep(std::time::Duration::from_secs(1));
@@ -5279,6 +5403,63 @@ mod tests {
     /// an address the reader cannot open would strand them, and over SSH the
     /// tunnels die with the command. It goes to a 0600 file rather than to
     /// stdout, so `console` prints no token under any circumstance.
+    /// Any one of the variables sshd sets marks an SSH session; an empty value
+    /// (a shell that cleared it with `SSH_TTY=`) does not.
+    #[test]
+    fn ssh_session_is_detected_from_sshd_variables() {
+        let env = |pairs: &'static [(&'static str, &'static str)]| {
+            move |k: &str| {
+                pairs
+                    .iter()
+                    .find(|(name, _)| *name == k)
+                    .map(|(_, v)| v.to_string())
+            }
+        };
+        assert!(!in_ssh_session(env(&[])));
+        assert!(in_ssh_session(env(&[("SSH_CONNECTION", "a 1 b 22")])));
+        assert!(in_ssh_session(env(&[("SSH_CLIENT", "a 1 22")])));
+        assert!(in_ssh_session(env(&[("SSH_TTY", "/dev/pts/3")])));
+        assert!(!in_ssh_session(env(&[("SSH_TTY", "")])));
+        assert!(!in_ssh_session(env(&[("DISPLAY", ":0")])));
+    }
+
+    /// Every port the dashboard URL names is forwarded to the same number, so
+    /// the URL works unchanged on the far end; no token appears in the hint.
+    #[test]
+    fn ssh_forward_hint_forwards_every_port_to_the_same_number() {
+        let hint = ssh_forward_hint("bench1", &[1000, 2000, 3000]);
+        assert!(
+            hint.contains(
+                "ssh -N -L 1000:127.0.0.1:1000 -L 2000:127.0.0.1:2000 \
+                 -L 3000:127.0.0.1:3000 bench1"
+            ),
+            "{hint}"
+        );
+        assert!(!hint.contains("token"), "{hint}");
+    }
+
+    /// Over SSH without --print-url the URL goes to the 0600 file, and the
+    /// message says how to fetch it across the connection — never the token.
+    #[test]
+    fn console_over_ssh_points_at_the_file_not_the_token() {
+        let dir = tempfile::tempdir().unwrap();
+        let _guard = crate::daemons::RUNTIME_BASE_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let prev = std::env::var_os("PANIOLO_RUNTIME_BASE");
+        // Safe: serialized by the lock above; restored below.
+        unsafe { std::env::set_var("PANIOLO_RUNTIME_BASE", dir.path()) };
+        let url = "http://127.0.0.1:1000/?token=s3cr3t";
+        let msg = console_url_over_ssh("dut", "bench1", url);
+        match prev {
+            Some(v) => unsafe { std::env::set_var("PANIOLO_RUNTIME_BASE", v) },
+            None => unsafe { std::env::remove_var("PANIOLO_RUNTIME_BASE") },
+        }
+        assert!(!msg.contains("s3cr3t"), "{msg}");
+        assert!(msg.contains("ssh bench1 cat "), "{msg}");
+        assert!(msg.contains("--print-url"), "{msg}");
+    }
+
     #[test]
     fn console_falls_back_to_a_private_file_not_the_terminal() {
         let dir = tempfile::tempdir().unwrap();

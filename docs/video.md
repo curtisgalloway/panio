@@ -148,6 +148,10 @@ dir and prints the **path**:
 xdg-open "$(cat /tmp/paniolo-1000/hdmicap/target-machine/dashboard-url.txt)"
 ```
 
+Inside an SSH session `console` opens no browser and prints an `ssh -N -L …`
+forwarding command instead; `--print-url` prints the URL, `--open` forces a
+launch. See [dashboard.md](dashboard.md#viewing-from-another-machine-over-ssh).
+
 ### Stopping safely
 
 `video stop` (and `hdmicap stop`) uses the authenticated `POST /stop` and
