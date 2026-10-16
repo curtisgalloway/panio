@@ -252,6 +252,45 @@ pub fn send_input(
         .map_err(|e| crate::error::daemon_request_failed(DAEMON, "serialcap /input", e).into())
 }
 
+/// Bounds for one `serial transact`.
+pub struct TransactOptions<'a> {
+    pub until: &'a str,
+    pub timeout_ms: u64,
+    pub max_bytes: u64,
+    pub pace_ms: u32,
+}
+
+/// Send `data` and wait for the reply through serialcap's `POST /transact`,
+/// which holds the interface's transaction lock for the whole exchange and
+/// records the receive boundary before writing. Returns the daemon's result
+/// JSON (the `serial wait` shape, plus `sent_bytes`).
+pub fn transact(
+    daemon: &daemons::Endpoint,
+    interface: &str,
+    data: &[u8],
+    options: &TransactOptions<'_>,
+) -> Result<serde_json::Value> {
+    let path = format!(
+        "/transact?interface={}&until={}&timeout_ms={}&max_bytes={}&pace_ms={}",
+        daemons::query_escape(interface),
+        daemons::query_escape(options.until),
+        options.timeout_ms,
+        options.max_bytes,
+        options.pace_ms
+    );
+    // The daemon's own deadline bounds the call; the HTTP timeout only has to
+    // outlast it (plus a paced write, which the deadline also covers).
+    let timeout_ms = options.timeout_ms + data.len() as u64 * options.pace_ms as u64 + 10_000;
+    let response = daemon
+        .post(&path)
+        .timeout(Duration::from_millis(timeout_ms))
+        .send_bytes(data)
+        .map_err(|e| crate::error::daemon_request_failed(DAEMON, "serialcap /transact", e))?;
+    response
+        .into_json()
+        .map_err(|e| anyhow::anyhow!("invalid serialcap /transact response: {e}"))
+}
+
 // ── interactive console ─────────────────────────────────────────────────────
 
 /// Replace this process with `tio` on the given device (never returns on
@@ -455,6 +494,43 @@ mod tests {
         let req = server.join().unwrap();
         assert!(
             req.starts_with("POST /input?interface=a%20b%26c HTTP/1.1"),
+            "{req}"
+        );
+    }
+
+    /// Interface and terminator both reach `/transact` percent-encoded, with
+    /// every bound spelled out, and the result JSON comes back as-is.
+    #[test]
+    fn transact_encodes_its_query_and_returns_the_result() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = crate::stubhttp::serve_one(
+            listener,
+            b"HTTP/1.1 200 OK\r\nContent-Length: 20\r\nConnection: close\r\n\r\n{\"status\":\"matched\"}",
+        );
+        let ep = daemons::Endpoint {
+            pid: 1,
+            port,
+            token: None,
+        };
+        let result = transact(
+            &ep,
+            "a b",
+            b"ls\r",
+            &TransactOptions {
+                until: "OK&x",
+                timeout_ms: 500,
+                max_bytes: 64,
+                pace_ms: 2,
+            },
+        )
+        .unwrap();
+        assert_eq!(result["status"], "matched");
+        let req = server.join().unwrap();
+        assert!(
+            req.starts_with(
+                "POST /transact?interface=a%20b&until=OK%26x&timeout_ms=500&max_bytes=64&pace_ms=2 HTTP/1.1"
+            ),
             "{req}"
         );
     }
