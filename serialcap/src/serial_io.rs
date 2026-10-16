@@ -213,9 +213,37 @@ pub struct SerialHandle {
     /// so input is refused rather than queued while a transaction holds the
     /// interface or waits for it, and concurrent plain inputs still coexist.
     txn: Arc<tokio::sync::RwLock<()>>,
+    /// Test-only: the capture thread processes each chunk under a shared
+    /// hold of this lock, so a test can stall the raw receive journal behind
+    /// the live receive cursor (see [`SerialHandle::hold_journal`]).
+    #[cfg(test)]
+    #[cfg_attr(not(unix), allow(dead_code))]
+    journal_gate: Arc<std::sync::RwLock<()>>,
 }
 
 impl SerialHandle {
+    /// Test-only: stall the capture thread (and so the raw receive journal)
+    /// until the returned guard is dropped. The supervisor keeps reading and
+    /// advancing `last_rx_seq`, which reproduces the window in which the live
+    /// cursor is ahead of the persisted journal.
+    ///
+    /// The lock is held on a thread of its own, so the guard is a plain value
+    /// a test can keep across `.await` points.
+    #[cfg(test)]
+    #[cfg_attr(not(unix), allow(dead_code))]
+    pub(crate) fn hold_journal(&self) -> JournalHold {
+        let gate = self.journal_gate.clone();
+        let (held_tx, held_rx) = stdmpsc::channel();
+        let (release, released) = stdmpsc::channel::<()>();
+        std::thread::spawn(move || {
+            let _held = gate.write().unwrap();
+            held_tx.send(()).unwrap();
+            let _ = released.recv();
+        });
+        held_rx.recv().unwrap();
+        JournalHold { _release: release }
+    }
+
     /// The scrollback snapshot and a live subscription for a new client, taken
     /// together under the ring lock so the two tile exactly: every chunk the
     /// supervisor publishes lands either in the snapshot or on the
@@ -300,6 +328,14 @@ impl SerialHandle {
     }
 }
 
+/// Test-only: keeps the capture thread stalled until dropped (see
+/// [`SerialHandle::hold_journal`]).
+#[cfg(test)]
+#[cfg_attr(not(unix), allow(dead_code))]
+pub(crate) struct JournalHold {
+    _release: stdmpsc::Sender<()>,
+}
+
 /// Spawn the supervisor for one interface on the current tokio runtime and return
 /// its handle. `capture_dir` / `buffer_lines` configure that interface's on-disk
 /// line log; its capture thread is started here and fed via a non-blocking channel.
@@ -321,7 +357,15 @@ pub fn spawn_interface(
         health: Health::default(),
     }));
 
-    let line_tx = spawn_capture(capture_dir.clone(), buffer_lines, status.clone());
+    #[cfg(test)]
+    let journal_gate = Arc::new(std::sync::RwLock::new(()));
+    let line_tx = spawn_capture(
+        capture_dir.clone(),
+        buffer_lines,
+        status.clone(),
+        #[cfg(test)]
+        journal_gate.clone(),
+    );
 
     tokio::spawn(supervisor(
         spec,
@@ -341,6 +385,8 @@ pub fn spawn_interface(
         dtr_tx,
         capture_dir: Arc::new(capture_dir),
         txn: Arc::new(tokio::sync::RwLock::new(())),
+        #[cfg(test)]
+        journal_gate,
     }
 }
 
@@ -355,6 +401,7 @@ fn spawn_capture(
     capture_dir: PathBuf,
     buffer_lines: u64,
     status: Arc<Mutex<Status>>,
+    #[cfg(test)] journal_gate: Arc<std::sync::RwLock<()>>,
 ) -> stdmpsc::Sender<CaptureChunk> {
     let (tx, rx) = stdmpsc::channel::<CaptureChunk>();
     std::thread::Builder::new()
@@ -374,6 +421,8 @@ fn spawn_capture(
                 };
                 match next {
                     Ok(chunk) => {
+                        #[cfg(test)]
+                        let _gate = journal_gate.read().unwrap();
                         log.ingest(&chunk.bytes);
                         if let Some(mut record) = chunk.received {
                             record.captured_at_ms = crate::capture::now_ms();
@@ -1147,6 +1196,7 @@ pub(crate) mod tests {
             dtr_tx: mpsc::channel(1).0,
             capture_dir: Arc::new(PathBuf::new()),
             txn: Default::default(),
+            journal_gate: Default::default(),
         };
 
         // Sample until enough verdicts are in; a lagged sample yields none, and
@@ -1380,6 +1430,7 @@ pub(crate) mod tests {
             dtr_tx,
             capture_dir: Arc::new(PathBuf::new()),
             txn: Default::default(),
+            journal_gate: Default::default(),
         };
         // _dtr_rx is held by the caller's scope only long enough to build the
         // handle; write_paced never touches the DTR path.
