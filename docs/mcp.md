@@ -58,11 +58,14 @@ server holds no state of its own, so restarting it loses nothing.
 | `serial_log` | `target`; `interface`; a window: `tail` (≤ 5000), `since`, `from`, `to` (sequence numbers) | Console lines `[time] #<seq> <text>`, as `paniolo serial log`; the last 200 when no window is given. |
 | `serial_send` | `target`; `text` (required); `interface`; `newline` (default true); `pace_ms` (≤ 10000) | Writes the text to the console, as `paniolo serial send`. |
 | `hid_send` | `target`; `command` (required): one HID command as an array of words, e.g. `["key", "ENTER"]` | Injects keyboard or mouse input, as `paniolo hid send`. |
+| `action_list` | `target` | JSON array of the target's named actions (name, description, requires_power, host), as `paniolo action list --json`. See [Named actions](actions.md). |
+| `action_run` | `target`; `name` (required) | Runs one named action, as `paniolo action run`. |
 | `power_state` | `target` | `on` or `off`, as `paniolo power-state`. |
 | `power_on`, `power_off`, `power_cycle` | `target` | Switches power, as `paniolo power on`/`off` and `paniolo power-cycle`. |
 
 Every tool but `target_list` needs `target`. The tools that change the target
-(`serial_send`, `hid_send`, `power_on`, `power_off`, `power_cycle`) are
+(`serial_send`, `hid_send`, `action_run`, `power_on`, `power_off`,
+`power_cycle`) are
 marked as such, so a harness that asks before side effects will ask.
 
 `video_shot` needs the target's video daemon to be running already

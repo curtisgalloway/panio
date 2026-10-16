@@ -533,6 +533,86 @@ impl LabFile {
         self.remove_singleton(target, "adb")
     }
 
+    /// Create or update the named action `name` (#299). `cmd` is required
+    /// when creating it. `requires_power` is `"on"`/`"off"`, or `"none"` to
+    /// clear it. `host` binds the whole actions table, like any channel. An
+    /// action written inline (`reset = { cmd = "…" }`) is edited in place.
+    #[allow(clippy::too_many_arguments)]
+    pub fn set_action(
+        &mut self,
+        target: &str,
+        name: &str,
+        cmd: Option<&str>,
+        description: Option<&str>,
+        requires_power: Option<&str>,
+        host: Option<&str>,
+    ) -> Result<(), LabError> {
+        model::validate_name("action", name)?;
+        if name == "host" {
+            return lab_err("'host' names the actions table's host; pick another action name");
+        }
+        self.set_singleton(target, "actions", &[("host", host)])?;
+        let acts = self
+            .target_mut(target)?
+            .get_mut("actions")
+            .and_then(|i| i.as_table_mut())
+            .ok_or_else(|| LabError(format!("target '{target}': actions is not a table")))?;
+        // Rendered as a bare `[…actions]` header only when it carries a host;
+        // otherwise only the `[…actions.<name>]` tables appear.
+        acts.set_implicit(!acts.contains_key("host"));
+        if !acts.contains_key(name) {
+            if cmd.is_none() {
+                return lab_err(format!(
+                    "target '{target}': new action '{name}' needs --cmd"
+                ));
+            }
+            acts.insert(name, Item::Table(Table::new()));
+        }
+        let a = acts
+            .get_mut(name)
+            .and_then(|i| i.as_table_like_mut())
+            .ok_or_else(|| {
+                LabError(format!("target '{target}': action '{name}' is not a table"))
+            })?;
+        for (k, v) in [("cmd", cmd), ("description", description)] {
+            if let Some(v) = v {
+                a.insert(k, value(v));
+            }
+        }
+        match requires_power {
+            Some("none") => {
+                a.remove("requires_power");
+            }
+            Some(rp) => {
+                a.insert("requires_power", value(rp));
+            }
+            None => {}
+        }
+        // An inserted key in an inline table inherits odd spacing (`"x" ,
+        // y`); re-space that one table. A standard table needs nothing.
+        if let Some(inline) = acts.get_mut(name).and_then(|i| i.as_inline_table_mut()) {
+            inline.fmt();
+        }
+        Ok(())
+    }
+
+    /// Remove the named action; the actions table goes too when it was the
+    /// last one, as `remove_serial` does for the last interface.
+    pub fn remove_action(&mut self, target: &str, name: &str) -> Result<(), LabError> {
+        let t = self.target_mut(target)?;
+        let acts = t
+            .get_mut("actions")
+            .and_then(|i| i.as_table_mut())
+            .ok_or_else(|| LabError(format!("target '{target}': no actions channel")))?;
+        if name == "host" || acts.remove(name).is_none() {
+            return lab_err(format!("target '{target}': no action '{name}'"));
+        }
+        if acts.iter().all(|(k, _)| k == "host") {
+            t.remove("actions");
+        }
+        Ok(())
+    }
+
     fn target_mut(&mut self, name: &str) -> Result<&mut Table, LabError> {
         let missing = || LabError(format!("no target '{name}'"));
         let targets = self
@@ -609,6 +689,79 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("lab.toml");
         (dir, path)
+    }
+
+    /// Actions (#299): create, update in place, clear requires_power, bind a
+    /// host, edit an inline-table action without rewriting it, and drop the
+    /// table with its last action.
+    #[test]
+    fn actions_round_trip() {
+        let (_d, path) = tmp();
+        std::fs::write(
+            &path,
+            "[hosts.bench1]\nssh = \"u@bench1\"\n\n[targets.pi5]\n\n\
+             [targets.pi5.actions]\n# hand comment\nrecovery = { cmd = \"boardctl mode recovery\" }\n",
+        )
+        .unwrap();
+        let mut lf = LabFile::load(&path).unwrap();
+        lf.set_action(
+            "pi5",
+            "boot-usb",
+            Some("boardctl boot usb"),
+            Some("Strap USB"),
+            Some("off"),
+            None,
+        )
+        .unwrap();
+        lf.set_action(
+            "pi5",
+            "recovery",
+            None,
+            Some("Reboot into recovery"),
+            None,
+            Some("bench1"),
+        )
+        .unwrap();
+        lf.save().unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("# hand comment"), "{text}");
+        assert!(
+            text.contains("recovery = { cmd = \"boardctl mode recovery\", description = \"Reboot into recovery\" }"),
+            "{text}"
+        );
+        let lab = model::load(&path).unwrap();
+        let acts = lab.targets["pi5"].actions.as_ref().unwrap();
+        assert_eq!(acts.host.as_deref(), Some("bench1"));
+        assert_eq!(
+            acts.actions["boot-usb"].requires_power.as_deref(),
+            Some("off")
+        );
+        assert_eq!(acts.actions["recovery"].cmd, "boardctl mode recovery");
+
+        let mut lf = LabFile::load(&path).unwrap();
+        lf.set_action("pi5", "boot-usb", None, None, Some("none"), None)
+            .unwrap();
+        assert!(lf
+            .set_action("pi5", "host", Some("x"), None, None, None)
+            .is_err());
+        assert!(lf.set_action("pi5", "new", None, None, None, None).is_err());
+        assert!(lf
+            .set_action("pi5", "-x", Some("x"), None, None, None)
+            .is_err());
+        lf.save().unwrap();
+        let lab = model::load(&path).unwrap();
+        assert_eq!(
+            lab.targets["pi5"].actions.as_ref().unwrap().actions["boot-usb"].requires_power,
+            None
+        );
+
+        let mut lf = LabFile::load(&path).unwrap();
+        lf.remove_action("pi5", "boot-usb").unwrap();
+        assert!(lf.remove_action("pi5", "host").is_err());
+        assert!(lf.remove_action("pi5", "boot-usb").is_err());
+        lf.remove_action("pi5", "recovery").unwrap();
+        lf.save().unwrap();
+        assert!(model::load(&path).unwrap().targets["pi5"].actions.is_none());
     }
 
     #[test]

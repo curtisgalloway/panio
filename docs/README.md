@@ -49,6 +49,7 @@ running, 101 hook failed, …); `--json-errors` adds a one-line JSON object. See
 | [Link mode](netif.md) | `paniolo netif` | Switch the link between `netboot`, `link`, `ffx`-over-IPv6 (host `fe80::1`), and `off`; `down-hard` forces a real carrier drop. |
 | [Serial](serial.md) | `paniolo serial` | `serialcap` daemon (JSONL log, immutable raw evidence, bounded fresh wait/follow, health snapshots and WebSocket terminal) and interactive `tio`. |
 | [Power](power.md) | `paniolo power on/off`, `power-cycle`, `power-state`, `serial dtr/reset` | DTR power button (J2) and shell-command hooks; helpers `cambrionix`, `zigplug`, `shellyplug`, `amt`. |
+| [Named actions](actions.md) | `paniolo action` | Reset lines, boot straps, recovery modes: named hook commands per target, with an optional power-state precondition. |
 | [Video](video.md) | `paniolo video` | `hdmicap` HDMI capture, or a network RFB source (JetKVM); on-device OCR. |
 | [Dashboard](dashboard.md) | `paniolo console` | Combined video + serial web UI. |
 | [Switchable USB media](usb.md) | `paniolo usb` | Switch a KVM-Go's microSD card between control host and target, as boot media. |

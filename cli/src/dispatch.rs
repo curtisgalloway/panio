@@ -115,6 +115,20 @@ pub fn build_slice(lab: &Lab, target: &str, host: &str) -> Result<String, LabErr
             lf.set_usb(target, u.cmd.as_deref(), None)?;
         }
     }
+    if let Some(acts) = &t.actions {
+        if on(&acts.host) {
+            for (name, a) in &acts.actions {
+                lf.set_action(
+                    target,
+                    name,
+                    Some(&a.cmd),
+                    a.description.as_deref(),
+                    a.requires_power.as_deref(),
+                    None,
+                )?;
+            }
+        }
+    }
     Ok(lf.doc.to_string())
 }
 
@@ -773,6 +787,39 @@ mod tests {
         assert_eq!(e.kind, crate::error::Kind::NotConfigured);
         assert!(e.to_string().contains("declared: bench1, bench2"), "{e}");
         assert_eq!(helper_host(&lab, None, None, None, None).unwrap(), "local");
+    }
+
+    /// The actions table rides in the slice for the host it is bound to, and
+    /// only that one.
+    #[test]
+    fn slice_carries_actions_to_their_host() {
+        let lab = model::parse(
+            r#"
+            [hosts.bench1]
+            ssh = "u@bench1"
+            [hosts.bench2]
+            ssh = "u@bench2"
+            [targets.pi5]
+            host = "bench1"
+            [targets.pi5.actions]
+            host = "bench2"
+            reset = { cmd = "boardctl reset", description = "Cold reset", requires_power = "on" }
+            "#,
+        )
+        .unwrap();
+        let on2 = model::parse(&build_slice(&lab, "pi5", "bench2").unwrap()).unwrap();
+        let acts = on2.targets["pi5"].actions.as_ref().unwrap();
+        assert_eq!(acts.host, None);
+        let reset = &acts.actions["reset"];
+        assert_eq!(reset.cmd, "boardctl reset");
+        assert_eq!(reset.description.as_deref(), Some("Cold reset"));
+        assert_eq!(reset.requires_power.as_deref(), Some("on"));
+        let on1 = model::parse(&build_slice(&lab, "pi5", "bench1").unwrap()).unwrap();
+        assert!(on1.targets["pi5"].actions.is_none());
+        assert_eq!(
+            helper_host(&lab, None, Some("pi5"), Some("actions"), None).unwrap(),
+            "bench2"
+        );
     }
 
     fn lab() -> Lab {

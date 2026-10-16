@@ -494,6 +494,34 @@ fn cli_call(tool: &str, args: &Value) -> Result<CliCall, String> {
             argv.extend(words);
             write(argv)
         }
+        "action_list" => read(vec![
+            s("action"),
+            s("list"),
+            s("-t"),
+            a.target()?,
+            s("--json"),
+        ]),
+        "action_run" => {
+            let target = a.target()?;
+            let name = args
+                .get("name")
+                .and_then(Value::as_str)
+                .filter(|n| !n.is_empty())
+                .ok_or(format!("{tool} needs name, a string"))?;
+            if name.starts_with('-') {
+                return Err(format!(
+                    "{tool}: name must not start with '-', got {name:?}"
+                ));
+            }
+            write(vec![
+                s("action"),
+                s("run"),
+                s("-t"),
+                target,
+                s("--"),
+                name.to_string(),
+            ])
+        }
         "power_state" => read(vec![s("power-state"), s("-t"), a.target()?]),
         "power_on" => write(vec![s("power"), s("on"), s("-t"), a.target()?]),
         "power_off" => write(vec![s("power"), s("off"), s("-t"), a.target()?]),
@@ -711,6 +739,27 @@ fn tool_list() -> Value {
                 `paniolo skill kvm-puppeting`.",
             "inputSchema": schema_requiring(&["command"], &[
                 ("command", json!({ "type": "array", "items": { "type": "string" }, "minItems": 1, "description": "The verb, then its arguments, one string each." })),
+            ]),
+            "annotations": { "readOnlyHint": false, "destructiveHint": true, "idempotentHint": false },
+        },
+        {
+            "name": "action_list",
+            "description": "List the target's named actions (reset, recovery, boot \
+                straps and other controls that are not power): each one's name, \
+                description, and requires_power (on or off) when it only runs in that \
+                power state. A target that defines reset usually means it should be \
+                preferred over power_cycle.",
+            "inputSchema": schema(&[]),
+            "annotations": { "readOnlyHint": true },
+        },
+        {
+            "name": "action_run",
+            "description": "Run one of the target's named actions, by the name \
+                action_list gives. An action marked requires_power is refused unless \
+                power_state matches. If the call fails with an unknown outcome, check \
+                the target's state before running it again.",
+            "inputSchema": schema_requiring(&["name"], &[
+                ("name", json!({ "type": "string", "description": "Action name, as listed by action_list." })),
             ]),
             "annotations": { "readOnlyHint": false, "destructiveHint": true, "idempotentHint": false },
         },
@@ -944,6 +993,8 @@ mod tests {
                 "serial_log",
                 "serial_send",
                 "hid_send",
+                "action_list",
+                "action_run",
                 "power_state",
                 "power_on",
                 "power_off",
@@ -967,6 +1018,7 @@ mod tests {
             let writes = [
                 "serial_send",
                 "hid_send",
+                "action_run",
                 "power_on",
                 "power_off",
                 "power_cycle",
@@ -1012,6 +1064,8 @@ mod tests {
                 "hid_send",
                 json!({ "target": "pi5", "command": ["type", "--help"] }),
             ),
+            ("action_list", json!({ "target": "pi5" })),
+            ("action_run", json!({ "target": "pi5", "name": "boot-usb" })),
             ("power_state", json!({ "target": "pi5" })),
             ("power_on", json!({ "target": "pi5" })),
             ("power_off", json!({ "target": "pi5" })),
@@ -1083,6 +1137,23 @@ mod tests {
             "4096"
         ])
         .is_ok());
+    }
+
+    #[test]
+    fn action_tools_map_to_the_action_commands() {
+        let list = cli_call("action_list", &json!({ "target": "pi5" })).unwrap();
+        assert!(!list.writes);
+        assert_eq!(list.argv, ["action", "list", "-t", "pi5", "--json"]);
+        let run = cli_call("action_run", &json!({ "target": "pi5", "name": "reset" })).unwrap();
+        assert!(run.writes);
+        assert_eq!(run.argv, ["action", "run", "-t", "pi5", "--", "reset"]);
+        // A name that reads as a flag (the hidden --power-checked) is refused.
+        let flag = cli_call(
+            "action_run",
+            &json!({ "target": "pi5", "name": "--power-checked" }),
+        );
+        assert!(flag.is_err());
+        assert!(cli_call("action_run", &json!({ "target": "pi5" })).is_err());
     }
 
     #[test]

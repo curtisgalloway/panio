@@ -105,6 +105,21 @@ impl Kind {
         }
     }
 
+    /// The kind a paniolo exit status reports, for a status read back from a
+    /// remote paniolo; `None` for a code no kind uses.
+    pub fn from_exit_code(code: i32) -> Option<Kind> {
+        Some(match code {
+            2 => Kind::Usage,
+            3 => Kind::NotConfigured,
+            4 => Kind::Unreachable,
+            22 => Kind::Timeout,
+            100 => Kind::DaemonDown,
+            101 => Kind::HelperFailed,
+            109 => Kind::Internal,
+            _ => return None,
+        })
+    }
+
     /// The `kind` string in the JSON object.
     pub fn as_str(self) -> &'static str {
         match self {

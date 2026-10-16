@@ -639,6 +639,31 @@ carried to a remote control host by paniolo's own dispatch, over the remote
 command's stdin, never its argv, and wins over the hook's file or command.
 See "Setting up the credential source" in `docs/power.md` for the patterns.
 
+## Named actions — reset, recovery, boot straps
+
+A target may define **named actions** for controls that are not power:
+
+```
+paniolo action list [-t target]          # name, description, (requires power on|off)
+paniolo action run -t <target> <name>    # run one; -t only, the positional is the name
+paniolo action set -t <target> <name> --cmd <cmd> [--description <text>] \
+    [--requires-power on|off|none] [--host <labhost>]
+paniolo action rm -t <target> <name>
+```
+
+- **Check `action list` before a power cycle.** If the target defines
+  `reset`, prefer it: it is gentler and often the only reset that clears a
+  wedged SoC without dropping attached debug hardware. `recovery` and
+  `warm-reset` are the other conventional names.
+- An action marked `requires_power off` is refused (exit 2, `usage`) while the
+  target is on. Run `paniolo power off` first; never edit the lab to drop the
+  requirement.
+- Action and power hooks for one target run one at a time; a hook that waits
+  more than 120 s for another fails with `timeout` (exit 22, outcome unknown).
+- Actions take no extra arguments. Each variant is its own action.
+
+Guide: `docs/actions.md`.
+
 ## Switchable USB media — hand a card between host and target
 
 Some KVM devices route one physical USB device to either side, never both.
@@ -766,7 +791,8 @@ paniolo skill paniolo --path   # the file path, to open or Read it
 If your harness has a `paniolo` MCP server configured (`paniolo mcp`), its
 tools are the runtime verbs above: `target_list`, `video_shot`, `video_read`,
 `serial_log`, `serial_send`, `hid_send` (`command` is an array of words, e.g.
-`["key", "ENTER"]`), `power_state`, `power_on`, `power_off`, `power_cycle`.
+`["key", "ENTER"]`), `action_list`, `action_run`, `power_state`, `power_on`,
+`power_off`, `power_cycle`.
 `video_shot` returns the screen as an image plus `signal=…  hash=…`; pass the
 hash back as `changed_since` to wait for a change, as with `video shot
 --changed-since`. Configuration (`set`, `add`, `watch`) is still the CLI. A
