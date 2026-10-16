@@ -434,6 +434,24 @@ Python tree below:
   `helper` reads no lab). A channel the target lacks is refused rather than
   falling back to the default host (#300). Listing helpers and reading
   bundled helper help do not open hardware or start a daemon.
+- **Plugin roots** (`PANIOLO_PLUGIN_PATH`, #303): a PATH-syntax list of
+  install prefixes (`std::env::split_paths`; empty entries skipped, relative
+  ones ignored with a one-time stderr warning — `daemons::parse_plugin_path`).
+  Each adds `<root>/libexec/paniolo/bin` (`daemons::plugin_helper_dirs`) and
+  `<root>/share/paniolo/skills`, searched **after** every bundled dir
+  (`daemons::all_helper_dirs`, `skills::search_path`), so a plugin adds but
+  never shadows a bundled helper or skill (#206's guarantee; no opt-in to
+  shadow). `find_binary` and `hook_path` include them; stray detection
+  (`list_stray_helpers`) deliberately does not. `paniolo helper`/`skill`
+  lists print a plugin entry as `<name>\tplugin: <root>` (name stays the
+  first field). The top-level `--plugin-path` flag (before the subcommand,
+  not `global`: it would collide with `host add/set --plugin-path`) sets the
+  variable in `main()` before anything runs; a host's lab `plugin_path`
+  rides on every re-exec there as `--plugin-path=<v>`
+  (`Host::paniolo_argv`), an argument so it crosses interactive dispatch and
+  a Windows host. `doctor` prints a `plugins` line per root (local env, and
+  each remote host's lab field) and its remote hook probes add the plugin
+  dirs (`doctor::hook_path_prefix`).
 - **Bundled skills are self-describing**: the agent skills under `skills/`
   (`paniolo`, `kvm-puppeting`, `control-host`) install to
   `~/.local/share/paniolo/skills` (and `/usr/share/paniolo/skills` for the
@@ -563,8 +581,10 @@ cli/src/
   ssh.rs        SSH transport: ControlMaster run/passthrough/interactive, forward
                 (tunnels); FORWARDED_ENV + stdin_prelude carry an allowlisted var
                 (AMT_PASSWORD) to a non-interactive remote command over its stdin
-  daemons.rs    shared daemon contract: find_binary (libexec → PATH →
-                legacy ~/.cargo/bin), hook_path, daemon.json discovery
+  daemons.rs    shared daemon contract: find_binary (libexec → plugin
+                roots → PATH → legacy ~/.cargo/bin), PANIOLO_PLUGIN_PATH
+                parsing + helper_entries (the `paniolo helper` list with each
+                entry's plugin root), hook_path, daemon.json discovery
                 (Endpoint = port + token; get/post attach the bearer header,
                 http_url/ws_url carry it as ?token= for a browser), wait
   serial.rs     bounded `serial wait` forwards a receive boundary/deadline/raw
@@ -595,8 +615,10 @@ cli/src/
   skills.rs     `paniolo skill`: discover + read the bundled agent skills
                 (skills_dirs: repo checkout → ~/.local/share → CLI-relative
                 share → /usr/share/paniolo/skills, like daemons.rs helper_dirs
-                but under share/), list with frontmatter descriptions, print
-                one SKILL.md (or --path), install_bundled() for setup.rs
+                but under share/; then each plugin root's share/paniolo/skills
+                via search_path), list with frontmatter descriptions (plugin
+                entries annotated with their root), print one SKILL.md (or
+                --path), install_bundled() for setup.rs
   actions.rs    named target actions (#299): find, run_hook, the
                 requires_power refusal, and the per-target hook lock
                 (std File::try_lock, 120 s wait) that power hooks take too
@@ -1563,6 +1585,7 @@ Daemon stderr logs and serialcap's capture files are created 0600.
 |---|---|
 | Lab file (all config) | `~/.config/paniolo/lab.toml` (or `--lab`/`PANIOLO_LAB`) |
 | Helper durable state | `~/.config/paniolo/helpers/<name>/` (`PANIOLO_STATE_DIR`) |
+| Plugin helpers / skills | `<root>/libexec/paniolo/bin/`, `<root>/share/paniolo/skills/` for each root in `PANIOLO_PLUGIN_PATH` (or `--plugin-path`), searched after the bundled dirs |
 | Netboot daemon state | `~/.local/share/paniolo/<name>/netboot.json` |
 | Combined netboot log | `~/.local/share/paniolo/<name>/netboot.log` |
 | hdmicap discovery file | `/tmp/paniolo-<uid>/hdmicap/<target>/daemon.json` (`{pid, port, token}`; owner-only) |

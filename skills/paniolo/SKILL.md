@@ -117,6 +117,14 @@ interface; `-t` alone when the target has one host), and
 `paniolo helper --host <labhost> zigplug -d <dev> list` names a host
 directly. Prefer these over `ssh <host> paniolo helper …`.
 
+A lab can add its own helpers and skills through **plugin roots**: prefixes in
+`PANIOLO_PLUGIN_PATH` (`:`-separated; a control host gets its lab
+`plugin_path`) holding `libexec/paniolo/bin/<helper>` and
+`share/paniolo/skills/<name>/SKILL.md`. In `paniolo helper` and `paniolo
+skill` output a plugin entry reads `<name><TAB>plugin: <root>`; take the
+first field as the name. Hooks can name a plugin helper bare. A plugin never
+replaces a bundled helper or skill of the same name.
+
 ## Bounded fresh serial acquisition
 
 Use `paniolo serial wait <target> [-i console] --epoch E --since N` (MCP:
@@ -871,6 +879,8 @@ ssh = "user@bench1.local"     # ssh destination — how others reach it ("local"
 #                                  (avoids "Too many authentication failures")
 # paniolo_cmd = "~/.local/bin/paniolo"  # if paniolo isn't on the
 #                                  host's non-interactive ssh PATH
+# plugin_path = "/opt/lab-plugins"  # plugin roots on bench1, passed on every
+#                                  dispatch there (`host set --plugin-path`)
 
 [targets.fortune]
 host = "bench1"

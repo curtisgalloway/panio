@@ -291,10 +291,12 @@ fn transport_checked(code: i32, host_name: &str, target: &str) -> anyhow::Result
     Ok(code)
 }
 
-/// The remote paniolo's argv for a user-facing dispatch: `paniolo --lab
-/// <slice>`, then `--json-errors` when requested here, then `sub_argv`.
+/// The remote paniolo's argv for a user-facing dispatch: `paniolo
+/// [--plugin-path=…] --lab <slice>` (see [`crate::model::Host::paniolo_argv`]),
+/// then `--json-errors` when requested here, then `sub_argv`.
 fn remote_argv(host: &crate::model::Host, remote_path: &str, sub_argv: &[String]) -> Vec<String> {
-    let mut argv = vec![host.paniolo(), "--lab".to_string(), remote_path.to_string()];
+    let mut argv = host.paniolo_argv();
+    argv.extend(["--lab".to_string(), remote_path.to_string()]);
     argv.extend(json_errors_arg(crate::error::json_requested()));
     argv.extend(sub_argv.iter().cloned());
     argv
@@ -325,7 +327,8 @@ pub fn run_subcommand(
     let host = lab.host(host_name);
     let slice = build_slice(lab, target, host_name)?;
     let remote_path = ship_slice(&host, host_name, target, &slice)?;
-    let mut argv = vec![host.paniolo(), "--lab".to_string(), remote_path.clone()];
+    let mut argv = host.paniolo_argv();
+    argv.extend(["--lab".to_string(), remote_path.clone()]);
     argv.extend(subargs.iter().map(|s| s.to_string()));
     let out = ssh::run(&host, &argv, None, &ssh::forwarded_env()?);
     let _ = ssh::sftp_rm(&host, &remote_path);
@@ -567,7 +570,7 @@ pub fn helper_host(
 /// slice is shipped. ssh's own 255 becomes `unreachable`, as in [`dispatch`].
 pub fn run_on_host(lab: &Lab, host_name: &str, sub_argv: &[String]) -> anyhow::Result<i32> {
     let host = lab.host(host_name);
-    let mut argv = vec![host.paniolo()];
+    let mut argv = host.paniolo_argv();
     argv.extend(json_errors_arg(crate::error::json_requested()));
     argv.extend(sub_argv.iter().cloned());
     let code = ssh::run_passthrough(&host, &argv, &ssh::forwarded_env()?)?;
@@ -974,6 +977,36 @@ mod tests {
     fn json_errors_crosses_the_hop_when_requested() {
         assert_eq!(json_errors_arg(true).as_deref(), Some("--json-errors"));
         assert_eq!(json_errors_arg(false), None);
+    }
+
+    /// A host's lab `plugin_path` rides on the re-exec as `--plugin-path=…`
+    /// ahead of the subcommand, where the remote paniolo's real parser takes
+    /// it; a host without one adds nothing.
+    #[test]
+    fn the_reexec_carries_the_hosts_plugin_path() {
+        use clap::Parser;
+        let mut host = model::Host {
+            ssh: "u@bench1".to_string(),
+            plugin_path: Some("/opt/lab-plugins:/srv/more".to_string()),
+            ..Default::default()
+        };
+        let sub = vec!["helper".to_string()];
+        let argv = remote_argv(&host, ".slice.toml", &sub);
+        assert_eq!(argv[0], "paniolo");
+        assert_eq!(argv[1], "--plugin-path=/opt/lab-plugins:/srv/more");
+        assert_eq!(&argv[2..4], ["--lab", ".slice.toml"]);
+        let cli = crate::Cli::try_parse_from(&argv).expect("the remote parser accepts it");
+        assert_eq!(
+            cli.plugin_path.as_deref(),
+            Some("/opt/lab-plugins:/srv/more")
+        );
+
+        host.plugin_path = None;
+        let argv = remote_argv(&host, ".slice.toml", &sub);
+        assert!(
+            !argv.iter().any(|a| a.starts_with("--plugin-path")),
+            "{argv:?}"
+        );
     }
 
     #[test]

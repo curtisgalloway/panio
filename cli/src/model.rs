@@ -147,6 +147,12 @@ pub struct Host {
     pub identity: Option<String>,
     pub control_path: Option<String>,
     pub paniolo_cmd: Option<String>,
+    /// Plugin roots for this host (`PANIOLO_PLUGIN_PATH` syntax, in the
+    /// host's own form: `:`-separated on Unix, `;` on Windows). Set on the
+    /// remote paniolo whenever a command is dispatched here, via
+    /// `--plugin-path` ([`Host::paniolo_argv`]); unset leaves the host's own
+    /// environment in charge. Not applied when this host is the local one.
+    pub plugin_path: Option<String>,
 }
 
 impl Host {
@@ -169,6 +175,19 @@ impl Host {
         self.paniolo_cmd
             .clone()
             .unwrap_or_else(|| "paniolo".to_string())
+    }
+
+    /// The leading argv for a paniolo re-exec on this host: [`Host::paniolo`],
+    /// then `--plugin-path=<plugin_path>` when the host has one. Every remote
+    /// paniolo invocation starts here, so the host's plugin roots reach it
+    /// whichever transport carries the command (interactive included). The
+    /// `=` form keeps any value a value, even one that begins with `-`.
+    pub fn paniolo_argv(&self) -> Vec<String> {
+        let mut argv = vec![self.paniolo()];
+        if let Some(p) = &self.plugin_path {
+            argv.push(format!("--plugin-path={p}"));
+        }
+        argv
     }
 }
 
