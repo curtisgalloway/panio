@@ -19,6 +19,7 @@
 //! channels that connect them. This module is the CLI surface; the model and
 //! editor live in [`model`] and [`labfile`].
 
+mod actions;
 mod adb;
 mod daemons;
 mod discover;
@@ -142,6 +143,12 @@ enum Command {
         #[command(subcommand)]
         cmd: UsbCmd,
     },
+    /// Run a target's named actions: reset, recovery, boot straps and other
+    /// controls that are not power, each an opaque hook command in the lab.
+    Action {
+        #[command(subcommand)]
+        cmd: ActionCmd,
+    },
     /// Drive an Android target over adb (console, screencap, input).
     Adb {
         #[command(subcommand)]
@@ -221,7 +228,8 @@ enum Command {
     /// Speaks newline-delimited JSON-RPC on stdin/stdout until stdin closes;
     /// configure it in the harness as a stdio server whose command is
     /// `paniolo mcp`. Tools: target_list, video_shot, video_read, serial_status, serial_evidence, serial_wait, serial_log,
-    /// serial_send, hid_send, power_state, power_on, power_off, power_cycle.
+    /// serial_send, hid_send, action_list, action_run, power_state, power_on,
+    /// power_off, power_cycle.
     /// Each tool runs the
     /// matching paniolo command, so remote targets dispatch over SSH as usual.
     Mcp,
@@ -790,6 +798,58 @@ enum PowerCmd {
 }
 
 #[derive(Subcommand)]
+enum ActionCmd {
+    /// List the named actions of one target, or of every target.
+    List {
+        /// Target to list (default: every target).
+        #[arg(long, short)]
+        target: Option<String>,
+        /// Print JSON: an array of {target, name, description, requires_power, host}.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Run one named action on the host its actions are bound to.
+    Run {
+        /// Target (optional when the lab has exactly one).
+        #[arg(long, short)]
+        target: Option<String>,
+        /// Action to run, as `action list` names it.
+        name: String,
+        /// Internal: the near side already checked requires_power (set on
+        /// dispatch to the action's host, which may not have the power
+        /// channel).
+        #[arg(long, hide = true)]
+        power_checked: bool,
+    },
+    /// Create or update a named action.
+    Set {
+        #[arg(long, short)]
+        target: String,
+        /// Action name (letters, digits, `.`, `_`, `-`).
+        name: String,
+        /// Shell command to run (required for a new action). Runs like a
+        /// power hook: `sh -c`, with paniolo's helper dir first on PATH.
+        #[arg(long)]
+        cmd: Option<String>,
+        /// One line saying what the action does, shown by `action list`.
+        #[arg(long)]
+        description: Option<String>,
+        /// Refuse to run unless the target's power is on/off; `none` clears it.
+        #[arg(long, value_parser = ["on", "off", "none"])]
+        requires_power: Option<String>,
+        /// Control host for all of this target's actions.
+        #[arg(long)]
+        host: Option<String>,
+    },
+    /// Remove a named action (the channel goes with the last one).
+    Rm {
+        #[arg(long, short)]
+        target: String,
+        name: String,
+    },
+}
+
+#[derive(Subcommand)]
 enum HidCmd {
     /// Configure the target's hid channel (one per target).
     Set {
@@ -1081,6 +1141,7 @@ fn run(cli: Cli) -> Result<()> {
         Command::Video { cmd } => video_cmd(lab_flag, cmd),
         Command::Hid { cmd } => hid_cmd(lab_flag, cmd),
         Command::Usb { cmd } => usb_cmd(lab_flag, cmd),
+        Command::Action { cmd } => action_cmd(lab_flag, cmd),
         Command::Adb { cmd } => adb_cmd(lab_flag, cmd),
         Command::Console {
             target,
@@ -3384,11 +3445,17 @@ fn hook_envs(cmd: &str) -> Vec<(&'static str, std::path::PathBuf)> {
 /// libexec dir is prepended to PATH so lab files can name helpers bare, and
 /// the helper state/runtime dirs ride along as env vars.
 /// `label` is a human-readable description shown in the progress message.
+///
+/// Holds the target's hook lock, shared with the action hooks: both often
+/// drive the same exclusive device ([`actions`]).
 fn run_power_hook(cmd: &str, label: &str, target: &str) -> Result<()> {
+    let lock = actions::hook_lock(target, actions::LOCK_WAIT)?;
     eprintln!("{label} '{target}' via {cmd}");
+    let (k, v) = lock.env();
     let status = platform::shell_command(cmd)
         .env("PATH", daemons::hook_path())
         .envs(hook_envs(cmd))
+        .env(k, v)
         .status()?;
     if status.success() {
         Ok(())
@@ -3411,10 +3478,14 @@ fn run_power_hook(cmd: &str, label: &str, target: &str) -> Result<()> {
 /// (case-insensitive). A failing command is `hook_failed`; any other first
 /// token is an error naming what came back.
 fn read_state_cmd(cmd: &str, target: &str) -> Result<bool> {
+    let lock = actions::hook_lock(target, actions::LOCK_WAIT)?;
+    let (k, v) = lock.env();
     let out = platform::shell_command(cmd)
         .env("PATH", daemons::hook_path())
         .envs(hook_envs(cmd))
+        .env(k, v)
         .output()?;
+    drop(lock);
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
         let stdout = String::from_utf8_lossy(&out.stdout);
@@ -3595,49 +3666,46 @@ fn cmd_power_state(lab_flag: Option<&str>, target: Option<&str>) -> Result<()> {
     )? {
         std::process::exit(code);
     }
-    let p = local_power(&lab, &target)?;
-
-    // Prefer state_cmd when configured; fall back to serial sense.
-    if let Some(cmd) = p.state_cmd {
-        let state = if read_state_cmd(&cmd, &target)? {
-            "ON"
-        } else {
-            "OFF"
-        };
-        println!("Power {state}  ({target})");
-        Ok(())
+    let state = if local_power_is_on(&lab, &target)? {
+        "ON"
     } else {
-        let si = p.serial_interface.ok_or_else(|| {
-            error::channel_missing(
-                &target,
-                "power",
-                format!(
-                    "no power serial_interface configured for '{target}' \
-                 (paniolo power set -t {target} --serial-interface <name>)"
-                ),
-            )
-        })?;
-        let daemon = serial::daemon(&target).ok_or_else(|| {
-            error::daemon_down(
-                serial::DAEMON,
-                "serialcap daemon not running — start it with `paniolo serial watch`",
-            )
-            .target(&target)
-        })?;
-        match power::read_power_state(&daemon, &si) {
-            Some(true) => {
-                println!("Power ON  ({target})");
-                Ok(())
-            }
-            Some(false) => {
-                println!("Power OFF  ({target})");
-                Ok(())
-            }
-            None => bail!(
-                "power state unknown — the sense signal may not be configured on '{si}' \
-                 (paniolo serial set {si} -t {target} --sense <cts|dsr|dcd|ri>)"
+        "OFF"
+    };
+    println!("Power {state}  ({target})");
+    Ok(())
+}
+
+/// Read the target's power state on *this* host: `state_cmd` when configured,
+/// else the serial sense signal. The body of `power-state`, shared with the
+/// `requires_power` check of `action run`.
+fn local_power_is_on(lab: &Lab, target: &str) -> Result<bool> {
+    let p = local_power(lab, target)?;
+    if let Some(cmd) = p.state_cmd {
+        return read_state_cmd(&cmd, target);
+    }
+    let si = p.serial_interface.ok_or_else(|| {
+        error::channel_missing(
+            target,
+            "power",
+            format!(
+                "no power serial_interface configured for '{target}' \
+             (paniolo power set -t {target} --serial-interface <name>)"
             ),
-        }
+        )
+    })?;
+    let daemon = serial::daemon(target).ok_or_else(|| {
+        error::daemon_down(
+            serial::DAEMON,
+            "serialcap daemon not running — start it with `paniolo serial watch`",
+        )
+        .target(target)
+    })?;
+    match power::read_power_state(&daemon, &si) {
+        Some(on) => Ok(on),
+        None => bail!(
+            "power state unknown — the sense signal may not be configured on '{si}' \
+             (paniolo serial set {si} -t {target} --sense <cts|dsr|dcd|ri>)"
+        ),
     }
 }
 
@@ -4754,6 +4822,197 @@ fn hid_cmd(lab_flag: Option<&str>, cmd: HidCmd) -> Result<()> {
 /// The `hid` daemon discovery name (must match hidrig's DISCOVERY_NAME).
 const HID_DAEMON: &str = "hid";
 
+fn action_cmd(lab_flag: Option<&str>, cmd: ActionCmd) -> Result<()> {
+    match cmd {
+        ActionCmd::List { target, json } => cmd_action_list(lab_flag, target.as_deref(), json),
+        ActionCmd::Run {
+            target,
+            name,
+            power_checked,
+        } => cmd_action_run(lab_flag, target.as_deref(), &name, power_checked),
+        ActionCmd::Set {
+            target,
+            name,
+            cmd,
+            description,
+            requires_power,
+            host,
+        } => {
+            edit_lab(lab_flag, |lf| {
+                lf.set_action(
+                    &target,
+                    &name,
+                    cmd.as_deref(),
+                    description.as_deref(),
+                    requires_power.as_deref(),
+                    host.as_deref(),
+                )
+            })?;
+            println!("action '{name}' set for '{target}'.");
+            Ok(())
+        }
+        ActionCmd::Rm { target, name } => {
+            edit_lab(lab_flag, |lf| lf.remove_action(&target, &name))?;
+            println!("action '{name}' removed from '{target}'.");
+            Ok(())
+        }
+    }
+}
+
+/// One row of `action list`: what the action does and where it runs.
+fn action_rows(lab: &Lab, target: Option<&str>) -> Result<Vec<serde_json::Value>> {
+    let names: Vec<String> = match target {
+        Some(t) => {
+            if !lab.targets.contains_key(t) {
+                return Err(error::target_not_found(t).into());
+            }
+            vec![t.to_string()]
+        }
+        None => lab.targets.keys().cloned().collect(),
+    };
+    let mut rows = Vec::new();
+    for tn in names {
+        let t = &lab.targets[&tn];
+        let Some(acts) = &t.actions else { continue };
+        let host = acts.host.as_deref().unwrap_or(t.default_host());
+        for (name, a) in &acts.actions {
+            rows.push(serde_json::json!({
+                "target": tn,
+                "name": name,
+                "description": a.description,
+                "requires_power": a.requires_power,
+                "host": host,
+            }));
+        }
+    }
+    Ok(rows)
+}
+
+/// `action list`: config only, so it reads the lab here and never dispatches.
+fn cmd_action_list(lab_flag: Option<&str>, target: Option<&str>, json: bool) -> Result<()> {
+    let lab = load_for_read(lab_flag)?;
+    let rows = action_rows(&lab, target)?;
+    if json {
+        println!("{}", serde_json::to_string(&rows)?);
+        return Ok(());
+    }
+    if rows.is_empty() {
+        println!("No actions configured (paniolo action set -t <target> <name> --cmd ...).");
+        return Ok(());
+    }
+    for r in rows {
+        let mut line = format!(
+            "{}\t{}\t{}",
+            r["target"].as_str().unwrap_or(""),
+            r["name"].as_str().unwrap_or(""),
+            r["description"].as_str().unwrap_or("")
+        );
+        if let Some(rp) = r["requires_power"].as_str() {
+            line.push_str(&format!("  (requires power {rp})"));
+        }
+        println!("{line}");
+    }
+    Ok(())
+}
+
+/// `action run`: check `requires_power` (wherever the power channel is), then
+/// run the hook on the actions' host — locally under the target's hook lock,
+/// or by re-exec there with `--power-checked` so the far side, whose lab
+/// slice may hold no power channel, does not check again.
+///
+/// The power check runs before the lock is taken, because reading the state
+/// takes that same lock; a power change in between is not prevented.
+fn cmd_action_run(
+    lab_flag: Option<&str>,
+    target: Option<&str>,
+    name: &str,
+    power_checked: bool,
+) -> Result<()> {
+    let lab = load_for_read(lab_flag)?;
+    let target = resolve_single_target(&lab, target)?;
+    let action = actions::find(&lab, &target, name)?.clone();
+    if let (Some(requires), false) = (action.requires_power.as_deref(), power_checked) {
+        let is_on = power_is_on_anywhere(&lab, &target)?;
+        if let Some(refusal) = actions::power_refusal(&target, name, requires, is_on) {
+            return Err(refusal.into());
+        }
+    }
+    let rt = lab
+        .resolved_target(&target)
+        .ok_or_else(|| error::target_not_found(&target))?;
+    let host_name = model::channel_host(&rt, model::ChannelKind::Actions, None)?;
+    if !lab.host(&host_name).is_local(&host_name) {
+        let mut argv = dispatch::subcommand_args();
+        if !power_checked {
+            argv.push("--power-checked".to_string());
+        }
+        let code = dispatch::dispatch(&lab, &target, &host_name, dispatch::Mode::Reexec, &argv)?;
+        std::process::exit(code);
+    }
+    let lock = actions::hook_lock(&target, actions::LOCK_WAIT)?;
+    actions::run_hook(&lock, &target, name, &action.cmd)?;
+    println!("Action '{name}' complete.");
+    Ok(())
+}
+
+/// The target's power state, read on whichever host has its power channel:
+/// in process when that is this host, else `power-state` over SSH. A remote
+/// failure keeps its kind (from the exit status) and its stderr.
+fn power_is_on_anywhere(lab: &Lab, target: &str) -> Result<bool> {
+    let rt = lab
+        .resolved_target(target)
+        .ok_or_else(|| error::target_not_found(target))?;
+    if !rt
+        .channels
+        .iter()
+        .any(|c| c.kind == model::ChannelKind::Power)
+    {
+        return Err(error::channel_missing(
+            target,
+            "power",
+            format!(
+                "an action of '{target}' sets requires_power, but the target has no power \
+                 channel to read (paniolo power set -t {target} --state-cmd ...)"
+            ),
+        )
+        .into());
+    }
+    let host_name = model::channel_host(&rt, model::ChannelKind::Power, None)?;
+    if lab.host(&host_name).is_local(&host_name) {
+        return local_power_is_on(lab, target);
+    }
+    let out = dispatch::run_subcommand(lab, target, &host_name, &["power-state", "-t", target])?;
+    if out.status != 0 {
+        let kind = error::Kind::from_exit_code(out.status).unwrap_or(error::Kind::Internal);
+        return Err(error::PanioloError::new(
+            kind,
+            format!(
+                "reading power state on '{host_name}' failed: {}",
+                out.stderr.trim()
+            ),
+        )
+        .target(target)
+        .channel("power")
+        .into());
+    }
+    parse_power_state_line(&out.stdout).ok_or_else(|| {
+        anyhow::anyhow!(
+            "unexpected power-state output from '{host_name}': {}",
+            out.stdout.trim()
+        )
+    })
+}
+
+/// The verdict in `power-state`'s output (`Power ON  (pi5)`).
+fn parse_power_state_line(stdout: &str) -> Option<bool> {
+    let line = stdout.lines().find(|l| l.starts_with("Power "))?;
+    match line.split_whitespace().nth(1)? {
+        "ON" => Some(true),
+        "OFF" => Some(false),
+        _ => None,
+    }
+}
+
 fn usb_cmd(lab_flag: Option<&str>, cmd: UsbCmd) -> Result<()> {
     match cmd {
         UsbCmd::Set { target, cmd, host } => {
@@ -5702,6 +5961,17 @@ mod tests {
             vec!["helper", "--", "serialcap", "--help"]
         );
         assert_eq!(helper_remote_argv(None, &[]), vec!["helper"]);
+    }
+
+    #[test]
+    fn power_state_line_parses_both_verdicts() {
+        assert_eq!(parse_power_state_line("Power ON  (pi5)\n"), Some(true));
+        assert_eq!(
+            parse_power_state_line("note\nPower OFF  (pi5)\n"),
+            Some(false)
+        );
+        assert_eq!(parse_power_state_line("Power maybe\n"), None);
+        assert_eq!(parse_power_state_line(""), None);
     }
 
     /// `video preview --open` is the form that keeps the token off the

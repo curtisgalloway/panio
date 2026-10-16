@@ -489,6 +489,26 @@ fn check_channel(lab: &Lab, ch: &ResolvedChannel, rt: &ResolvedTarget) -> (Statu
                 }
             }
         },
+        ChannelKind::Actions => {
+            let Some(acts) = lab.targets.get(&rt.name).and_then(|t| t.actions.as_ref()) else {
+                return (Status::Incomplete, "no actions".to_string());
+            };
+            if acts.actions.is_empty() {
+                return (Status::Incomplete, "no actions defined".to_string());
+            }
+            // Like the power hooks: the program after any `VAR=value`
+            // prefix, resolved the way the hook will resolve it.
+            for (name, a) in &acts.actions {
+                let prog = daemons::first_program_token(&a.cmd).unwrap_or("");
+                let rc = probe(lab, &ch.host, &hook_probe(prog));
+                if rc != Some(0) {
+                    let (status, detail) = interpret(rc, prog);
+                    return (status, format!("action '{name}': {detail}"));
+                }
+            }
+            let names: Vec<&str> = acts.actions.keys().map(String::as_str).collect();
+            (Status::Ok, names.join(", "))
+        }
         ChannelKind::Power => {
             if let Some(si) = field(ch, "serial_interface") {
                 let have = rt

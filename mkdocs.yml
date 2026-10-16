@@ -73,6 +73,7 @@ nav:
       - Link mode (netif): netif.md
       - Serial console: serial.md
       - Power control: power.md
+      - Named actions: actions.md
       - Video + OCR: video.md
       - Dashboard: dashboard.md
       - HID injection: hid.md

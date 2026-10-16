@@ -318,6 +318,30 @@ pub struct UsbChannel {
     pub host: Option<String>,
 }
 
+/// One named target action (#299): an opaque hook command for a control
+/// that is not power — a reset line, a boot strap, a recovery button combo.
+/// Run with the same contract as the power hooks.
+#[derive(Debug, Default, Clone, Deserialize)]
+pub struct Action {
+    pub cmd: String,
+    pub description: Option<String>,
+    /// `"on"` or `"off"`: refuse to run unless `power-state` says so, so a
+    /// strap change is never applied to a running board.
+    pub requires_power: Option<String>,
+}
+
+/// A target's named actions. `host` binds them all to one control host, like
+/// any channel; every other key in the table is an action name.
+#[derive(Debug, Default, Clone, Deserialize)]
+pub struct ActionsChannel {
+    pub host: Option<String>,
+    #[serde(flatten)]
+    pub actions: BTreeMap<String, Action>,
+}
+
+/// Values `requires_power` accepts.
+pub const VALID_REQUIRES_POWER: &[&str] = &["on", "off"];
+
 #[derive(Debug, Default, Clone, Deserialize)]
 pub struct AdbChannel {
     pub serial: Option<String>,
@@ -341,6 +365,7 @@ pub struct Target {
     pub hid: Option<HidChannel>,
     pub usb: Option<UsbChannel>,
     pub adb: Option<AdbChannel>,
+    pub actions: Option<ActionsChannel>,
 }
 
 impl Target {
@@ -384,6 +409,7 @@ pub enum ChannelKind {
     Hid,
     Usb,
     Adb,
+    Actions,
 }
 
 impl ChannelKind {
@@ -396,11 +422,12 @@ impl ChannelKind {
             ChannelKind::Hid => "hid",
             ChannelKind::Usb => "usb",
             ChannelKind::Adb => "adb",
+            ChannelKind::Actions => "actions",
         }
     }
 
     /// Every channel kind, in lab-file order.
-    pub const ALL: [ChannelKind; 7] = [
+    pub const ALL: [ChannelKind; 8] = [
         ChannelKind::Netboot,
         ChannelKind::Serial,
         ChannelKind::Power,
@@ -408,6 +435,7 @@ impl ChannelKind {
         ChannelKind::Hid,
         ChannelKind::Usb,
         ChannelKind::Adb,
+        ChannelKind::Actions,
     ];
 
     /// The kind whose [`as_str`](Self::as_str) is `name`.
@@ -570,6 +598,15 @@ impl Lab {
                 name: "adb".into(),
                 host: host_of(&a.host),
                 fields: f,
+            });
+        }
+        if let Some(acts) = &t.actions {
+            let names: Vec<&str> = acts.actions.keys().map(String::as_str).collect();
+            channels.push(ResolvedChannel {
+                kind: ChannelKind::Actions,
+                name: "actions".into(),
+                host: host_of(&acts.host),
+                fields: vec![("names", names.join(", "))],
             });
         }
         Some(ResolvedTarget {
@@ -809,6 +846,24 @@ pub fn validate(lab: &Lab) -> Result<(), LabError> {
         if let Some(usb) = &t.usb {
             let h = usb.host.as_deref().unwrap_or(default_host);
             check_host_ref(h, &declared, &format!("target '{name}' usb"))?;
+        }
+        if let Some(acts) = &t.actions {
+            let h = acts.host.as_deref().unwrap_or(default_host);
+            check_host_ref(h, &declared, &format!("target '{name}' actions"))?;
+            for (an, a) in &acts.actions {
+                if a.cmd.trim().is_empty() {
+                    return lab_err(format!("target '{name}' action '{an}': empty cmd"));
+                }
+                if let Some(rp) = &a.requires_power {
+                    if !VALID_REQUIRES_POWER.contains(&rp.as_str()) {
+                        return lab_err(format!(
+                            "target '{name}' action '{an}': invalid requires_power '{rp}' \
+                             (valid: {})",
+                            VALID_REQUIRES_POWER.join(", ")
+                        ));
+                    }
+                }
+            }
         }
         let mut seen: BTreeSet<&str> = BTreeSet::new();
         for s in &t.serial {
@@ -1175,6 +1230,45 @@ mod tests {
         );
         // The device id is plumbed via channel_host like any singleton kind.
         assert_eq!(channel_host(&rt, ChannelKind::Adb, None).unwrap(), "bench1");
+    }
+
+    /// Actions (#299): a known host, a non-empty cmd, and requires_power one
+    /// of on/off. The resolved view lists them under one `actions` channel.
+    #[test]
+    fn actions_validate_and_resolve() {
+        let ok = parse(
+            "[targets.t.actions]\nreset = { cmd = \"boardctl reset\" }\n\
+             boot-usb = { cmd = \"boardctl boot usb\", requires_power = \"off\" }\n",
+        )
+        .unwrap();
+        let rt = ok.resolved_target("t").unwrap();
+        let ch = rt
+            .channels
+            .iter()
+            .find(|c| c.kind == ChannelKind::Actions)
+            .unwrap();
+        assert_eq!(ch.fields, vec![("names", "boot-usb, reset".to_string())]);
+        let bad_power =
+            parse("[targets.t.actions]\nreset = { cmd = \"x\", requires_power = \"maybe\" }\n")
+                .unwrap_err();
+        assert!(
+            bad_power.0.contains("invalid requires_power 'maybe'"),
+            "{}",
+            bad_power.0
+        );
+        let empty = parse("[targets.t.actions]\nreset = { cmd = \" \" }\n").unwrap_err();
+        assert!(empty.0.contains("empty cmd"), "{}", empty.0);
+        let ghost =
+            parse("[targets.t.actions]\nhost = \"ghost\"\nreset = { cmd = \"x\" }\n").unwrap_err();
+        assert!(
+            ghost.0.contains("actions references unknown host 'ghost'"),
+            "{}",
+            ghost.0
+        );
+        assert_eq!(
+            ChannelKind::from_name("actions"),
+            Some(ChannelKind::Actions)
+        );
     }
 
     #[test]
