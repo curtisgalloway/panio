@@ -217,6 +217,7 @@ pub struct SerialHandle {
     /// hold of this lock, so a test can stall the raw receive journal behind
     /// the live receive cursor (see [`SerialHandle::hold_journal`]).
     #[cfg(test)]
+    #[cfg_attr(not(unix), allow(dead_code))]
     journal_gate: Arc<std::sync::RwLock<()>>,
 }
 
@@ -229,6 +230,7 @@ impl SerialHandle {
     /// The lock is held on a thread of its own, so the guard is a plain value
     /// a test can keep across `.await` points.
     #[cfg(test)]
+    #[cfg_attr(not(unix), allow(dead_code))]
     pub(crate) fn hold_journal(&self) -> JournalHold {
         let gate = self.journal_gate.clone();
         let (held_tx, held_rx) = stdmpsc::channel();
@@ -329,6 +331,7 @@ impl SerialHandle {
 /// Test-only: keeps the capture thread stalled until dropped (see
 /// [`SerialHandle::hold_journal`]).
 #[cfg(test)]
+#[cfg_attr(not(unix), allow(dead_code))]
 pub(crate) struct JournalHold {
     _release: stdmpsc::Sender<()>,
 }
