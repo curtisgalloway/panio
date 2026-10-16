@@ -49,7 +49,7 @@ rather than the repo's `skills/`.
 |---|---|---|
 | S1 | `paniolo --help`, then `paniolo --version` | exit 0; lists `target`, `serial`, `video`, `hid`, `doctor`, `daemons`, `skill`, `helper`; `--version` prints exactly `paniolo X.Y.Z` |
 | S2 | `paniolo skill` and `paniolo skill paniolo` | exit 0; lists `paniolo`, `kvm-puppeting`, `control-host`; the second prints a SKILL.md body |
-| S3 | `paniolo helper` then `paniolo helper -- <h> --help` for each helper (the `--` matters: without it clap answers for the `helper` verb and the binary never runs) | each exit 0 (a `--help` that returns 0 proves the shared libraries loaded) |
+| S3 | `paniolo helper` then `paniolo helper -- <h> --help` for each helper (since #300 everything after the helper name goes to the helper, so the `--` is optional; it stays here because a pre-#300 paniolo needs it, where clap otherwise answers for the `helper` verb and the binary never runs) | each exit 0 (a `--help` that returns 0 proves the shared libraries loaded) |
 | S4 | `paniolo --lab $T/lab.toml init`, `target add smoke`, `target list`, `config show`, `target rm smoke`, `target list` | exit 0 each; `smoke` listed before `rm`, absent after |
 | S5 | `paniolo --lab $T/lab.toml doctor` on that hardware-free lab, then `paniolo daemons list` | exit 0 or a clean "nothing configured" exit; never a panic or traceback |
 | S6 | the platform's OCR helper answers: `visionocr` (macOS) and `winocr.exe` (Windows) decode the 8x8 PNG the release workflow's macOS smoke step uses and print the v1 envelope; `linuxocr --help` and `rapidocr --help` on Linux | exit 0, `engine` field matches |
@@ -174,5 +174,5 @@ feeds needs re-reading before `--update` re-pins it.
 | `cli/src/daemons.rs` | 5d1e89ba6e23 | Smoke contract S3 |
 | `scripts/ci-coverage-check.sh` | 84a938b2dbf0 | Project: helpers |
 | `scripts/sync-brik.sh` | b8b5a15775a9 | Channels: windows |
-| `README.md` | 5dda0ee7ed68 | Channels: source; Publish: re-verify apt |
-| `AGENTS.md` | 7709ddb99a5d | Project: bump rules, tag format; Publish |
+| `README.md` | 0a86579c665a | Channels: source; Publish: re-verify apt |
+| `AGENTS.md` | fd5a39efcba2 | Project: bump rules, tag format; Publish |
