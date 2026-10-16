@@ -81,6 +81,8 @@ struct Cli {
     /// Every listen socket (DHCP, TFTP, HTTP) is pinned to it, so nothing is
     /// served on any other interface; it is also where the ARP pin and the IP
     /// monitor act. Required; must not carry the system default route.
+    /// On macOS, only one netbootd may own an interface at a time; separate
+    /// interfaces can serve concurrently using the same ports.
     #[arg(long)]
     interface: String,
 
@@ -156,11 +158,19 @@ async fn main() -> Result<()> {
     // Bind and pin every listener up front, before anything runs concurrently
     // and while we still hold whatever privilege the low ports and the pin
     // need. A DHCP or TFTP socket that cannot be bound or pinned is fatal.
-    let dhcp_sock = dhcp::bind_server(cli.dhcp_port, &cli.interface)?;
-    let tftp_sock = tftp::bind_server(cli.tftp_port, &cli.interface)?;
+    let listener_interface =
+        pin::ListenerInterface::acquire(&cli.interface).with_context(|| {
+            format!(
+                "claim netboot interface {} (another netbootd may own it)",
+                cli.interface
+            )
+        })?;
+    let listener_interface = Arc::new(listener_interface);
+    let dhcp_sock = dhcp::bind_server(cli.dhcp_port, &listener_interface)?;
+    let tftp_sock = tftp::bind_server(cli.tftp_port, &listener_interface)?;
     // HTTP is the one optional transport: a port-80 clash must not take DHCP
     // and TFTP (the Pi and PXE paths) down with it.
-    let http_listener = match http::bind_server(cli.http_port, &cli.interface) {
+    let http_listener = match http::bind_server(cli.http_port, &listener_interface) {
         Ok(l) => Some(l),
         Err(e) => {
             warn!(
@@ -201,34 +211,39 @@ async fn main() -> Result<()> {
     // In-process DHCP→TFTP client-MAC handoff (replaces the on-disk file).
     let (mac_tx, mac_rx) = tokio::sync::watch::channel::<Option<[u8; 6]>>(None);
 
-    let dhcp = tokio::spawn(dhcp::serve(
-        dhcp_sock,
-        cli.host_ip,
-        client_ip,
-        cli.boot_file.clone(),
-        cli.interface.clone(),
-        bound_http_port,
-        mac_tx,
-    ));
-    let tftp = tokio::spawn(tftp::serve(
-        tftp_sock,
-        cli.host_ip,
-        client_ip,
-        cli.tftp_root.clone(),
-        cli.interface.clone(),
-        bpf,
-        mac_rx,
-    ));
+    let dhcp = spawn_listener_task(
+        listener_interface.clone(),
+        dhcp::serve(
+            dhcp_sock,
+            cli.host_ip,
+            client_ip,
+            cli.boot_file.clone(),
+            cli.interface.clone(),
+            bound_http_port,
+            mac_tx,
+        ),
+    );
+    let tftp = spawn_listener_task(
+        listener_interface.clone(),
+        tftp::serve(
+            tftp_sock,
+            cli.host_ip,
+            client_ip,
+            cli.tftp_root.clone(),
+            cli.interface.clone(),
+            bpf,
+            mac_rx,
+        ),
+    );
     // HTTP serves UEFI HTTP Boot clients over ordinary kernel TCP — no BPF, no
     // ARP pin (a UEFI client answers ARP, unlike the silent Pi). The client
     // picks TFTP vs HTTP by how it DHCPs. Without a listener the task simply
     // never completes, so the select below is unchanged.
     let http = match http_listener {
-        Some(listener) => tokio::spawn(http::serve(
-            listener,
-            cli.tftp_root.clone(),
-            cli.content_type.clone(),
-        )),
+        Some(listener) => spawn_listener_task(
+            listener_interface.clone(),
+            http::serve(listener, cli.tftp_root.clone(), cli.content_type.clone()),
+        ),
         None => tokio::spawn(std::future::pending()),
     };
 
@@ -255,6 +270,18 @@ async fn main() -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// A spawned task can outlive async main during runtime teardown. Keep its
+/// interface claim alive until its listener has been dropped as well.
+fn spawn_listener_task(
+    interface: Arc<pin::ListenerInterface>,
+    server: impl std::future::Future<Output = Result<()>> + Send + 'static,
+) -> tokio::task::JoinHandle<Result<()>> {
+    tokio::spawn(async move {
+        let _interface = interface;
+        server.await
+    })
 }
 
 /// Resolve when the daemon is asked to stop: Ctrl-C (SIGINT) or, on Unix,

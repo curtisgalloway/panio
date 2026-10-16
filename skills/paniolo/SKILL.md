@@ -207,6 +207,10 @@ restarts; leave it unset unless asked, and `--port 0` clears it.
 Every channel-config command also takes `[--host <labhost>]` to bind that
 channel to a remote control host (see the lab section below).
 
+- **Concurrent netboot links work on macOS and Linux**, with one adapter and
+  /24 per link. macOS netbootd locks its interface even when invoked directly;
+  stop older daemons before using concurrent links after an upgrade. Never
+  delete its `/tmp/paniolo-netboot-interface-<index>.lock` file while running.
 - **One subnet per link.** The default `--host-ip` (`192.168.99.1`) is for
   the *first* netboot link on a host. Every further link on that host needs
   its own /24 (`--host-ip 192.168.100.1`, `…101.1`, …) or every route to a

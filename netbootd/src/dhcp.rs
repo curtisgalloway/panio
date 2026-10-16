@@ -57,7 +57,6 @@ use tokio::sync::watch;
 use tracing::{info, warn};
 
 use crate::netcfg;
-use crate::pin::pin_socket_to_interface;
 use crate::served::warn_rate_limited;
 
 const BOOTREQUEST: u8 = 1;
@@ -607,12 +606,13 @@ fn disposition(
 /// No `SO_REUSEADDR`: UDP has no TIME_WAIT, so a restart never needs it, and
 /// on Linux it would let a second netbootd bind the same port on the same
 /// interface and silently split the DISCOVERs with this one. With it off, a
-/// duplicate fails here with EADDRINUSE. (On macOS a duplicate wildcard bind
-/// needs `SO_REUSEPORT` regardless, so nothing is lost there either.)
-pub fn bind_server(port: u16, interface: &str) -> Result<UdpSocket> {
+/// duplicate fails here with EADDRINUSE. macOS uses `SO_REUSEPORT` with
+/// a daemon-lifetime interface lock; see [`crate::pin::ListenerInterface`].
+pub fn bind_server(port: u16, link: &crate::pin::ListenerInterface) -> Result<UdpSocket> {
+    let interface = link.name();
     let sock = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
     sock.set_broadcast(true)?;
-    pin_socket_to_interface(&sock, interface)
+    link.pin_listener(&sock)
         .with_context(|| format!("pin DHCP socket to interface {interface}"))?;
     let addr: std::net::SocketAddr = format!("0.0.0.0:{port}").parse().unwrap();
     sock.bind(&addr.into()).with_context(|| {

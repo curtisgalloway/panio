@@ -137,10 +137,16 @@ paniolo enforces this:
 Two targets sharing one adapter (re-cabled between boards) may keep the same
 address.
 
-> **macOS control hosts run one netboot at a time.** `IP_BOUND_IF` does not
-> split the bind namespace like Linux's `SO_BINDTODEVICE`, so a second
-> netbootd's `bind` of port 67 fails with `EADDRINUSE` even on another adapter
-> and subnet. Use the subnet rule anyway so links stay routable.
+**macOS and Linux can serve multiple netboot links concurrently**, each on
+its own adapter and /24. On macOS, listeners use `SO_REUSEPORT` (shared port
+binding) alongside `IP_BOUND_IF` (interface pinning). A process-held lock per
+interface rejects duplicate netbootd instances even when launched directly,
+and releases automatically on exit or crash. Its file under
+`/tmp/paniolo-netboot-interface-<index>.lock` deliberately remains after exit;
+do not delete it while a daemon is running. Linux retains exclusive
+`SO_BINDTODEVICE` binds without port sharing. When upgrading from an older
+macOS daemon, stop it before starting multiple links: its sockets do not
+permit port sharing.
 
 ### Privileges and sudo
 
