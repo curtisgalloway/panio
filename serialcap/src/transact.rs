@@ -111,7 +111,9 @@ async fn transact(handle: SerialHandle, body: Bytes, params: Params) -> Result<V
         .await
         .map_err(|e| Refusal::Unavailable(format!("{e:#}")))?;
 
-    // Whatever the queue and the write left of the deadline. At least 1 ms:
+    journal_catch_up(&handle, &epoch, since, deadline).await;
+
+    // Whatever the queue, the write and the catch-up left of the deadline. At least 1 ms:
     // 0 means "unbounded" to `wait::run`, and an expired deadline must still
     // end the call (as `timeout`).
     let remaining = deadline
@@ -156,6 +158,40 @@ async fn transact(handle: SerialHandle, body: Bytes, params: Params) -> Result<V
     let mut result = result.map_err(|e| Refusal::Unavailable(format!("{e:#}")))?;
     result["sent_bytes"] = sent.into();
     Ok(result)
+}
+
+/// How often [`journal_catch_up`] re-reads the in-process health.
+const CATCH_UP_POLL: Duration = Duration::from_millis(2);
+
+/// Wait, until `deadline`, for the raw receive journal to reach the boundary.
+///
+/// The boundary is the live receive cursor (`last_rx_seq`), which the
+/// supervisor advances the moment it reads a chunk; the capture thread
+/// persists that chunk to the journal a moment later and only then advances
+/// `evidence_through_seq`. The wait reads the journal, and a boundary the
+/// journal has not reached yet is beyond everything it holds, which it reports
+/// as `cursor_ahead` — a `gap` — ending the transaction before the reply. That
+/// lag is the normal in-progress append (`capture_pending`), not missing
+/// history, so it is waited out here.
+///
+/// Anything that means the journal will not catch up — a recorded write
+/// fault, a capture thread that has stopped, a new epoch — ends this at once,
+/// and so does the deadline; the wait then reports that state exactly as it
+/// would have without this step. Nothing is masked: this only decides when
+/// the first read happens.
+async fn journal_catch_up(handle: &SerialHandle, epoch: &str, since: u64, deadline: Instant) {
+    loop {
+        let health = handle.status().health;
+        if health.epoch != epoch
+            || health.evidence_through_seq >= since
+            || health.evidence_error.is_some()
+            || !health.capture_alive
+            || Instant::now() >= deadline
+        {
+            return;
+        }
+        tokio::time::sleep_until(deadline.min(Instant::now() + CATCH_UP_POLL)).await;
+    }
 }
 
 #[cfg(all(test, unix))]
@@ -245,6 +281,61 @@ mod tests {
             result["since"].as_u64().unwrap() >= 1,
             "the stale chunk is inside the boundary"
         );
+        drop(far);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// The boundary comes from the live receive cursor, which the supervisor
+    /// advances before the capture thread persists the chunk. With the
+    /// journal held one or more records behind that boundary, the transaction
+    /// must wait for it to catch up and then acquire the reply, not end at
+    /// once as a `gap` (issue #301, the CI flake in
+    /// `boundary_is_taken_before_the_write`).
+    #[tokio::test]
+    async fn boundary_ahead_of_the_journal_waits_for_it_to_catch_up() {
+        let (handle, mut far, dir) = spawn_on_pty("transact-lag");
+        let (_, mut rx) = handle.attach();
+        recv_until(&mut rx, b"serial connected").await;
+
+        let held = handle.hold_journal();
+        far.write_all(b"stale OK\r\n").unwrap();
+        recv_until(&mut rx, b"stale OK\r\n").await;
+        let lagging = handle.status().health;
+        assert!(
+            lagging.last_rx_seq > lagging.evidence_through_seq,
+            "the journal must be behind the live cursor: {}",
+            json!(lagging)
+        );
+
+        let mut target = far.try_clone().unwrap();
+        let responder = std::thread::spawn(move || {
+            let got = read_far(&mut target, 8);
+            target.write_all(b"version 1.2\r\nOK\r\n").unwrap();
+            got
+        });
+        let mut call = tokio::spawn(run(
+            handle.clone(),
+            Bytes::from_static(b"version\r"),
+            params("OK", 5_000, 4096),
+        ));
+        recv_until(&mut rx, b"OK\r\n").await;
+        // Keep the journal stalled a while longer, unless the call has
+        // already ended (which is the bug).
+        let early = tokio::time::timeout(Duration::from_millis(300), &mut call).await;
+        drop(held);
+        let result = match early {
+            Ok(done) => done.unwrap().unwrap(),
+            Err(_) => call.await.unwrap().unwrap(),
+        };
+        assert_eq!(responder.join().unwrap(), b"version\r");
+        assert_eq!(result["status"], "matched", "{result}");
+        let reply = reply_bytes(&result);
+        assert!(reply.starts_with(b"version 1.2"), "{reply:?}");
+        assert!(
+            !reply.windows(5).any(|w| w == b"stale"),
+            "pre-send output leaked into the reply: {reply:?}"
+        );
+        assert_eq!(result["since"], lagging.last_rx_seq);
         drop(far);
         std::fs::remove_dir_all(dir).ok();
     }
