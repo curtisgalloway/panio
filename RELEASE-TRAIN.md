@@ -176,4 +176,4 @@ feeds needs re-reading before `--update` re-pins it.
 | `scripts/ci-coverage-check.sh` | 84a938b2dbf0 | Project: helpers |
 | `scripts/sync-brik.sh` | b8b5a15775a9 | Channels: windows |
 | `README.md` | 5deaa6ca6e4b | Channels: source; Publish: re-verify apt |
-| `AGENTS.md` | 3287bdf508c6 | Project: bump rules, tag format; Publish |
+| `AGENTS.md` | ae7383181f39 | Project: bump rules, tag format; Publish |
