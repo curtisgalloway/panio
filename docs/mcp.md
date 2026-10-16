@@ -61,8 +61,8 @@ server holds no state of its own, so restarting it loses nothing.
 | `hid_send` | `target`; `command` (required): one HID command as an array of words, e.g. `["key", "ENTER"]` | Injects keyboard or mouse input, as `paniolo hid send`. |
 | `action_list` | `target` | JSON array of the target's named actions (name, description, requires_power, host), as `paniolo action list --json`. See [Named actions](actions.md). |
 | `action_run` | `target`; `name` (required) | Runs one named action, as `paniolo action run`. |
-| `power_state` | `target` | `on` or `off`, as `paniolo power-state`. |
-| `power_on`, `power_off`, `power_cycle` | `target` | Switches power, as `paniolo power on`/`off` and `paniolo power-cycle`. |
+| `power_state` | `target`; `level` | A line like `Power ON  (pi5)`, as `paniolo power-state`. With no `level`, a target with [power levels](power.md#power-levels-soft-and-hard) gets one line per level, the default first (`Power OFF  (pi5, level hard)`; `Power UNKNOWN … no state_cmd` for a level that cannot be read). With `level`, only that level. |
+| `power_on`, `power_off`, `power_cycle` | `target`; `level` | Switches power, as `paniolo power on`/`off` and `paniolo power-cycle`, with `--level` when `level` is given. A level without the needed hook fails as `not_configured` (3); it never falls back to the default level. |
 
 Every tool but `target_list` needs `target`. The tools that change the target
 (`serial_send`, `serial_transact`, `hid_send`, `action_run`, `power_on`, `power_off`,

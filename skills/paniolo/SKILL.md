@@ -194,6 +194,7 @@ paniolo target add <name> [--host <labhost>] [--description <text>]
 paniolo netboot set -t <name> --interface <iface> [--tftp-root <dir>] [--host-ip <ip>] [--boot-file grubaa64.efi] [--http-port 80] [--content-type <mime>]
 paniolo serial add console -t <name> --device <path> [--baud 115200] [--sense cts] [--power-button] [--port N]
 paniolo power set -t <name> [--cycle-cmd C] [--on-cmd C] [--off-cmd C] [--state-cmd C] [--serial-interface console]
+paniolo power set -t <name> --level hard [--cycle-cmd C] [--on-cmd C] [--off-cmd C] [--state-cmd C]   # a named power level
 paniolo video set -t <name> --device "<capture id or name>" [--ocr-mode text|gui] [--change-threshold N] [--port N]
 paniolo hid set -t <name> --cmd "hidrig -d <uart>" [--port N]   # USB HID injection helper
 paniolo usb set -t <name> --cmd "ch9329 -d <uart>"   # switchable USB media (KVM-Go microSD)
@@ -589,10 +590,10 @@ paniolo adb input -t <target> <args...>  # adb shell input: keyevent/text/tap/sw
 ## Power control
 
 ```
-paniolo power on  [target]             # run on_cmd hook (error with hint if unset)
-paniolo power off [target]             # run off_cmd hook (error with hint if unset)
-paniolo power-cycle [target]           # run cycle_cmd hook
-paniolo power-state [target]           # state_cmd stdout ("on"/"off") or serial sense-line
+paniolo power on  [target] [--level L] # run on_cmd hook (error with hint if unset)
+paniolo power off [target] [--level L] # run off_cmd hook (error with hint if unset)
+paniolo power-cycle [target] [--level L]  # run cycle_cmd hook
+paniolo power-state [target] [--level L]  # state_cmd stdout ("on"/"off") or serial sense-line
 paniolo serial dtr [target] [--ms N]   # pulse DTR line on J2 header (opt-in; see below)
 paniolo serial reset [target]          # soft reset via brief DTR pulse (opt-in)
 ```
@@ -608,6 +609,26 @@ paniolo power set -t <name> \
 All four hooks are optional and run via `sh -c`. `power-state` uses `state_cmd`
 if set (first whitespace token of stdout must be `on` or `off`); falls back to
 the serial sense-line otherwise.
+
+**Power levels (soft vs hard).** A target with more than one power layer (a
+board MCU or PMIC switch, and a mains/DC cut behind it) may define named
+levels beside the default hooks: `[targets.<t>.power.levels.hard]`, set with
+`paniolo power set -t <t> --level hard …`, removed with `paniolo power rm -t
+<t> --level hard`. `target show` lists them (`levels=hard`).
+
+- No `--level` = the default hooks, exactly as before. `--level default` says
+  the same thing explicitly.
+- A level never falls back to the default hooks: a level without the verb's
+  hook exits 3 (`not_configured`) naming the level. Do not retry without
+  `--level` to "make it work"; that runs a different layer.
+- Escalate in order: try the default `power-cycle` first; reach for `--level
+  hard` when the target stays wedged after it (a back-powered board, a hung
+  board-control MCU).
+- `power-state` without `--level` prints one line per level when there are
+  levels, default first (`Power ON  (pi5)`, `Power OFF  (pi5, level hard)`,
+  `Power UNKNOWN  (pi5, level pmic: no state_cmd)`).
+- The dashboard's power controls and an action's `requires_power` check use
+  the default level only.
 
 **"Reboot over serial" ≠ DTR reset — pick the right one.** Two unrelated things
 share the word "serial/reset":
@@ -823,7 +844,8 @@ If your harness has a `paniolo` MCP server configured (`paniolo mcp`), its
 tools are the runtime verbs above: `target_list`, `video_shot`, `video_read`,
 `serial_log`, `serial_send`, `hid_send` (`command` is an array of words, e.g.
 `["key", "ENTER"]`), `action_list`, `action_run`, `power_state`, `power_on`,
-`power_off`, `power_cycle`.
+`power_off`, `power_cycle` (the power tools take an optional `level`, as
+`--level`).
 `video_shot` returns the screen as an image plus `signal=…  hash=…`; pass the
 hash back as `changed_since` to wait for a change, as with `video shot
 --changed-since`. Configuration (`set`, `add`, `watch`) is still the CLI. A

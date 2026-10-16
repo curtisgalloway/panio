@@ -559,10 +559,27 @@ fn cli_call(tool: &str, args: &Value) -> Result<CliCall, String> {
                 name.to_string(),
             ])
         }
-        "power_state" => read(vec![s("power-state"), s("-t"), a.target()?]),
-        "power_on" => write(vec![s("power"), s("on"), s("-t"), a.target()?]),
-        "power_off" => write(vec![s("power"), s("off"), s("-t"), a.target()?]),
-        "power_cycle" => write(vec![s("power-cycle"), s("-t"), a.target()?]),
+        "power_state" | "power_on" | "power_off" | "power_cycle" => {
+            let mut argv = match tool {
+                "power_state" => vec![s("power-state")],
+                "power_on" => vec![s("power"), s("on")],
+                "power_off" => vec![s("power"), s("off")],
+                _ => vec![s("power-cycle")],
+            };
+            argv.extend([s("-t"), a.target()?]);
+            if let Some(level) = a.opt_str("level")? {
+                // A name that reads as a flag would reach clap as one.
+                if level.is_empty() || level.starts_with('-') {
+                    return Err(format!("{tool}: level must be a level name, got {level:?}"));
+                }
+                argv.extend([s("--level"), level]);
+            }
+            if tool == "power_state" {
+                read(argv)
+            } else {
+                write(argv)
+            }
+        }
         other => Err(format!("unknown tool: {other}")),
     }
 }
@@ -817,20 +834,24 @@ fn tool_list() -> Value {
         },
         {
             "name": "power_state",
-            "description": "Report whether the target is powered on: prints on or off.",
-            "inputSchema": schema(&[]),
+            "description": "Report whether the target is powered on: a line like \
+                `Power ON  (pi5)`. With no level, a target that has named power levels \
+                gets one line per level, the default level first \
+                (`Power OFF  (pi5, level hard)`), and `Power UNKNOWN` with the reason for \
+                a level that cannot be read. With a level, only that level's line.",
+            "inputSchema": schema(&[("level", level_schema())]),
             "annotations": { "readOnlyHint": true },
         },
         {
             "name": "power_on",
             "description": "Switch the target's power on.",
-            "inputSchema": schema(&[]),
+            "inputSchema": schema(&[("level", level_schema())]),
             "annotations": { "readOnlyHint": false, "destructiveHint": true },
         },
         {
             "name": "power_off",
             "description": "Switch the target's power off (a hard power-off, not a shutdown).",
-            "inputSchema": schema(&[]),
+            "inputSchema": schema(&[("level", level_schema())]),
             "annotations": { "readOnlyHint": false, "destructiveHint": true },
         },
         {
@@ -838,11 +859,25 @@ fn tool_list() -> Value {
             "description": "Power-cycle the target: off, then on (a hard reset). When the \
                 target has a power state reader, the call returns once power is back on; \
                 otherwise only once the cycle was requested. If the call fails with an \
-                unknown outcome, check power_state before trying again.",
-            "inputSchema": schema(&[]),
+                unknown outcome, check power_state before trying again. A target with \
+                more than one power layer may define named levels: try the default \
+                level first, and a stronger level (often `hard`) only when it fails to \
+                recover the target.",
+            "inputSchema": schema(&[("level", level_schema())]),
             "annotations": { "readOnlyHint": false, "destructiveHint": true, "idempotentHint": false },
         },
     ])
+}
+
+/// The optional `level` argument of the power tools (#302).
+fn level_schema() -> Value {
+    json!({
+        "type": "string",
+        "description": "Named power level (for example soft or hard), as the target's \
+            lab file defines it. Omit for the default level. A level without the hook \
+            this call needs fails as not configured; it never falls back to the \
+            default level.",
+    })
 }
 
 /// An input schema with a required `target` plus `extra` optional properties.
@@ -1132,6 +1167,10 @@ mod tests {
             ("power_on", json!({ "target": "pi5" })),
             ("power_off", json!({ "target": "pi5" })),
             ("power_cycle", json!({ "target": "pi5" })),
+            ("power_state", json!({ "target": "pi5", "level": "hard" })),
+            ("power_on", json!({ "target": "pi5", "level": "hard" })),
+            ("power_off", json!({ "target": "pi5", "level": "default" })),
+            ("power_cycle", json!({ "target": "pi5", "level": "hard" })),
         ]
     }
 
@@ -1216,6 +1255,33 @@ mod tests {
         );
         assert!(flag.is_err());
         assert!(cli_call("action_run", &json!({ "target": "pi5" })).is_err());
+    }
+
+    /// Power levels (#302): `level` becomes `--level NAME` on every power
+    /// tool, is optional, and a flag-shaped or empty name is refused.
+    #[test]
+    fn power_tools_map_the_level_argument() {
+        for (tool, verb, writes) in [
+            ("power_state", vec!["power-state"], false),
+            ("power_on", vec!["power", "on"], true),
+            ("power_off", vec!["power", "off"], true),
+            ("power_cycle", vec!["power-cycle"], true),
+        ] {
+            let plain = cli_call(tool, &json!({ "target": "pi5" })).unwrap();
+            let mut want: Vec<&str> = verb.clone();
+            want.extend(["-t", "pi5"]);
+            assert_eq!(plain.argv, want, "{tool}");
+            assert_eq!(plain.writes, writes, "{tool}");
+            let hard = cli_call(tool, &json!({ "target": "pi5", "level": "hard" })).unwrap();
+            want.extend(["--level", "hard"]);
+            assert_eq!(hard.argv, want, "{tool}");
+            for bad in [json!("--help"), json!(""), json!(3)] {
+                assert!(
+                    cli_call(tool, &json!({ "target": "pi5", "level": bad })).is_err(),
+                    "{tool}: {bad}"
+                );
+            }
+        }
     }
 
     #[test]

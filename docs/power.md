@@ -8,7 +8,9 @@ paniolo switches a target's power two ways:
   that has not declared it.
 - **Generic power hooks**: four optional shell commands (`on_cmd`, `off_cmd`,
   `cycle_cmd`, `state_cmd`), set with `paniolo power set` and run via `sh -c`.
-  Use them for a smart plug, a USB hub, Intel AMT, or a script.
+  Use them for a smart plug, a USB hub, Intel AMT, or a script. A target with
+  more than one power layer can add named
+  [power levels](#power-levels-soft-and-hard) (`soft`, `hard`) beside them.
 
 Device-specific logic never goes in the core crates; it lives in helper
 binaries behind the hooks (`cambrionix` is the canonical example). To support
@@ -187,6 +189,91 @@ non-executable script (shell code 127/126) exits 3 (`not_configured`). See
 stdout, which must be `on` or `off` (case-insensitive). Without `state_cmd`, it
 uses the serial sense line (sense wired, serialcap daemon running).
 
+### Power levels (soft and hard)
+
+Some targets have more than one independent power layer, and a cycle at one
+does not reach the others:
+
+- a **soft** layer: a PMIC enable, a board-control MCU switching the main
+  rail, or the power button;
+- a **hard** layer: mains or DC input, the only reset for a wedged
+  controller.
+
+A debug cable that back-powers the board is the usual trap. ChromeOS Servo v4
+and v4.1 can source power through their DUT-side USB-C port, so cutting the
+barrel jack alone does not power the board off; a real hard cycle has to drop
+both, for example with a smart plug and a Cambrionix hub port.
+
+A **power level** is a named set of hooks beside the default ones. Each level
+may set any of `cycle_cmd`, `on_cmd`, `off_cmd` and `state_cmd`:
+
+```toml
+[targets.target-machine.power]            # the default level, as before
+cycle_cmd = "boardctl -d /dev/ttyUSB0 cycle"
+state_cmd = "boardctl -d /dev/ttyUSB0 state"
+
+[targets.target-machine.power.levels.hard]
+cycle_cmd = "sh -c 'shellyplug -d 192.0.2.10 off && cambrionix -d /dev/ttyUSB1 off 3 && sleep 5 && cambrionix -d /dev/ttyUSB1 on 3 && shellyplug -d 192.0.2.10 on'"
+state_cmd = "shellyplug -d 192.0.2.10 state"
+```
+
+Set and remove levels with the CLI, which keeps the rest of the file and its
+comments as they are:
+
+```bash
+paniolo power set -t target-machine --level hard \
+    --cycle-cmd "~/scripts/hard-cycle.sh" --state-cmd "shellyplug -d 192.0.2.10 state"
+paniolo power rm -t target-machine --level hard   # only that level
+paniolo power rm -t target-machine                # the whole channel, levels included
+```
+
+Then pick a level with `--level` on any power verb:
+
+```bash
+paniolo power-cycle target-machine --level hard
+paniolo power on    target-machine --level hard
+paniolo power off   target-machine --level hard
+paniolo power-state target-machine --level hard
+```
+
+Rules:
+
+- **No `--level` means the default level**, so labs without levels and the
+  scripts that drive them behave exactly as before. `--level default` names
+  the default level explicitly, which is why no level may be called
+  `default`.
+- **A level never borrows a hook from the default level.** If `hard` has no
+  `on_cmd`, `power on --level hard` fails with exit 3 (`not_configured`)
+  naming the level, rather than running the default `on_cmd`. An unknown
+  level fails the same way and lists the levels the target has.
+- **`power-cycle --level L` confirms with L's own `state_cmd`**, the same
+  500 ms / 30 s wait as the default level. Without one it prints `Power cycle
+  requested at level 'L'`.
+- **`power-state` without `--level`** prints one line per level when the
+  target has levels, the default level first; with none, it prints the single
+  line it always has:
+
+  ```text
+  Power ON  (target-machine)
+  Power OFF  (target-machine, level hard)
+  Power UNKNOWN  (target-machine, level pmic: no state_cmd)
+  ```
+
+  A level that has no way to read state is reported as `UNKNOWN … no
+  state_cmd`, not as an error. A level whose `state_cmd` fails is reported as
+  `UNKNOWN … state read failed`, and the command then exits with that
+  failure (101, `helper_failed`) after printing every line. With
+  `--level NAME` only that level's line is printed.
+- Level names follow the same rule as target names: letters, digits, `.`,
+  `_` and `-`, not starting with `-`. Each level needs at least one hook.
+- Every level runs on the power channel's host (`--host` is set for the whole
+  channel, without `--level`), and every level's hooks take the same
+  per-target hook lock as the default hooks and the
+  [named actions](actions.md), so a soft and a hard cycle never overlap.
+- **The dashboard's power controls drive the default level only**, as does
+  an action's `requires_power` check. Use the CLI or the MCP tools for the
+  others.
+
 ### `paniolo doctor` hook probing
 
 `paniolo doctor` probes every hook, over SSH for remote hosts: `test -e` for an
@@ -197,6 +284,10 @@ absolute path, `command -v` for a bare name, in the runtime lookup order:
 3. `PATH`.
 
 It lists configured hooks by name, e.g. `cycle_cmd,on_cmd,off_cmd,state_cmd`.
+Each [power level](#power-levels-soft-and-hard) is probed the same way and
+listed after the default hooks (`cycle_cmd,state_cmd; level hard:
+cycle_cmd,state_cmd`); a missing program is reported with its level, as
+`level 'hard': …`.
 
 ### Example: Home Assistant script (cycle_cmd)
 

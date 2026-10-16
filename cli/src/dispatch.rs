@@ -86,6 +86,16 @@ pub fn build_slice(lab: &Lab, target: &str, host: &str) -> Result<String, LabErr
                 p.serial_interface.as_deref(),
                 None,
             )?;
+            for (name, l) in &p.levels {
+                lf.set_power_level(
+                    target,
+                    name,
+                    l.cycle_cmd.as_deref(),
+                    l.on_cmd.as_deref(),
+                    l.off_cmd.as_deref(),
+                    l.state_cmd.as_deref(),
+                )?;
+            }
         }
     }
     if let Some(v) = &t.video {
@@ -787,6 +797,42 @@ mod tests {
         assert_eq!(e.kind, crate::error::Kind::NotConfigured);
         assert!(e.to_string().contains("declared: bench1, bench2"), "{e}");
         assert_eq!(helper_host(&lab, None, None, None, None).unwrap(), "local");
+    }
+
+    /// Power levels (#302) ride in the slice with the power channel, to its
+    /// host only, so `power-cycle --level` re-exec'd there finds them.
+    #[test]
+    fn slice_carries_power_levels_to_the_power_host() {
+        let lab = model::parse(
+            r#"
+            [hosts.bench1]
+            ssh = "u@bench1"
+            [hosts.bench2]
+            ssh = "u@bench2"
+            [targets.pi5]
+            host = "bench1"
+            [targets.pi5.power]
+            host = "bench2"
+            cycle_cmd = "boardctl cycle"
+            [targets.pi5.power.levels.hard]
+            cycle_cmd = "shellyplug -d 192.0.2.10 cycle"
+            state_cmd = "shellyplug -d 192.0.2.10 state"
+            [targets.pi5.power.levels.pmic]
+            off_cmd = "pmic off"
+            "#,
+        )
+        .unwrap();
+        let on2 = model::parse(&build_slice(&lab, "pi5", "bench2").unwrap()).unwrap();
+        let p = on2.targets["pi5"].power.as_ref().unwrap();
+        assert_eq!(p.host, None);
+        assert_eq!(p.cycle_cmd.as_deref(), Some("boardctl cycle"));
+        assert_eq!(
+            p.levels,
+            lab.targets["pi5"].power.as_ref().unwrap().levels,
+            "every level crosses unchanged"
+        );
+        let on1 = model::parse(&build_slice(&lab, "pi5", "bench1").unwrap()).unwrap();
+        assert!(on1.targets["pi5"].power.is_none());
     }
 
     /// The actions table rides in the slice for the host it is bound to, and

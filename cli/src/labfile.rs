@@ -451,6 +451,97 @@ impl LabFile {
         self.remove_singleton(target, "power")
     }
 
+    /// Create or update the named power level `level` (#302): sets each hook
+    /// given, leaving the others untouched. Creating the level needs at least
+    /// one hook; the power channel is created when absent. A level written
+    /// inline (`hard = { cycle_cmd = "…" }`) is edited in place.
+    pub fn set_power_level(
+        &mut self,
+        target: &str,
+        level: &str,
+        cycle_cmd: Option<&str>,
+        on_cmd: Option<&str>,
+        off_cmd: Option<&str>,
+        state_cmd: Option<&str>,
+    ) -> Result<(), LabError> {
+        model::validate_name("power level", level)?;
+        if level == model::DEFAULT_POWER_LEVEL {
+            return lab_err(format!(
+                "'{}' names the hooks set without --level; pick another level name",
+                model::DEFAULT_POWER_LEVEL
+            ));
+        }
+        let hooks = [
+            ("cycle_cmd", cycle_cmd),
+            ("on_cmd", on_cmd),
+            ("off_cmd", off_cmd),
+            ("state_cmd", state_cmd),
+        ];
+        self.set_singleton(target, "power", &[])?;
+        let power = self
+            .target_mut(target)?
+            .get_mut("power")
+            .and_then(|i| i.as_table_mut())
+            .ok_or_else(|| LabError(format!("target '{target}': power is not a table")))?;
+        if !power.contains_key("levels") {
+            let mut t = Table::new();
+            t.set_implicit(true);
+            power.insert("levels", Item::Table(t));
+        }
+        let levels = power
+            .get_mut("levels")
+            .and_then(|i| i.as_table_mut())
+            .ok_or_else(|| not_a_standard_table(&format!("targets.{target}.power.levels")))?;
+        if !levels.contains_key(level) {
+            if hooks.iter().all(|(_, v)| v.is_none()) {
+                return lab_err(format!(
+                    "target '{target}': new power level '{level}' needs at least one of \
+                     --cycle-cmd, --on-cmd, --off-cmd, --state-cmd"
+                ));
+            }
+            levels.insert(level, Item::Table(Table::new()));
+        }
+        let l = levels
+            .get_mut(level)
+            .and_then(|i| i.as_table_like_mut())
+            .ok_or_else(|| {
+                LabError(format!(
+                    "target '{target}': power level '{level}' is not a table"
+                ))
+            })?;
+        for (k, v) in hooks {
+            if let Some(v) = v {
+                l.insert(k, value(v));
+            }
+        }
+        if let Some(inline) = levels.get_mut(level).and_then(|i| i.as_inline_table_mut()) {
+            inline.fmt();
+        }
+        Ok(())
+    }
+
+    /// Remove the named power level, leaving the default hooks and any other
+    /// level alone; the `levels` table goes too when it was the last one.
+    pub fn remove_power_level(&mut self, target: &str, level: &str) -> Result<(), LabError> {
+        let missing = || LabError(format!("target '{target}': no power level '{level}'"));
+        let power = self
+            .target_mut(target)?
+            .get_mut("power")
+            .and_then(|i| i.as_table_mut())
+            .ok_or_else(|| LabError(format!("target '{target}': no power channel")))?;
+        let levels = power
+            .get_mut("levels")
+            .and_then(|i| i.as_table_like_mut())
+            .ok_or_else(missing)?;
+        if levels.remove(level).is_none() {
+            return Err(missing());
+        }
+        if levels.is_empty() {
+            power.remove("levels");
+        }
+        Ok(())
+    }
+
     pub fn set_video(
         &mut self,
         target: &str,
@@ -762,6 +853,102 @@ mod tests {
         lf.remove_action("pi5", "recovery").unwrap();
         lf.save().unwrap();
         assert!(model::load(&path).unwrap().targets["pi5"].actions.is_none());
+    }
+
+    /// Power levels (#302): create beside the default hooks (keeping a hand
+    /// comment), update one hook without touching the others or the default
+    /// set, edit an inline level in place, refuse bad names and an empty new
+    /// level, and remove one level and then the last.
+    #[test]
+    fn power_levels_round_trip() {
+        let (_d, path) = tmp();
+        std::fs::write(
+            &path,
+            "[targets.pi5]\n\n[targets.pi5.power]\n# soft layer: the board MCU\n\
+             cycle_cmd = \"boardctl cycle\"\n\n\
+             [targets.pi5.power.levels]\npmic = { on_cmd = \"pmic on\" }\n",
+        )
+        .unwrap();
+        let mut lf = LabFile::load(&path).unwrap();
+        lf.set_power_level(
+            "pi5",
+            "hard",
+            Some("shellyplug -d 192.0.2.10 cycle"),
+            None,
+            None,
+            Some("shellyplug -d 192.0.2.10 state"),
+        )
+        .unwrap();
+        lf.set_power_level("pi5", "pmic", None, None, Some("pmic off"), None)
+            .unwrap();
+        lf.save().unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("# soft layer: the board MCU"), "{text}");
+        assert!(text.contains("[targets.pi5.power.levels.hard]"), "{text}");
+        assert!(
+            text.contains("pmic = { on_cmd = \"pmic on\", off_cmd = \"pmic off\" }"),
+            "{text}"
+        );
+        let lab = model::load(&path).unwrap();
+        let p = lab.targets["pi5"].power.as_ref().unwrap();
+        assert_eq!(p.cycle_cmd.as_deref(), Some("boardctl cycle"));
+        assert_eq!(
+            p.levels["hard"].state_cmd.as_deref(),
+            Some("shellyplug -d 192.0.2.10 state")
+        );
+
+        let mut lf = LabFile::load(&path).unwrap();
+        lf.set_power_level(
+            "pi5",
+            "hard",
+            None,
+            Some("shellyplug -d 192.0.2.10 on"),
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(lf
+            .set_power_level("pi5", "new", None, None, None, None)
+            .is_err());
+        assert!(lf
+            .set_power_level("pi5", "default", Some("x"), None, None, None)
+            .is_err());
+        assert!(lf
+            .set_power_level("pi5", "-x", Some("x"), None, None, None)
+            .is_err());
+        lf.save().unwrap();
+        let lab = model::load(&path).unwrap();
+        let hard = &lab.targets["pi5"].power.as_ref().unwrap().levels["hard"];
+        assert_eq!(
+            hard.cycle_cmd.as_deref(),
+            Some("shellyplug -d 192.0.2.10 cycle")
+        );
+        assert_eq!(hard.on_cmd.as_deref(), Some("shellyplug -d 192.0.2.10 on"));
+
+        let mut lf = LabFile::load(&path).unwrap();
+        lf.remove_power_level("pi5", "hard").unwrap();
+        assert!(lf.remove_power_level("pi5", "hard").is_err());
+        lf.remove_power_level("pi5", "pmic").unwrap();
+        lf.save().unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(!text.contains("levels"), "{text}");
+        assert!(text.contains("# soft layer: the board MCU"), "{text}");
+        let lab = model::load(&path).unwrap();
+        let p = lab.targets["pi5"].power.as_ref().unwrap();
+        assert!(p.levels.is_empty());
+        assert_eq!(p.cycle_cmd.as_deref(), Some("boardctl cycle"));
+
+        // A level on a target with no power channel creates the channel.
+        let mut lf = LabFile::load(&path).unwrap();
+        lf.add_target("nuc", None, None).unwrap();
+        lf.set_power_level("nuc", "hard", Some("x"), None, None, None)
+            .unwrap();
+        assert!(lf.remove_power_level("pi5", "nope").is_err());
+        lf.save().unwrap();
+        let lab = model::load(&path).unwrap();
+        let p = lab.targets["nuc"].power.as_ref().unwrap();
+        assert_eq!(p.cycle_cmd, None);
+        assert_eq!(p.levels["hard"].cycle_cmd.as_deref(), Some("x"));
     }
 
     #[test]
