@@ -322,6 +322,23 @@ var selfTest = false
 var path: String? = nil
 for arg in CommandLine.arguments.dropFirst() {
     switch arg {
+    case "--help", "-h":
+        print("""
+        Read text from an image using Apple Vision (on-device).
+
+        Usage: visionocr [OPTIONS] [PATH | -]
+
+        Read an image from PATH, or stdin when PATH is omitted or '-'.
+        Print recognized text in reading order by default.
+
+        Options:
+          --json        Emit the v1 OCR JSON envelope with source-pixel boxes
+          --accurate    Use accurate recognition (default)
+          --fast        Use faster, less accurate recognition
+          --self-test   Run internal checks without an image; exit 0 on success
+          -h, --help    Print help and exit
+        """)
+        exit(0)
     case "--accurate": accurate = true
     case "--fast": accurate = false
     case "--json": json = true

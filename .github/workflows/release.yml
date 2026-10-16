@@ -459,8 +459,12 @@ jobs:
             & "$root/libexec/$h.exe" --help | Out-Null
             if ($LASTEXITCODE -ne 0) { throw "$h.exe --help exited $LASTEXITCODE" }
           }
-          # winocr has no --help; it reads an image and prints the v1 OCR JSON
-          # envelope, like visionocr in the macOS job. An 8x8 PNG proves the
+          foreach ($flag in @("--help", "-h")) {
+            & "$root/paniolo.exe" helper winocr $flag | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw "winocr.exe $flag exited $LASTEXITCODE" }
+          }
+          # winocr reads an image and prints the v1 OCR JSON envelope,
+          # like visionocr in the macOS job. An 8x8 PNG proves the
           # Windows.Media.Ocr path actually decodes, not just that it starts.
           $tiny = Join-Path $env:RUNNER_TEMP "tiny.png"
           [IO.File]::WriteAllBytes($tiny, [Convert]::FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAD0lEQVR4nGP4jwMwDC0JALoev0Ewkwr8AAAAAElFTkSuQmCC"))
@@ -766,7 +770,10 @@ jobs:
             exit 1
           fi
 
-          # visionocr has no --help; it reads an image and prints the v1 OCR
+          for flag in --help -h; do
+            "$root/bin/paniolo" helper visionocr "$flag" >/dev/null
+          done
+          # visionocr reads an image and prints the v1 OCR
           # JSON envelope (ocr/visionocr.swift). Decode a tiny (8x8, 72-byte)
           # synthetic PNG and confirm the binary actually decodes it through
           # Vision/CoreGraphics/ImageIO and emits that envelope — not just

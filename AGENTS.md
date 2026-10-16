@@ -1254,6 +1254,9 @@ Two entry points, both feeding the same warm frame:
 set to the resolved path when the daemon starts, so the daemon always uses the
 installed binary (never a stale PATH hit).
 
+Every OCR helper accepts `--help` and `-h` without reading image input;
+`paniolo helper <name> --help` prints its supported options and exits 0.
+
 **macOS — `ocr/visionocr.swift`** (`VNRecognizeTextRequest`, Apple Vision):
 on-device, no network, no model download. `paniolo setup` compiles it (`swiftc`)
 into the libexec dir (`~/.local/libexec/paniolo/bin`).

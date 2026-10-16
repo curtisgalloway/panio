@@ -215,6 +215,21 @@ fn main() {
     let mut path: Option<String> = None;
     for arg in std::env::args().skip(1) {
         match arg.as_str() {
+            "--help" | "-h" => {
+                println!(
+                    "Read text from an image using Windows.Media.Ocr (on-device).
+
+Usage: winocr [OPTIONS] [PATH | -]
+
+Read an image from PATH, or stdin when PATH is omitted or '-'.
+Print recognized text in reading order by default.
+
+Options:
+  --json        Emit the v1 OCR JSON envelope with source-pixel boxes
+  -h, --help    Print help and exit"
+                );
+                return;
+            }
             "--json" => json = true,
             "-" => path = None,
             other => path = Some(other.to_string()),

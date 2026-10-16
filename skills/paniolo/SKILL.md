@@ -103,6 +103,10 @@ lists or runs one directly. If a different `paniolo` shadows the CLI on PATH
 `~/.cargo/bin` first or remove the other copy; `make install` warns when it
 detects a shadow.
 
+The OCR helpers also accept `--help` and `-h` without an image:
+`paniolo helper visionocr --help` on macOS or `paniolo helper winocr --help`
+on Windows lists their input and output options.
+
 Discover installed helpers with `paniolo helper`. Everything after the
 helper name goes to the helper, so `paniolo helper serialcap --help` is the
 helper's own help (`paniolo helper --help` is paniolo's). Listing helpers and
