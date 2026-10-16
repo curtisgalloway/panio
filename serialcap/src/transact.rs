@@ -232,7 +232,11 @@ mod tests {
         assert_eq!(result["status"], "matched", "{result}");
         assert_eq!(result["sent_bytes"], 8);
         let reply = reply_bytes(&result);
-        assert!(reply.ends_with(b"OK\r\n"), "{reply:?}");
+        // The wait matches as soon as the literal arrives, so the reply ends
+        // at the chunk holding `OK`; the trailing CR LF may arrive in a later
+        // read and fall outside it.
+        assert!(reply.starts_with(b"version 1.2"), "{reply:?}");
+        assert!(reply.windows(2).any(|w| w == b"OK"), "{reply:?}");
         assert!(
             !reply.windows(5).any(|w| w == b"stale"),
             "pre-send output leaked into the reply: {reply:?}"
