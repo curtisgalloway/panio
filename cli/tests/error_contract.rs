@@ -180,6 +180,42 @@ fn configured_netboot_root_prints_bare_path_without_starting_a_service() {
 }
 
 #[test]
+fn netboot_start_and_netif_netboot_refuse_a_missing_root_as_not_configured() {
+    // #283: the verbs that act on the interface must refuse an unset
+    // tftp_root as not_configured (exit 3, with context) before touching the
+    // interface or spawning netbootd, not fail as an internal error.
+    let lab = "[hosts.control]\nssh = \"local\"\n\
+               [targets.dut]\n\
+               [targets.dut.netboot]\nhost = \"control\"\n\
+               interface = \"test-netboot-interface\"\n";
+    for (name, args) in [
+        ("start_no_root", &["netboot", "start", "dut"][..]),
+        (
+            "netif_no_root",
+            &["netif", "mode", "netboot", "-t", "dut"][..],
+        ),
+    ] {
+        let dir = scratch(name, lab);
+        let out = paniolo(&dir, true, args);
+        assert_eq!(out.status.code(), Some(3), "{args:?}: {out:?}");
+        assert!(out.stdout.is_empty(), "{args:?}: {out:?}");
+        let e = error_object(&out);
+        assert_eq!(e["kind"], "not_configured", "{args:?}");
+        assert_eq!(e["target"], "dut", "{args:?}");
+        assert_eq!(e["channel"], "netboot", "{args:?}");
+        assert_eq!(e["host"], "control", "{args:?}");
+        assert!(
+            e["message"]
+                .as_str()
+                .unwrap()
+                .contains("--tftp-root <path>"),
+            "{args:?}: {e}"
+        );
+        assert_eq!(std::fs::read_dir(dir.join("run")).unwrap().count(), 0);
+    }
+}
+
+#[test]
 fn missing_serial_interface_is_not_configured() {
     expect(
         "no_iface",
