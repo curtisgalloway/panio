@@ -469,6 +469,94 @@ pub fn remote_daemon_endpoint(
     crate::daemons::Endpoint::from_json(out.stdout.trim())
 }
 
+/// Where `paniolo helper` should run (#300): the lab host named by `--host`,
+/// the host of `target`'s `channel` (`-t T --channel K`, with `interface`
+/// picking a serial interface), or, with `-t` alone, the one host all of the
+/// target's channels share. Neither flag means local, unchanged.
+///
+/// Unlike [`channel_host`](crate::model::channel_host), a channel the target
+/// does not have is an error rather than a fall back to the default host:
+/// the caller named that channel to say where the hardware is.
+pub fn helper_host(
+    lab: &Lab,
+    host: Option<&str>,
+    target: Option<&str>,
+    channel: Option<&str>,
+    interface: Option<&str>,
+) -> Result<String, crate::error::PanioloError> {
+    use crate::error::{channel_missing, Kind, PanioloError};
+    if let Some(h) = host {
+        if h == crate::model::LOCAL || lab.hosts.contains_key(h) {
+            return Ok(h.to_string());
+        }
+        let declared: Vec<&str> = lab.hosts.keys().map(String::as_str).collect();
+        return Err(PanioloError::not_configured(format!(
+            "no host '{h}' in lab (declared: {})",
+            if declared.is_empty() {
+                "none".to_string()
+            } else {
+                declared.join(", ")
+            }
+        ))
+        .host(h));
+    }
+    let Some(target) = target else {
+        return Ok(crate::model::LOCAL.to_string());
+    };
+    let rt = lab
+        .resolved_target(target)
+        .ok_or_else(|| crate::error::target_not_found(target))?;
+    let Some(channel) = channel else {
+        let hosts = rt.hosts();
+        if hosts.len() == 1 {
+            return Ok(hosts[0].clone());
+        }
+        return Err(PanioloError::new(
+            Kind::Usage,
+            format!(
+                "target '{target}' has channels on several hosts ({}); \
+                 pick one with --channel",
+                hosts.join(", ")
+            ),
+        )
+        .target(target));
+    };
+    let kind = ChannelKind::from_name(channel).ok_or_else(|| {
+        let valid: Vec<&str> = ChannelKind::ALL.iter().map(|k| k.as_str()).collect();
+        PanioloError::new(
+            Kind::Usage,
+            format!("unknown channel '{channel}' (valid: {})", valid.join(", ")),
+        )
+    })?;
+    if !rt.channels.iter().any(|c| c.kind == kind) {
+        return Err(channel_missing(
+            target,
+            channel,
+            format!("target '{target}' has no {channel} channel"),
+        ));
+    }
+    crate::model::channel_host(&rt, kind, interface)
+}
+
+/// Run `sub_argv` (a paniolo subcommand that needs no lab, such as `helper`)
+/// on `host_name` with stdio passed through, and return its exit code. No lab
+/// slice is shipped. ssh's own 255 becomes `unreachable`, as in [`dispatch`].
+pub fn run_on_host(lab: &Lab, host_name: &str, sub_argv: &[String]) -> anyhow::Result<i32> {
+    let host = lab.host(host_name);
+    let mut argv = vec![host.paniolo()];
+    argv.extend(json_errors_arg(crate::error::json_requested()));
+    argv.extend(sub_argv.iter().cloned());
+    let code = ssh::run_passthrough(&host, &argv, &ssh::forwarded_env()?)?;
+    if code == crate::error::SSH_TRANSPORT_FAILURE {
+        return Err(crate::error::unreachable_host(
+            host_name,
+            crate::error::ssh_255_message(host_name),
+        )
+        .into());
+    }
+    Ok(code)
+}
+
 /// Resolve where a command should run and dispatch if remote.
 ///
 /// Returns `Some(exit_code)` when the command was dispatched to a control host
@@ -606,6 +694,85 @@ mod tests {
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
             .collect();
         assert_eq!(names, vec!["shot.png"], "{names:?}");
+    }
+
+    /// `paniolo helper`'s host resolution (#300) against the fixture lab:
+    /// fortune's video and hid live on bench2, everything else on bench1.
+    #[test]
+    fn helper_host_follows_the_named_channel() {
+        let lab = lab();
+        let at = |t, c, i| helper_host(&lab, None, Some(t), Some(c), i);
+        assert_eq!(at("fortune", "hid", None).unwrap(), "bench2");
+        assert_eq!(at("fortune", "video", None).unwrap(), "bench2");
+        assert_eq!(at("fortune", "usb", None).unwrap(), "bench1");
+        assert_eq!(at("fortune", "serial", Some("console")).unwrap(), "bench1");
+        assert_eq!(at("fortune", "serial", None).unwrap(), "bench1");
+    }
+
+    /// A channel the target lacks is refused, not silently replaced by the
+    /// default host: naming it was the caller's way of saying where to run.
+    #[test]
+    fn helper_host_refuses_a_missing_or_unknown_channel() {
+        let lab = lab();
+        let missing = helper_host(&lab, None, Some("fortune"), Some("power"), None).unwrap_err();
+        assert_eq!(missing.kind, crate::error::Kind::NotConfigured);
+        assert!(
+            missing.to_string().contains("no power channel"),
+            "{missing}"
+        );
+        let unknown = helper_host(&lab, None, Some("fortune"), Some("relay"), None).unwrap_err();
+        assert_eq!(unknown.kind, crate::error::Kind::Usage);
+        assert!(unknown.to_string().contains("valid: netboot"), "{unknown}");
+        let iface =
+            helper_host(&lab, None, Some("fortune"), Some("serial"), Some("dbg")).unwrap_err();
+        assert!(
+            iface.to_string().contains("no serial interface 'dbg'"),
+            "{iface}"
+        );
+    }
+
+    /// `-t` alone works only when every channel shares one host.
+    #[test]
+    fn helper_host_with_target_alone_needs_one_host() {
+        let split = helper_host(&lab(), None, Some("fortune"), None, None).unwrap_err();
+        assert_eq!(split.kind, crate::error::Kind::Usage);
+        assert!(split.to_string().contains("bench1, bench2"), "{split}");
+        let one = model::parse(
+            r#"
+            [hosts.bench1]
+            ssh = "u@bench1"
+            [targets.pi5]
+            host = "bench1"
+            [targets.pi5.power]
+            cycle_cmd = "shellyplug -d 192.0.2.10 cycle"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(
+            helper_host(&one, None, Some("pi5"), None, None).unwrap(),
+            "bench1"
+        );
+        assert!(helper_host(&one, None, Some("nope"), None, None).is_err());
+    }
+
+    /// `--host` takes a declared host or `local`; anything else is refused
+    /// rather than quietly run here, which is what `Lab::host` would do.
+    /// Neither flag is the old local behavior.
+    #[test]
+    fn helper_host_by_name() {
+        let lab = lab();
+        assert_eq!(
+            helper_host(&lab, Some("bench2"), None, None, None).unwrap(),
+            "bench2"
+        );
+        assert_eq!(
+            helper_host(&lab, Some("local"), None, None, None).unwrap(),
+            "local"
+        );
+        let e = helper_host(&lab, Some("ghost"), None, None, None).unwrap_err();
+        assert_eq!(e.kind, crate::error::Kind::NotConfigured);
+        assert!(e.to_string().contains("declared: bench1, bench2"), "{e}");
+        assert_eq!(helper_host(&lab, None, None, None, None).unwrap(), "local");
     }
 
     fn lab() -> Lab {

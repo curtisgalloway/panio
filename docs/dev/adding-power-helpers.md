@@ -102,12 +102,13 @@ Mirror the existing helpers:
 Use Rust for a simple serial/HTTP protocol, Python when the driver library is
 Python (zigpy-znp). Any language works if it installs an executable into the
 libexec dir (`~/.local/libexec/paniolo/bin`). Helpers stay off PATH; run one
-by hand with `paniolo helper <name> …`.
+by hand with `paniolo helper <name> …`, adding `-t <target> --channel
+<kind>` or `--host <labhost>` before the name to run it on the host where
+the hardware is (see [Power](../power.md)).
 
-For a helper's own help, use `paniolo helper -- shellyplug --help`. Put the
-`--` separator before the helper name; otherwise `--help` shows paniolo's
-outer helper-command help. This is a way to discover a bundled helper's
-commands without opening hardware or starting its daemon.
+For a helper's own help, use `paniolo helper shellyplug --help`: everything
+after the helper name goes to the helper. This is a way to discover a
+bundled helper's commands without opening hardware or starting its daemon.
 
 Take state and temp paths from `PANIOLO_STATE_DIR`/`PANIOLO_RUNTIME_DIR` (§1);
 zigplug's `default_db_path()` and `runtime_dir()` are the reference

@@ -140,10 +140,24 @@ Helpers install into the private libexec dir (`~/.local/libexec/paniolo/bin`),
 not onto `PATH`. Hook strings name them bare; paniolo looks in libexec first.
 To run one by hand, use `paniolo helper <name> …`. List installed helpers
 with `paniolo helper`, then read a helper's own help with
-`paniolo helper -- amt --help`. The `--` before the name lets the helper
-receive `--help`; without it, paniolo shows its outer helper-command help.
-Listing helpers and reading bundled helper help do not open hardware or
-start a daemon.
+`paniolo helper amt --help`. Everything after the helper name, `--help`
+included, goes to the helper; a `--` before the name is accepted but not
+needed. Listing helpers and reading bundled helper help do not open hardware
+or start a daemon.
+
+A helper runs on the local machine unless you say where the hardware is.
+Put these flags **before** the helper name:
+
+```bash
+paniolo helper -t target-machine --channel power cambrionix -d /dev/ttyUSB0 state
+paniolo helper --host bench1 zigplug -d /dev/ttyUSB1 list
+```
+
+`-t T --channel K` runs on the host the lab binds that target's channel to
+(`-i NAME` picks a serial interface when they span hosts); `-t T` alone
+works when all of the target's channels share one host; `--host H` names a
+lab host. It re-execs `paniolo helper` on that host over SSH, so the helper
+gets that host's own state and runtime dirs, as a hook would.
 
 The `hidrig` control board can also switch a DUT power relay
 (`hidrig power off|on|cycle`) behind these hooks (see

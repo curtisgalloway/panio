@@ -398,6 +398,22 @@ impl ChannelKind {
             ChannelKind::Adb => "adb",
         }
     }
+
+    /// Every channel kind, in lab-file order.
+    pub const ALL: [ChannelKind; 7] = [
+        ChannelKind::Netboot,
+        ChannelKind::Serial,
+        ChannelKind::Power,
+        ChannelKind::Video,
+        ChannelKind::Hid,
+        ChannelKind::Usb,
+        ChannelKind::Adb,
+    ];
+
+    /// The kind whose [`as_str`](Self::as_str) is `name`.
+    pub fn from_name(name: &str) -> Option<ChannelKind> {
+        Self::ALL.into_iter().find(|k| k.as_str() == name)
+    }
 }
 
 /// One channel of a target with its physical host resolved.
