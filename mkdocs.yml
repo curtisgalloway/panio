@@ -86,6 +86,7 @@ nav:
   - Glossary: glossary.md
   - Developer docs:
       - Architecture: dev/architecture.md
+      - Platform support: dev/platform-support.md
       - Requirements & progress: dev/requirements.md
       - Interfaces:
           - HID serial protocol: dev/hid-serial-protocol.md
