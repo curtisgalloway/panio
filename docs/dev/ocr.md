@@ -71,6 +71,11 @@ headless Pi OS lacks, and fails at first OCR rather than at install.
 
 ## The contract
 
+**Help:** `paniolo helper <name> --help` (or `-h`) prints usage and exits 0
+without reading an image. All helpers accept `--json`; `visionocr` also offers
+`--accurate` (the default), `--fast`, and `--self-test` (internal checks without
+an image).
+
 **Input:** a PNG on stdin (`-`) or a path argument.
 
 - `rapidocr` errors on anything without the PNG signature (see

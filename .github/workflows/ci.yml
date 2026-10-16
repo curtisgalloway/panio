@@ -519,3 +519,11 @@ jobs:
         run: swiftc -O -o "$RUNNER_TEMP/visionocr" ocr/visionocr.swift
       - name: visionocr bbox self-test
         run: '"$RUNNER_TEMP/visionocr" --self-test'
+      - name: visionocr help without image input
+        run: |
+          for flag in --help -h; do
+            "$RUNNER_TEMP/visionocr" --json missing-image.png "$flag" > "$RUNNER_TEMP/visionocr-help.txt"
+            grep -q 'Usage: visionocr' "$RUNNER_TEMP/visionocr-help.txt"
+            grep -q -- '--accurate' "$RUNNER_TEMP/visionocr-help.txt"
+            grep -q -- '--self-test' "$RUNNER_TEMP/visionocr-help.txt"
+          done
