@@ -200,7 +200,33 @@ follow-up. Run through this checklist before calling `gh pr create`:
    `.object.type` is `tag` (annotated) dereference it via `git/tags/<sha>`
    to reach the commit.
 
-8. **Push, open the PR, and merge only when asked.** Get the branch ready by
+8. **Tag the PR with the issue it fixes, in a form GitHub parses.** A PR
+   that fixes an issue says so with a closing keyword immediately followed
+   by the number, on its own line in the PR body: `Fixes #238` or
+   `Closes #238` (one line per issue). GitHub then links the PR and closes
+   the issue when the PR merges, squash merges included. Put the same line
+   in the commit message, and put the number in the PR title too
+   (`ch9329: drain startup echo on Linux (#238)`), so it survives in
+   `git log --oneline`.
+
+   - **Only for a full fix.** A PR that fixes part of an issue, works around
+     it, or adds diagnostics writes `Part of #238`, which links without
+     closing. Then it comments on the issue saying what is now done and what
+     is still missing. The issue stays open until its own ask is done.
+   - **Prose does not count.** "Fixes the autodetect failure in #81" and
+     "Related to #238" link nothing and close nothing: the keyword must be
+     directly followed by `#N`.
+   - **Check after the merge.** `gh issue view <N> --json state` should
+     say `CLOSED`. If it does not, the reference was wrong; fix it by
+     closing the issue with a comment that names the merged PR.
+
+   **Why:** PR #84 ("Fixes the autodetect failure in #81") and PR #275
+   ("Related to #238") both merged without GitHub recording that they
+   addressed those issues, so both issues sat open for weeks with no
+   pointer to the work. The next person to triage them had to rediscover
+   from `git log` what had already been done (2026-10-16).
+
+9. **Push, open the PR, and merge only when asked.** Get the branch ready by
    committing locally, but treat `git push`, `gh pr create`, and merging as
    gated on the maintainer's explicit instruction — don't push or open a PR on
    your own initiative, and never merge. When told to, open with `gh pr create`;
