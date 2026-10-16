@@ -692,17 +692,17 @@ answers with the host on, off, or bare-metal):
 
 ```
 paniolo power set -t optiplex \
-    --cycle-cmd "amt cycle -d 10.0.0.5 -u admin --delay-ms 5000" \
-    --on-cmd    "amt on -d 10.0.0.5 -u admin" \
-    --off-cmd   "amt off -d 10.0.0.5 -u admin" \
-    --state-cmd "amt state -d 10.0.0.5 -u admin"
+    --cycle-cmd "amt cycle -d amt-host.example -u admin --delay-ms 5000" \
+    --on-cmd    "amt on -d amt-host.example -u admin" \
+    --off-cmd   "amt off -d amt-host.example -u admin" \
+    --state-cmd "amt state -d amt-host.example -u admin"
 ```
 
 **The AMT password is not in the lab file.** The helper takes it from the
 first set of: the `AMT_PASSWORD` environment variable, `--password-file
 <path>`, or `--password-command <cmd>` (whose stdout is the password). A hook
 that carries its own source needs nothing in the environment, e.g.
-`--state-cmd "amt state -d 10.0.0.5 --password-command 'op read op://lab/amt/password'"`;
+`--state-cmd "amt state -d amt-host.example --password-command 'op read op://lab/amt/password'"`;
 look at the existing hooks before composing a fetch by hand. Otherwise run
 `paniolo power …` with `AMT_PASSWORD` set, e.g.
 `op run --env-file .env -- bash -c 'paniolo power-cycle optiplex'` (single
@@ -712,6 +712,24 @@ remote power channel); `AMT_PASSWORD` set where *you* run the command is
 carried to a remote control host by paniolo's own dispatch, over the remote
 command's stdin, never its argv, and wins over the hook's file or command.
 See "Setting up the credential source" in `docs/power.md` for the patterns.
+
+AMT uses **verified HTTPS on 16993 by default**, with no HTTP fallback.
+Use the certificate's name. For a private CA (certificate authority), add
+`--tls-ca-file /etc/paniolo/amt-ca.pem` to all four hooks; it adds trust to
+built-in public roots and does not bypass name or validity checks. The flag
+wins over `AMT_TLS_CA_FILE`. The file and fallback are read on the execution
+host; paniolo does not forward `AMT_TLS_CA_FILE` to remote hosts.
+
+For deliberately retained legacy HTTP only, add `--allow-insecure-http` to
+**all four hooks**, for example `amt --allow-insecure-http -d
+http://amt-host.example state`. Bare addresses with that flag also mean
+HTTP/16992. Explicit HTTPS plus the flag, or HTTP plus a CA file, is rejected.
+A port alone never chooses HTTP: bare `host:16992` requests TLS on 16992.
+HTTP warnings remain on stderr, including successful `paniolo power-state`.
+Do not retry TLS errors with HTTP or disable verification. TLS 1.2 alone is
+not enough if firmware only supports obsolete algorithms. KVM settings gain
+TLS; the separate RFB screen session does not. See `docs/power.md` and the
+[glossary](../../docs/glossary.md) for TLS and certificate terminology.
 
 ## Named actions — reset, recovery, boot straps
 
@@ -1074,6 +1092,8 @@ the device is free just because a daemon is gone from the tracked list.
   set the host's `identity` (agent key-spray); if the remote can't find paniolo,
   set its `paniolo_cmd` to an absolute path.
 - OCR is strongest on large text; tiny console fonts may misread some characters.
+- AMT bare addresses require verified HTTPS/16993. Update every power hook
+  together for private CA trust or explicit legacy HTTP; never auto-downgrade.
 - AMT-backed power hooks need a password source: `AMT_PASSWORD` in the
   environment of the `paniolo power …` invocation, or `--password-file` /
   `--password-command` in the hook (see the Intel AMT power example). A hook

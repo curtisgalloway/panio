@@ -25,6 +25,7 @@
 //!   cycle         off → confirm → delay → on → confirm
 
 mod rpc;
+mod tls;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -36,7 +37,7 @@ use clap::{Parser, Subcommand};
 use secret::{Secret, Sources, Spec};
 
 use rpc::{
-    is_transient, power_state_name, Client, CALL_TIMEOUT, KVM_DISABLED, KVM_ENABLED,
+    is_transient, power_state_name, Client, Connection, CALL_TIMEOUT, KVM_DISABLED, KVM_ENABLED,
     KVM_ENABLED_OFFLINE, MIN_CALL_TIMEOUT, PS_OFF_SOFT, PS_ON,
 };
 
@@ -74,14 +75,14 @@ const EXIT_NOT_CONFIGURED: u8 = 3;
     version,
     about = "Power control for Intel AMT (vPro) machines over WS-Management",
     long_about = "Power control for Intel AMT (vPro) machines over WS-Management (SOAP over \
-HTTP on port 16992, HTTP Digest auth).
+verified HTTPS on port 16993, HTTP Digest auth).
 
 MENTAL MODEL
   - Commands talk to the machine's Management Engine (ME), which runs on
     standby power: it answers with the host on, off, or bare-metal (no OS).
     So `state` is a true power *sensor*, not a guess.
   - A machine is addressed by -d/--device (a hostname, IPv4 address, or
-    bracketed IPv6 literal, optionally with :port; port 16992 by default)
+    bracketed IPv6 literal, optionally with :port; port 16993 by default)
     and -u/--user (default admin).
   - The Digest password is never a flag's value or a config-file entry, so it
     cannot leak into a lab file, shell history, or `ps` output. It comes from
@@ -90,7 +91,7 @@ MENTAL MODEL
       2. --password-file <path>     (one trailing newline is dropped)
       3. --password-command <cmd>   (run by sh -c / cmd /C; its stdout, 30 s limit)
     e.g. a power hook that needs no environment:
-      amt -d 10.0.0.5 --password-command 'op read op://lab/amt/password' state
+      amt -d amt-host.example --password-command 'op read op://lab/amt/password' state
     A missing file or failing command exits 3 (not configured).
   - on/off/cycle confirm by reading the power state back, so a request the
     firmware ignored surfaces as a non-zero exit.
@@ -100,20 +101,37 @@ MENTAL MODEL
     hibernating host is powered off and cold-booted, not merely resumed.
 
 TYPICAL USE
-  amt -d 10.0.0.5 status          firmware identity + power state detail
-  amt -d 10.0.0.5 state           prints exactly `on` or `off`
-  amt -d 10.0.0.5 on|off
-  amt -d 10.0.0.5 cycle [--delay-ms 3000]
+  amt -d amt-host.example status          firmware identity + power state detail
+  amt -d amt-host.example state           prints exactly `on` or `off`
+  amt -d amt-host.example on|off
+  amt -d amt-host.example cycle [--delay-ms 3000]
 
-TLS-provisioned AMT (port 16993) is not supported; this helper speaks the
-plain WS-Man port only."
+TLS certificates and hostnames are verified using built-in public roots plus
+--tls-ca-file (or AMT_TLS_CA_FILE). The flag overrides the environment; paths
+are local to the host running amt. No automatic fallback or skip-verify mode.
+For legacy HTTP only, explicitly pass --allow-insecure-http (default port 16992).
+This warns on stderr: Digest over HTTP has no confidentiality or integrity.
+TLS 1.2+ and compatible firmware algorithms are required. Mutual TLS and
+protection of the separate RFB session are not provided."
 )]
 struct Cli {
     /// AMT address: a hostname, IPv4 address, or bracketed IPv6 literal
-    /// (`[fe80::1]`), optionally with a port (default 16992); an `http://`
-    /// prefix is accepted. Anything URL-shaped beyond host[:port] is rejected.
+    /// (`[2001:db8::1]`), optionally with a port (default HTTPS 16993).
+    /// HTTP requires --allow-insecure-http. A port never selects the scheme.
+    /// Paths, userinfo, queries, and fragments are rejected.
     #[arg(short = 'd', long = "device", value_name = "HOST", global = true)]
     device: Option<String>,
+
+    /// Explicitly use unencrypted HTTP for a bare or http:// address (default
+    /// port 16992). Warns on stderr; conflicts with HTTPS and TLS CA settings.
+    #[arg(long, global = true)]
+    allow_insecure_http: bool,
+
+    /// Add PEM CA certificates to the built-in public roots. Overrides
+    /// AMT_TLS_CA_FILE; the path is resolved on the host running amt.
+    /// Certificate and hostname verification remain required.
+    #[arg(long, value_name = "PATH", global = true, env = "AMT_TLS_CA_FILE")]
+    tls_ca_file: Option<PathBuf>,
 
     /// AMT Digest username.
     #[arg(
@@ -223,6 +241,10 @@ fn run() -> Result<()> {
         .device
         .as_deref()
         .ok_or_else(|| anyhow!("required option '--device <HOST>' (-d) was not provided"))?;
+    let connection = Connection::new(device, cli.allow_insecure_http, cli.tls_ca_file.as_deref())?;
+    if connection.insecure_http {
+        eprintln!("WARNING: AMT is using unencrypted HTTP. Commands and state responses can be modified in transit, and Digest exchanges can enable offline password guessing.");
+    }
     let password = secret::require(
         &PASSWORD,
         &Sources {
@@ -230,7 +252,7 @@ fn run() -> Result<()> {
             command: cli.password_command,
         },
     )?;
-    let client = Client::new(device, &cli.user, password.expose())?;
+    let client = Client::new(connection, &cli.user, password.expose());
     match cli.cmd {
         Cmd::State => cmd_state(&client),
         Cmd::On => cmd_on(&client),

@@ -65,7 +65,7 @@ invocations. State lives in plain files.
 | `cambrionix` | Rust | Standalone power helper: Cambrionix USB-hub port control, wired in via the generic power hooks. |
 | `zigplug` | Python (uv tool, zigpy-znp) | Standalone power helper: Zigbee smart-plug control through a CC2652 coordinator; one-shots proxy through an auto-spawned daemon that owns the ZNP session. |
 | `shellyplug` | Rust (ureq) | Standalone power helper: Shelly Gen2+ smart plugs/relays over the device's local HTTP RPC — one-shot, stateless. |
-| `amt` | Rust (ureq) | Standalone power helper: Intel AMT/vPro power over WS-Management (port 16992, HTTP Digest), with true power-state readback from the ME. |
+| `amt` | Rust (ureq) | Standalone power helper: Intel AMT/vPro power over WS-Management (verified HTTPS on 16993 with HTTP Digest; legacy HTTP on 16992 requires explicit opt-in), with true power-state readback from the ME. |
 | `hidrig` | Rust | HID-injection helper: protocol client + `serve` daemon for the KB2040 injector, wired in via the generic `hid` channel. |
 | `ch9329` | Rust | HID-injection helper with the same CLI + `serve` daemon, speaking the CH9329 (serial-to-USB-HID chip) frame protocol for Openterface Mini-KVM / KVM-Go and Sipeed NanoKVM-USB. |
 | `jetkvm` | Go (pion/webrtc) | HID-injection helper for the JetKVM network KVM; its daemon also decodes the device's H.264 video (`ffmpeg` subprocess) and serves it as RFB for `hdmicap`'s `rfb+hid:` source. |

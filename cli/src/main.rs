@@ -3735,6 +3735,12 @@ fn read_state_cmd(cmd: &str, target: &str) -> Result<bool> {
         .channel("power")
         .into());
     }
+    // Successful hooks can still warn (for example, about insecure AMT HTTP).
+    // Keep those diagnostics separate from the state verdict on stdout.
+    {
+        use std::io::Write;
+        std::io::stderr().lock().write_all(&out.stderr)?;
+    }
     let text = String::from_utf8_lossy(&out.stdout);
     let token = text
         .split_whitespace()

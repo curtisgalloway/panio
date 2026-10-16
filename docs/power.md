@@ -1,5 +1,10 @@
 # Power control
 
+**Terms:** a **hook** is a configured shell command; **AMT/ME** is Intel's
+management firmware; **TLS/HTTPS** encrypts traffic and verifies the server;
+a **CA** signs certificates; **PEM** is their text file format; **SAN** lists
+a certificate's valid names or addresses. See the [glossary](glossary.md).
+
 paniolo switches a target's power two ways:
 
 - **DTR via FTDI**: the serial cable's DTR line drives the target's J2
@@ -672,7 +677,8 @@ Privacy & Security → Local Network, and enable the app that launches the hook
 
 The `amt` helper switches **Intel AMT (vPro) machines** through their
 Management Engine (ME, an always-on motherboard controller), with no plug. It
-speaks **WS-Management** (SOAP over HTTP on port 16992); pure Rust, one-shot
+speaks **WS-Management** (XML management messages over verified HTTPS on
+port 16993 by default); pure Rust, one-shot
 and stateless.
 
 Prefer AMT where the hardware has it: `state` is a true reading from the ME
@@ -680,14 +686,71 @@ Prefer AMT where the hardware has it: `state` is a true reading from the ME
 `CIM_PowerManagementService.RequestPowerStateChange` and reads back
 `CIM_AssociatedPowerManagementService.PowerState`.
 
-### Requirements
+### Requirements and TLS trust
 
-- AMT provisioned and enabled in MEBx (ME firmware setup, Ctrl-P at boot),
-  with network access to port 16992. Works in any host state, even with no OS.
-- HTTP Digest auth (AMT 11+'s only option) is handled natively, unlike
-  Debian's `amtterm`.
-- **TLS-provisioned AMT is not supported** (WS-Man only on port 16993); the
-  helper says so.
+AMT must be enabled in MEBx (the ME firmware setup screen) and provisioned
+with a server certificate. HTTPS uses port **16993** by default, with
+certificate-chain, name, and validity checks on every connection. HTTP
+Digest password authentication still runs inside that encrypted connection.
+There is **no automatic fallback to HTTP**, no skip-verification option, and
+no custom certificate verifier or pinning mode. Redirects are rejected and
+proxy environment variables are ignored; the helper connects directly.
+TLS socket I/O, including the handshake, shares the call's deadline rather
+than restarting the timeout for each received byte. Platform DNS resolution
+can exceed that budget.
+
+Trust starts with **built-in public roots**, not the operating system's
+certificate store. For private provisioning, add a PEM file containing one
+or more trusted certificates with `--tls-ca-file /etc/paniolo/amt-ca.pem`.
+This adds trust to the public roots. `AMT_TLS_CA_FILE` supplies the default
+when the flag is absent; the explicit flag wins. An unreadable, empty, or
+malformed file fails before any network request.
+
+Use the name in the certificate's Subject Alternative Name (SAN). An IP
+address works only when the certificate has that IP SAN. Adding a CA file
+establishes issuer trust; it **cannot fix a name mismatch**. Certificates
+must satisfy standard rustls verification, including self-signed certificates;
+if an existing certificate cannot, provision a suitable certificate rather
+than disabling checks.
+
+The CA path and environment fallback are read **where the helper executes**.
+For a remote power channel, install the file on the control host and put its
+path in every hook. Paniolo does **not** forward `AMT_TLS_CA_FILE` over SSH.
+Unlike the password, a CA certificate is not secret.
+
+Firmware must support TLS 1.2 or newer **and** a cipher/signature combination
+supported by rustls. Some older AMT firmware offers TLS 1.2 with only legacy
+algorithms, so the version alone does not establish compatibility. TLS and
+certificate failures are terminal, including during power-confirmation
+polling. Certificate provisioning and mutual TLS (client certificates) are
+outside this helper's scope. `kvm` settings use the same HTTPS connection;
+this does **not** encrypt the separate RFB/VNC session on port 5900.
+
+### Transport selection and migration
+
+Existing bare addresses now select HTTPS. Update **all four power hooks**
+(`on_cmd`, `off_cmd`, `cycle_cmd`, and `state_cmd`) together before upgrading
+an HTTP-only setup: provision TLS, or explicitly accept HTTP's risks.
+
+| Device address | Option | Transport and default port |
+|---|---|---|
+| `amt-host.example` or `https://amt-host.example` | none | Verified HTTPS, 16993 |
+| `amt-host.example` or `http://amt-host.example` | `--allow-insecure-http` | Unencrypted HTTP, 16992; warning on stderr |
+| `http://amt-host.example` | none | Rejected before credentials or network access |
+| `https://amt-host.example` | `--allow-insecure-http` | Rejected as contradictory |
+
+An explicit port overrides only the port: `amt-host.example:16992` now
+means **TLS on 16992**, not HTTP. HTTP requires the flag, which has no
+environment-variable equivalent. `--tls-ca-file` (including its environment
+fallback) is incompatible with HTTP.
+
+For a legacy HTTP deployment, use `amt --allow-insecure-http -d
+http://amt-host.example state` and add the same flag to every power hook.
+The warning appears on stderr on each invocation, including successful
+`paniolo power-state`; the helper's stdout stays exactly `on` or `off`.
+HTTP exposes the password exchange to offline guessing and lets an attacker
+alter commands or state replies. Do not select it as an automatic response
+to a certificate or connectivity failure.
 
 ### Credentials
 
@@ -771,305 +834,6 @@ a forwarded `AMT_PASSWORD` overrides a hook's file or command. Two limits:
 ### Commands
 
 ```bash
-cambrionix -d <device> state              # table of all ports (volts, mA, attach/mode)
-cambrionix -d <device> state <port>       # print exactly "on" or "off" (state_cmd contract)
-cambrionix -d <device> on <port>          # mode c (charging/on), confirm by read-back
-cambrionix -d <device> off <port>         # mode o (off), confirm by read-back
-cambrionix -d <device> cycle <port> [--delay-ms 3000]
-                                          # off → confirm → delay → restore prior mode → confirm
-```
-
-- **Ports:** 1–15. Port 0 is the hub's own row, read-only.
-- **`cycle`** restores Sync (`s`) if the port was Sync, otherwise charging
-  (`c`).
-- **Every change is confirmed by re-reading the port table**, since the hub
-  does not acknowledge `mode`. `on` requires mode `C` or `S`, `off` requires
-  `O`; a mismatch exits non-zero.
-- **`state <port>`** maps `C`/`S`/`I` to `on`, `O` to `off`, and errors on any
-  other letter.
-- **Bounded responses:** 3 s and 64 KiB each; a hub error line fails the
-  command, so a wrong `-d` fails fast instead of hanging the hook.
-
-### Wiring into paniolo power hooks
-
-Example: a Raspberry Pi 5 on hub port 4, hub UART at
-`/dev/cu.usbserial-AA00BB11`:
-
-```bash
-paniolo power set -t pi5 \
-    --cycle-cmd "cambrionix -d /dev/cu.usbserial-AA00BB11 cycle 4" \
-    --on-cmd    "cambrionix -d /dev/cu.usbserial-AA00BB11 on 4" \
-    --off-cmd   "cambrionix -d /dev/cu.usbserial-AA00BB11 off 4" \
-    --state-cmd "cambrionix -d /dev/cu.usbserial-AA00BB11 state 4"
-```
-
-`paniolo power on pi5`, `paniolo power off pi5`, `paniolo power-cycle pi5`, and
-`paniolo power-state pi5` then work.
-
----
-
-## Zigbee smart plug control (zigplug)
-
-The `zigplug` helper switches Zigbee smart plugs through a CC2652-based
-coordinator dongle (e.g. Sonoff ZBDongle-P), using
-[zigpy-znp](https://github.com/zigpy/zigpy-znp).
-
-Device data lives in a sqlite DB at
-`~/.config/paniolo/helpers/zigplug/zigbee.db` (`--db` to override). A DB at the
-pre-0.3 location is migrated automatically.
-
-**Operations run through a persistent daemon** that the CLI starts on first
-use, so hook strings stay one-shot. Opening the serial port resets the chip
-(sometimes into its bootloader), and concurrent one-shot sessions wedge the
-coordinator, which can lose its network NVRAM. The daemon opens the port once,
-serializes operations, and gives each a hard timeout.
-
-It follows the standard daemon contract
-(`/tmp/paniolo-<uid>/zigplug/daemon.json`, localhost HTTP, OS-assigned port)
-and shows in `paniolo daemons`. Every request must present the per-run bearer
-token in the discovery file (mode 0600).
-
-Manual control: `zigplug serve` / `stop` / `status` (`stop` and `status` need
-no `-d`). `--no-daemon` forces the direct path, for debugging only.
-
-### Installation
-
-`paniolo setup` / `make install` installs `zigplug/` as a uv tool when `uv` is
-on `PATH`, with its shim in the private libexec dir. Run it by hand via
-`paniolo helper zigplug …`.
-
-```bash
-# manual equivalent
-UV_TOOL_BIN_DIR=~/.local/libexec/paniolo/bin uv tool install --force ~/src/paniolo/zigplug
-```
-
-### One-time setup: form the network
-
-```bash
-paniolo helper zigplug -d /dev/cu.usbserial-XXXX form              # channel picked by energy scan
-paniolo helper zigplug -d /dev/cu.usbserial-XXXX form --channel 25 # or explicit (25-26 avoid Wi-Fi)
-```
-
-`form` is idempotent: an existing network prints its channel/PAN and exits.
-
-**If formation fails with "too much RF interference":** put the dongle on a
-USB 2.0 extension cable, away from USB 3.x ports, hubs and video-capture
-devices. To factory-reset stale dongle state, run
-`python -m zigpy_znp.tools.nvram_reset <device>` from the `zigplug/` venv.
-
-### Pairing plugs
-
-```bash
-paniolo helper zigplug -d <device> permit --time 120   # open a join window
-# put the plug in pairing mode (hold button until LED blinks; factory-fresh
-# plugs usually enter pairing mode on first power-up)
-paniolo helper zigplug -d <device> list                # IEEE, NWK, manufacturer, model, state
-```
-
-`permit` prints each join and exits non-zero if nothing paired. A plug paired
-to another hub needs a full factory reset (often a ~10 s button hold).
-
-### Commands
-
-As hook strings (or after `paniolo helper` when run by hand):
-
-```bash
-zigplug -d <device> list                  # table of joined plugs + live state
-zigplug -d <device> state <ieee>          # print exactly "on" or "off" (state_cmd contract)
-zigplug -d <device> on <ieee>             # switch on, confirm by read-back
-zigplug -d <device> off <ieee>            # switch off, confirm by read-back
-zigplug -d <device> cycle <ieee> [--delay-ms 3000]
-                                          # off → delay → on → confirm
-zigplug -d <device> remove <ieee>         # unpair (ZDO leave + forget)
-zigplug -d <device> serve                 # start the daemon by hand (automatic otherwise)
-zigplug stop                              # stop the daemon (no -d: one daemon per host)
-zigplug status                            # daemon + network status (no -d)
-zigplug -d <device> backup [-o FILE]      # network backup (key, counters) as JSON
-zigplug -d <device> restore [-i FILE]     # write a backup into coordinator NVRAM
-```
-
-IEEE addresses are accepted with or without `:`/`-` separators.
-
-### Coordinator NVRAM recovery (backup/restore)
-
-The device DB holds an automatic network backup. If a formed dongle reports
-`coordinator has no Zigbee network`, recover **without re-pairing**:
-
-```bash
-paniolo helper zigplug -d <device> stop      # restore needs the port exclusively
-paniolo helper zigplug -d <device> restore   # newest auto-backup from zigbee.db
-paniolo helper zigplug -d <device> list      # verify the plugs answer
-```
-
-`restore` bumps the frame counter (`--counter-increment`, default 10000) so
-joined devices accept it. A long-orphaned plug may not answer until it
-rescans; power-cycling it at the wall forces a rejoin (and cycles its load).
-Keep an off-host copy with `zigplug backup -o <file>`.
-
-### Wiring into paniolo power hooks
-
-```bash
-paniolo power set -t target-machine \
-    --cycle-cmd "zigplug -d /dev/cu.usbserial-XXXX cycle ff:ff:b4:0e:06:04:ea:b7" \
-    --on-cmd    "zigplug -d /dev/cu.usbserial-XXXX on    ff:ff:b4:0e:06:04:ea:b7" \
-    --off-cmd   "zigplug -d /dev/cu.usbserial-XXXX off   ff:ff:b4:0e:06:04:ea:b7" \
-    --state-cmd "zigplug -d /dev/cu.usbserial-XXXX state ff:ff:b4:0e:06:04:ea:b7"
-```
-
-The first hook starts the daemon (a few seconds); later ones answer in about a
-second and queue safely. `form`, `restore`, and `backup` (with no daemon
-running) open the port directly and refuse to run while the daemon is up — run
-`zigplug stop` first.
-
-## Shelly smart plug control (shellyplug)
-
-The `shellyplug` helper switches **Shelly Gen2+ smart plugs and relays** (Plus,
-Pro, Gen3, Gen4) over the device's **local HTTP RPC API** — no cloud, Home
-Assistant, or Matter. Pure Rust ([ureq](https://crates.io/crates/ureq)), no
-daemon: each invocation makes one `GET /rpc/<Method>` call.
-
-- **Supported:** Gen2/3/4 JSON-RPC (`Switch.Set`, `Switch.GetStatus`,
-  `Shelly.GetDeviceInfo`). Gen1's REST API (`/relay/0?turn=on`) is **not**
-  supported.
-- **Auth:** only devices with authentication **disabled** (`auth_en: false`,
-  the factory default). An auth-enabled device answers HTTP 401 and the helper
-  says so.
-
-### Installation
-
-`make install` / `paniolo setup` installs it into the private libexec dir. Run
-it by hand via `paniolo helper shellyplug …`.
-
-### Addressing
-
-- **`-d <host>`**: a bare IP or hostname (`10.0.0.5`, `shelly.local`),
-  optionally with a scheme or port (`http://10.0.0.5:8080`). Use a **DHCP
-  reservation** or the device's mDNS name (`shellyplugusg4-<mac>.local`) so a
-  lease change does not break the hook.
-- **`[id]`**: switch component id, default `0`. Multi-channel devices (e.g. a
-  Pro 4PM) use `0..N`.
-
-### Commands
-
-```bash
-shellyplug -d <host> status [id]          # device info + switch state and power metering
-shellyplug -d <host> state  [id]          # print exactly "on" or "off" (state_cmd contract)
-shellyplug -d <host> on     [id]          # switch on, confirm by read-back
-shellyplug -d <host> off    [id]          # switch off, confirm by read-back
-shellyplug -d <host> cycle  [id] [--delay-ms 3000]
-                                          # off → confirm → delay → on → confirm
-shellyplug -d <host> doctor [id] [--json] # read-only health check (paniolo doctor)
-```
-
-`state` reads `Switch.GetStatus` live on every call and fails if the device is
-unreachable.
-
-`doctor` never switches the relay. It reports three checks: `reachable`
-(`Shelly.GetDeviceInfo` answers; model and firmware), `auth` (fails when the
-device has authentication enabled, which shellyplug does not support yet), and
-`switch` (the switches `Shelly.GetStatus` lists, or the one `[id]` names). A
-failed check ends the list. `--json` prints the report `paniolo doctor` reads
-and exits 0; without it, one line per check and exit 1 if any failed.
-
-### Wiring into paniolo power hooks
-
-```bash
-paniolo power set -t target-machine \
-    --cycle-cmd "shellyplug -d 10.0.0.5 cycle 0" \
-    --on-cmd    "shellyplug -d 10.0.0.5 on 0" \
-    --off-cmd   "shellyplug -d 10.0.0.5 off 0" \
-    --state-cmd "shellyplug -d 10.0.0.5 state 0" \
-    --doctor
-```
-
-`--doctor` makes `paniolo doctor` run `shellyplug -d 10.0.0.5 doctor --json`
-(see [Helper health checks](#helper-health-checks-doctor)).
-
-### Gotcha: macOS Local Network privacy
-
-On macOS Sequoia and later, LAN access is granted per binary, attributed to
-the launching app. `shellyplug` is the only helper that reaches a LAN device
-(loopback is exempt), so it can fail with **`No route to host` (EHOSTUNREACH)**
-while `curl` and a browser reach the device fine. Fix: System Settings →
-Privacy & Security → Local Network, and enable the app that launches the hook
-(e.g. iTerm2/Terminal).
-
----
-
-## Intel AMT power control (amt)
-
-The `amt` helper switches **Intel AMT (vPro) machines** through their
-Management Engine (ME, an always-on motherboard controller), with no plug. It
-speaks **WS-Management** (SOAP over HTTP on port 16992); pure Rust, one-shot
-and stateless.
-
-Prefer AMT where the hardware has it: `state` is a true reading from the ME
-(on, off, sleeping), and no outlet or wiring is needed. Under the hood it calls
-`CIM_PowerManagementService.RequestPowerStateChange` and reads back
-`CIM_AssociatedPowerManagementService.PowerState`.
-
-### Requirements
-
-- AMT provisioned and enabled in MEBx (ME firmware setup, Ctrl-P at boot),
-  with network access to port 16992. Works in any host state, even with no OS.
-- HTTP Digest auth (AMT 11+'s only option) is handled natively, unlike
-  Debian's `amtterm`.
-- **TLS-provisioned AMT is not supported** (WS-Man only on port 16993); the
-  helper says so.
-
-### Credentials
-
-**Keep the password out of the lab file, flags, and repositories.** The helper
-reads it only from **`AMT_PASSWORD`**; the lab file holds the address and
-username. Inject it at call time, e.g. with the 1Password CLI:
-
-```bash
-# .env:  AMT_PASSWORD=op://<vault>/<item>/password
-op run --env-file .env -- bash -c 'paniolo power-state <target>'
-```
-
-The single quotes stop the parent shell expanding `$AMT_PASSWORD` before
-`op run` sets it (same for `HA_TOKEN` under
-[Generic power hooks](#generic-power-hooks)). Without the variable, every
-subcommand fails and says so.
-
-### Setting up the credential source
-
-Any secret manager works, as long as `AMT_PASSWORD` is in the environment of
-the `paniolo` command. Options:
-
-- **A reference file + run wrapper** (an `op run`-style launcher). The
-  reference (`op://<vault>/<item>/password`) is not a secret and can be
-  committed to your private automation repo.
-- **A fetch-and-exec wrapper** for other managers (a 1Password Connect fetcher,
-  `vault kv get`, `pass show`, …):
-
-  ```sh
-  #!/bin/sh
-  # with-amt-password — run a command with AMT_PASSWORD in its environment
-  AMT_PASSWORD="$(fetch-secret amt/password)" || exit 1
-  export AMT_PASSWORD
-  exec "$@"
-  ```
-
-  Run hooks through it: `with-amt-password paniolo power-cycle <target>`.
-- **An interactive export** for one-off use:
-  `read -rs AMT_PASSWORD && export AMT_PASSWORD` keeps it out of history.
-
-**Placement rule:** set `AMT_PASSWORD` for the local `paniolo` command only.
-For a remote control host, paniolo forwards it over the remote command's
-**stdin**, never argv, so `ps` there never shows it and nothing needs
-installing. Two limits:
-
-- Only `AMT_PASSWORD` is forwarded (`ssh::FORWARDED_ENV`). `HA_TOKEN` and other
-  hook secrets need a wrapper on the control host or sshd `AcceptEnv` (see
-  [Generic power hooks](#generic-power-hooks)).
-- Only non-interactive commands (`power-cycle`, `power on/off/state`) forward
-  it; `serial connect` forwards nothing.
-
-### Commands
-
-```bash
 amt -d <host> status                 # firmware identity + power state detail
 amt -d <host> state                  # print exactly "on" or "off" (state_cmd contract)
 amt -d <host> on                     # power on, confirm by read-back
@@ -1082,8 +846,9 @@ amt -d <host> kvm disable            # close 5900, keep the stored RFB password
 ```
 
 - **`-d <host>`**: hostname, IPv4, or bracketed IPv6 (`[fe80::1]`), optional
-  port (default 16992). An `http://` prefix is tolerated; a path, query,
-  userinfo, or unbracketed IPv6 is rejected.
+  port (default 16993 for HTTPS, 16992 for explicitly allowed HTTP).
+  `https://` is accepted; `http://` requires `--allow-insecure-http`.
+  A path, query, fragment, userinfo, or unbracketed IPv6 is rejected.
 - **`-u <user>`**: Digest username (default `admin`).
 - **`state`** prints `on` only for PowerState 2 (running). Sleep, hibernate,
   and soft-off print `off`. Any other value (`Other`, transitional) is an
@@ -1137,13 +902,14 @@ Before relying on KVM:
 
 ```bash
 paniolo power set -t target-machine \
-    --cycle-cmd "amt cycle -d 10.0.0.5 -u admin --delay-ms 5000" \
-    --on-cmd    "amt on -d 10.0.0.5 -u admin" \
-    --off-cmd   "amt off -d 10.0.0.5 -u admin" \
-    --state-cmd "amt state -d 10.0.0.5 -u admin"
+    --cycle-cmd "amt cycle -d amt-host.example -u admin --delay-ms 5000" \
+    --on-cmd    "amt on -d amt-host.example -u admin" \
+    --off-cmd   "amt off -d amt-host.example -u admin" \
+    --state-cmd "amt state -d amt-host.example -u admin"
 ```
 
-Each hook also needs a password source: add `--password-file` or
+For a private CA, add `--tls-ca-file /etc/paniolo/amt-ca.pem` to **each**
+hook. Each hook also needs a password source: add `--password-file` or
 `--password-command` to it (see
 [Setting up the credential source](#setting-up-the-credential-source)), or run
 `paniolo` with `AMT_PASSWORD` set on the machine you type on.
@@ -1153,7 +919,7 @@ Each hook also needs a password source: add `--password-file` or
 - **The AMT NIC drops link for a few seconds around power transitions**
   ("no route to host"). The helper retries transient transport errors
   (connection, I/O timeout, DNS) within a 20 s budget; deterministic failures
-  (bad address, unparseable response, proxy) fail immediately. Unreachable
+  (TLS/certificate errors, bad address, unparseable response, proxy) fail immediately. Unreachable
   past 20 s is real.
 - **`state` reflects the host, not the outlet**: S3 and hibernate report `off`.
   `on` boots or wakes; `cycle` cold-boots.

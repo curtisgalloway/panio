@@ -705,3 +705,48 @@ fn a_closed_stdout_exits_zero_without_a_panic() {
     assert!(!stderr.contains("panicked"), "{stderr}");
     assert_eq!(out.status.code(), Some(0), "{stderr}");
 }
+
+/// A successful state hook's warnings must reach the caller without changing
+/// the stdout line consumed by the dashboard and other callers.
+#[cfg(unix)]
+#[test]
+fn power_state_forwards_successful_hook_stderr_and_preserves_stdout() {
+    for (verdict, expected) in [("on details", "ON"), ("oFf details", "OFF")] {
+        let cmd = format!("printf '%s' '{verdict}'; printf '%s' 'insecure transport warning' >&2");
+        let lab = format!("[targets.nuc.power]\nstate_cmd = {cmd:?}\n");
+        let dir = scratch(&format!("state_warning_{expected}"), &lab);
+        let out = paniolo(&dir, true, &["power-state", "nuc"]);
+        assert!(out.status.success(), "{out:?}");
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            format!("Power {expected}  (nuc)\n")
+        );
+        assert_eq!(out.stderr, b"insecure transport warning");
+    }
+}
+
+/// Failed hooks already carry stderr in their error; don't print it a second
+/// time as a standalone diagnostic.
+#[cfg(unix)]
+#[test]
+fn power_state_failed_hook_reports_stderr_once_in_the_error() {
+    let cmd = "printf 'on'; printf 'transport failed' >&2; exit 7";
+    let lab = format!("[targets.nuc.power]\nstate_cmd = {cmd:?}\n");
+    let dir = scratch("state_failure_stderr", &lab);
+    let out = paniolo(&dir, false, &["power-state", "nuc"]);
+    assert_eq!(out.status.code(), Some(101), "{out:?}");
+    assert!(out.stdout.is_empty(), "{out:?}");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("stderr: transport failed"), "{stderr}");
+    assert!(!stderr.starts_with("transport failed"), "{stderr}");
+    assert_eq!(
+        stderr.matches("stderr: transport failed").count(),
+        1,
+        "{stderr}"
+    );
+    let out = paniolo(&dir, true, &["power-state", "nuc"]);
+    let error = error_object(&out);
+    assert_eq!(error["kind"], "helper_failed");
+    assert_eq!(error["child_exit"], 7);
+    assert_eq!(error["channel"], "power");
+}

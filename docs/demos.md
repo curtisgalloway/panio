@@ -113,6 +113,11 @@ OK
 
 ## Out-of-band power over Intel AMT
 
+This historical recording predates verified HTTPS defaults. It demonstrates
+power behavior, not current transport configuration or TLS compatibility.
+For current use, configure a certified hostname and trust, or explicitly opt
+in to legacy HTTP in all four hooks; see [AMT transport and migration](power.md#transport-selection-and-migration).
+
 `optiplex` — Dell OptiPlex 7060, Intel AMT/vPro, no plug and no relay ·
 channel: power ([`amt` helper](power.md#intel-amt-power-control-amt)).
 
