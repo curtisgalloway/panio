@@ -144,9 +144,10 @@ make install           # paniolo CLI + daemons + OCR helper, in one step
   `hidrig`, `ch9329`, `shellyplug`, `amt`) and **the OCR helper** (`visionocr`
   on macOS via `swiftc`, `linuxocr` on Linux) go in
   `~/.local/libexec/paniolo/bin`, off PATH. Run one with
-  `paniolo helper <name> [args…]` (no name lists them). Read a helper's own
-  help with `paniolo helper -- serialcap --help`; without `--` before the
-  name, `--help` shows paniolo's helper-command help.
+  `paniolo helper <name> [args…]` (no name lists them; `-t <target>
+  --channel <kind>` or `--host <labhost>` before the name runs it on that
+  host). Everything after the name goes to the helper, so
+  `paniolo helper serialcap --help` shows the helper's own help.
 - **Bundled agent skills** go in `~/.local/share/paniolo/skills` (the
   `.deb`/tarball ship them under `/usr/share/paniolo/skills`).
   `paniolo skill [NAME]` lists or prints them.

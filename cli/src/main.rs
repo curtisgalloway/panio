@@ -228,15 +228,37 @@ enum Command {
     /// Run a helper binary from paniolo's private libexec dir (omit NAME to
     /// list the installed helpers).
     ///
-    /// For the helper's own help, put -- before its name:
-    /// paniolo helper -- serialcap --help. Without the separator, --help
-    /// shows this command's help instead of running the helper.
+    /// Everything after the helper name goes to the helper, so
+    /// paniolo helper serialcap --help shows the helper's own help.
+    ///
+    /// Runs locally unless --host or -t names where the hardware is:
+    /// paniolo helper -t pi5 --channel power -- cambrionix -d /dev/ttyUSB0 state
+    /// runs on the host the lab binds pi5's power channel to. Put these
+    /// flags before the helper name.
     Helper {
-        /// Helper name (e.g. hdmicap, hidrig, zigplug).
-        name: Option<String>,
-        /// Arguments passed through to the helper.
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-        args: Vec<String>,
+        /// Run on this lab host instead of locally.
+        #[arg(long, conflicts_with = "target")]
+        host: Option<String>,
+        /// Run on this target's host: the host of --channel, or the one host
+        /// all of its channels share.
+        #[arg(short, long)]
+        target: Option<String>,
+        /// Channel whose host to run on (netboot, serial, power, video, hid,
+        /// usb, adb). Requires -t.
+        #[arg(long, requires = "target")]
+        channel: Option<String>,
+        /// Serial interface whose host to run on, when the target's serial
+        /// interfaces are on more than one host. Requires --channel serial.
+        #[arg(short, long, requires = "channel")]
+        interface: Option<String>,
+        /// Helper name (e.g. hdmicap, hidrig, zigplug), then the arguments
+        /// passed through to it.
+        #[arg(
+            value_names = ["NAME", "ARGS"],
+            trailing_var_arg = true,
+            allow_hyphen_values = true
+        )]
+        command: Vec<String>,
     },
     /// List the agent skills bundled with paniolo, or print one's SKILL.md
     /// (the guides that teach an agent how to drive a target). Omit NAME to
@@ -1080,7 +1102,23 @@ fn run(cli: Cli) -> Result<()> {
         Command::Configure { target, host } => cmd_configure(lab_flag, &target, &host),
         Command::Setup { host, rust_only } => cmd_setup(lab_flag, host.as_deref(), rust_only),
         Command::Mcp => mcp::serve(lab_flag),
-        Command::Helper { name, args } => cmd_helper(name.as_deref(), &args),
+        Command::Helper {
+            host,
+            target,
+            channel,
+            interface,
+            command,
+        } => cmd_helper_at(
+            lab_flag,
+            HelperPlace {
+                host: host.as_deref(),
+                target: target.as_deref(),
+                channel: channel.as_deref(),
+                interface: interface.as_deref(),
+            },
+            command.first().map(String::as_str),
+            command.get(1..).unwrap_or_default(),
+        ),
         Command::Skill { name, path } => skills::run(name.as_deref(), path),
         Command::Daemons { cmd } => match cmd.unwrap_or(DaemonsCmd::List) {
             DaemonsCmd::List => cmd_daemons_list(),
@@ -1663,6 +1701,57 @@ fn wait_for_started_daemon(
 }
 
 // ── helper passthrough ──────────────────────────────────────────────────────
+
+/// Where `paniolo helper` was asked to run (#300); all `None` means locally.
+struct HelperPlace<'a> {
+    host: Option<&'a str>,
+    target: Option<&'a str>,
+    channel: Option<&'a str>,
+    interface: Option<&'a str>,
+}
+
+/// `paniolo helper`, run on the lab host `place` resolves to. Locally that is
+/// [`cmd_helper`]; remotely it re-execs `paniolo helper -- NAME ARGS…` there
+/// over SSH. The remote side needs no lab — `helper` never reads one — so no
+/// slice is shipped, and the helper gets that host's own state/runtime dirs.
+fn cmd_helper_at(
+    lab_flag: Option<&str>,
+    place: HelperPlace,
+    name: Option<&str>,
+    args: &[String],
+) -> Result<()> {
+    if place.host.is_none() && place.target.is_none() {
+        return cmd_helper(name, args);
+    }
+    let lab = load_for_read(lab_flag)?;
+    let host_name = dispatch::helper_host(
+        &lab,
+        place.host,
+        place.target,
+        place.channel,
+        place.interface,
+    )?;
+    if lab.host(&host_name).is_local(&host_name) {
+        return cmd_helper(name, args);
+    }
+    let code = dispatch::run_on_host(&lab, &host_name, &helper_remote_argv(name, args))?;
+    if code != 0 {
+        std::process::exit(code);
+    }
+    Ok(())
+}
+
+/// The remote argv for a dispatched `helper`: the `--` keeps the helper's own
+/// flags (`--help` included) away from the remote paniolo's parser.
+fn helper_remote_argv(name: Option<&str>, args: &[String]) -> Vec<String> {
+    let mut argv = vec!["helper".to_string()];
+    if let Some(name) = name {
+        argv.push("--".to_string());
+        argv.push(name.to_string());
+        argv.extend(args.iter().cloned());
+    }
+    argv
+}
 
 /// Run a libexec helper with stdio passed through, propagating its exit code;
 /// with no name, list the installed helpers.
@@ -5531,6 +5620,88 @@ mod tests {
         assert!(!stale.contains("s3cr3t"), "{stale}");
         // The openable form, for contrast: same endpoint, token attached.
         assert_eq!(ep.http_url("/"), "http://127.0.0.1:1000/?token=s3cr3t");
+    }
+
+    /// `paniolo helper` (#300): placement flags are paniolo's only before the
+    /// helper name. Everything after it is the helper's, so a helper's own
+    /// `-t`, `-i` or `--help` is never taken by paniolo, with or without `--`.
+    #[test]
+    fn helper_flags_after_the_name_belong_to_the_helper() {
+        let helper = |argv: &[&str]| {
+            let cli = Cli::try_parse_from(argv).unwrap_or_else(|e| panic!("{argv:?}: {e}"));
+            match cli.command {
+                Command::Helper {
+                    host,
+                    target,
+                    channel,
+                    interface,
+                    command,
+                } => (host, target, channel, interface, command),
+                _ => panic!("{argv:?}: parsed as a different command"),
+            }
+        };
+        let s = |v: &[&str]| v.iter().map(|a| a.to_string()).collect::<Vec<_>>();
+
+        let (host, target, channel, _, command) = helper(&[
+            "paniolo",
+            "helper",
+            "-t",
+            "pi5",
+            "--channel",
+            "power",
+            "--",
+            "cambrionix",
+            "-d",
+            "/dev/ttyUSB0",
+            "state",
+        ]);
+        assert_eq!(
+            (host, target.as_deref(), channel.as_deref()),
+            (None, Some("pi5"), Some("power"))
+        );
+        assert_eq!(command, s(&["cambrionix", "-d", "/dev/ttyUSB0", "state"]));
+
+        let (host, target, _, interface, command) = helper(&[
+            "paniolo",
+            "helper",
+            "serialcap",
+            "log",
+            "-i",
+            "console",
+            "-t",
+            "x",
+        ]);
+        assert_eq!((host, target, interface), (None, None, None));
+        assert_eq!(
+            command,
+            s(&["serialcap", "log", "-i", "console", "-t", "x"])
+        );
+
+        let (.., command) = helper(&["paniolo", "helper", "cambrionix", "--help"]);
+        assert_eq!(command, s(&["cambrionix", "--help"]));
+
+        let (host, .., command) =
+            helper(&["paniolo", "helper", "--host", "bench1", "zigplug", "list"]);
+        assert_eq!(host.as_deref(), Some("bench1"));
+        assert_eq!(command, s(&["zigplug", "list"]));
+
+        assert!(helper(&["paniolo", "helper"]).4.is_empty());
+        // --channel needs -t; --host and -t are two answers to one question.
+        assert!(Cli::try_parse_from(["paniolo", "helper", "--channel", "power"]).is_err());
+        assert!(Cli::try_parse_from(["paniolo", "helper", "--host", "a", "-t", "b"]).is_err());
+    }
+
+    /// The re-exec'd `helper` puts `--` before the name, so the remote parser
+    /// cannot take the helper's flags, even if it is an older paniolo whose
+    /// `helper` still parsed flags after the name.
+    #[test]
+    fn helper_remote_argv_separates_the_helper() {
+        let args = vec!["--help".to_string()];
+        assert_eq!(
+            helper_remote_argv(Some("serialcap"), &args),
+            vec!["helper", "--", "serialcap", "--help"]
+        );
+        assert_eq!(helper_remote_argv(None, &[]), vec!["helper"]);
     }
 
     /// `video preview --open` is the form that keeps the token off the

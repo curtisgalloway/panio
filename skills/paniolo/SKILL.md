@@ -103,12 +103,19 @@ lists or runs one directly. If a different `paniolo` shadows the CLI on PATH
 `~/.cargo/bin` first or remove the other copy; `make install` warns when it
 detects a shadow.
 
-Discover installed helpers with `paniolo helper`. To read a helper's own
-help, put `--` before its name: `paniolo helper -- serialcap --help`.
-`paniolo helper --help` and `paniolo helper serialcap --help` show paniolo's
-outer command help instead. Listing helpers and reading a bundled helper's
-help do not open hardware or start a daemon; use these to discover its
-commands before invoking one.
+Discover installed helpers with `paniolo helper`. Everything after the
+helper name goes to the helper, so `paniolo helper serialcap --help` is the
+helper's own help (`paniolo helper --help` is paniolo's). Listing helpers and
+reading a bundled helper's help do not open hardware or start a daemon; use
+these to discover its commands before invoking one.
+
+A helper runs **locally** unless told otherwise, and the hardware is usually
+on a control host. Put the placement flags before the helper name:
+`paniolo helper -t <target> --channel power cambrionix -d <dev> state` runs
+on the host the lab binds that channel to (`-i <iface>` for a serial
+interface; `-t` alone when the target has one host), and
+`paniolo helper --host <labhost> zigplug -d <dev> list` names a host
+directly. Prefer these over `ssh <host> paniolo helper …`.
 
 ## Bounded fresh serial acquisition
 
@@ -934,9 +941,9 @@ the device is free just because a daemon is gone from the tracked list.
   (e.g. a Homebrew keg from the tap can shadow it). The helper binaries are
   *not* on PATH — they live in `~/.local/libexec/paniolo/bin`
   (`paniolo helper <name> …` to run one by hand).
-- Helper help needs the separator before the name:
-  `paniolo helper -- serialcap --help`. Without it, `--help` shows paniolo's
-  outer helper-command help.
+- `paniolo helper` runs on the local machine by default. For hardware on a
+  control host, put `-t <target> --channel <kind>` (or `--host <labhost>`)
+  **before** the helper name; flags after the name all go to the helper.
 - `paniolo console` auto-starts the video daemon, and the serial daemon when
   the target has a serial channel (a KVM-only target opens as video + input,
   with no terminal pane), if they aren't running, and hands

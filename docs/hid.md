@@ -169,10 +169,10 @@ hook, so bare helper names work. Run a helper by hand with
 `paniolo helper <name> …`. `paniolo doctor` checks the helper exists on the
 channel's host (`command -v` for a bare name).
 
-Read a helper's own help with `paniolo helper -- hidrig --help`, putting
-`--` before the name. Without the separator, `--help` shows paniolo's outer
-helper-command help. Reading bundled helper help does not open hardware or
-start a daemon.
+Read a helper's own help with `paniolo helper hidrig --help`; everything
+after the helper name goes to the helper. To run one where the injector is
+attached, put `-t <target> --channel hid` before the name. Reading bundled
+helper help does not open hardware or start a daemon.
 
 ---
 

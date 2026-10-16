@@ -398,10 +398,15 @@ Python tree below:
   `~/.cargo/bin`; hook commands (`*_cmd`, hid `cmd`) run via `sh -c` with
   libexec prepended to PATH, so lab files keep referencing helpers by bare
   name. `paniolo helper [NAME] [ARGS…]` lists or runs them directly.
-  Read a helper's own help with `paniolo helper -- serialcap --help`:
-  without `--` before the name, `--help` shows paniolo's outer command help.
-  Listing helpers and reading bundled helper help do not open hardware or
-  start a daemon.
+  The helper name and its args are one trailing positional, so everything
+  after the name — `--help`, a helper's own `-t`/`-i` — goes to the helper
+  (`paniolo helper serialcap --help`). Placement flags go before the name:
+  `--host <labhost>`, or `-t <target> [--channel <kind> [-i <iface>]]`, which
+  resolve a host (`dispatch::helper_host`) and re-exec `paniolo helper --
+  NAME ARGS…` there without shipping a lab slice (`dispatch::run_on_host`;
+  `helper` reads no lab). A channel the target lacks is refused rather than
+  falling back to the default host (#300). Listing helpers and reading
+  bundled helper help do not open hardware or start a daemon.
 - **Bundled skills are self-describing**: the agent skills under `skills/`
   (`paniolo`, `kvm-puppeting`, `control-host`) install to
   `~/.local/share/paniolo/skills` (and `/usr/share/paniolo/skills` for the
