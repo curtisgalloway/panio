@@ -605,7 +605,23 @@ cli/src/
   state.rs      netboot state files (JSON-compatible with the Python's)
   doctor.rs     config-vs-reality probing (local + over SSH), including
                 required netboot tftp_root and whether an interface holds
-                its configured host_ip
+                its configured host_ip; and the opt-in helper doctor check
+                (#304): a power/hid/usb/actions channel with `doctor = true`
+                (`--doctor` on its `set` verb) runs `<program> <transport
+                options> doctor --json` (doctor_command_for_hook keeps the
+                hook up to its verb: VAR= prefixes, program, option words
+                with their values; doctor_command_for_prefix keeps a hid/usb
+                cmd whole; both refuse a shell operator before the verb), as
+                `Probe::HelperDoctor` (local: platform shell in its own
+                process group, killed at 10 s; remote: a POSIX watchdog
+                script, exit 124 = timed out). interpret_helper_doctor reads
+                `{"checks":[{name,status ok|warn|fail,detail}]}`; a non-zero
+                exit without a report is `no-check` (not a problem), exit 0
+                without one is a contract `FAIL`. Checks print under the
+                channel (`power doctor: <name>`); only FAIL counts. On power,
+                `doctor = true` also covers every named level (#302), deduped
+                by derived command; several runs are labeled by source
+                (`power doctor (level hard): <name>`)
   discover.rs   hardware inventory + the configure proposal block
   setup.rs      installer: paniolo CLI onto PATH (~/.cargo/bin); helpers into
                 the private libexec dir (~/.local/libexec/paniolo/bin) via
@@ -798,7 +814,12 @@ shellyplug/      Rust crate: standalone helper for Shelly Gen2+ smart plugs/
                  API (Switch.Set/GetStatus; ureq). One-shot, stateless — no
                  daemon. Addressed by `-d <ip|host>` and `[id]` switch (default
                  0). Commands: `status [id]`, `state [id]`, `on/off [id]`,
-                 `cycle [id]`; `on/off/cycle` confirm by read-back. Gen2+ only
+                 `cycle [id]`; `on/off/cycle` confirm by read-back. `doctor
+                 [id] [--json]` is the reference helper doctor check (#304):
+                 read-only (GetDeviceInfo, Shelly.GetStatus or
+                 Switch.GetStatus, never Switch.Set), checks reachable/auth/
+                 switch, `--json` exits 0; tests drive the real client against
+                 a loopback HTTP stub. Gen2+ only
                  (no Gen1 REST); auth-disabled devices only for now. NB: first
                  helper to reach a LAN device, so first to hit the macOS
                  Local Network privacy gate — see docs/power.md gotchas.
@@ -1845,10 +1866,13 @@ Two bugs were found by writing exactly those tests, one of them serious:
   `cmd` are user-written strings that need a shell; `platform::shell_command`
   now supplies `sh` on Unix and `cmd.exe` on Windows.
 
-`doctor` no longer needs a shell locally at all. Probes are a `Probe` enum with
-two views — `run_local()` executes natively, `to_posix()` renders the POSIX
-script still used for the SSH hop to a Unix control host — so the local path
-and the remote path cannot drift apart silently.
+`doctor` no longer needs a shell locally for its own probes. Probes are a
+`Probe` enum with two views — `run_local()` executes natively, `to_posix()`
+renders the POSIX script still used for the SSH hop to a Unix control host —
+so the local path and the remote path cannot drift apart silently. The one
+exception is `Probe::HelperDoctor` (a channel's opt-in helper doctor check):
+it runs a lab-file command, so locally it goes through
+`platform::shell_command` exactly as the hook itself would.
 
 ### Windows packaging
 

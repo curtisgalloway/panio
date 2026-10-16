@@ -167,7 +167,10 @@ paniolo hid rm -t pi5
 paniolo puts `~/.local/libexec/paniolo/bin` first on PATH when running the
 hook, so bare helper names work. Run a helper by hand with
 `paniolo helper <name> …`. `paniolo doctor` checks the helper exists on the
-channel's host (`command -v` for a bare name).
+channel's host (`command -v` for a bare name). `hid set … --doctor` also has
+it run `<cmd> doctor --json`, the helper's own read-only health check (see
+[Helper health checks](power.md#helper-health-checks-doctor)). None of the
+bundled hid helpers implements it yet, so for them doctor reports `no-check`.
 
 Read a helper's own help with `paniolo helper hidrig --help`; everything
 after the helper name goes to the helper. To run one where the injector is

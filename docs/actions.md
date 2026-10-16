@@ -131,7 +131,13 @@ report state (`state_cmd`, or a serial sense line).
 ## Diagnostics and agents
 
 - `paniolo doctor` checks that each action's program exists on the actions'
-  host, as it does for power hooks.
+  host, as it does for power hooks. `paniolo action set -t target-machine
+  <name> --doctor` (which, like `--host`, applies to all of the target's
+  actions) also runs each action program's read-only `doctor --json` check,
+  once per distinct program and transport options. Only opt in programs that
+  implement it; see
+  [Helper health checks](power.md#helper-health-checks-doctor). `doctor` is
+  therefore reserved, like `host`, and cannot name an action.
 - `paniolo helper -t target-machine --channel actions -- boardctl …` runs the
   helper by hand on the actions' host.
 - The MCP server offers `action_list` and `action_run`; see [MCP](mcp.md).

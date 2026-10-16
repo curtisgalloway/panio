@@ -96,6 +96,9 @@ pub fn build_slice(lab: &Lab, target: &str, host: &str) -> Result<String, LabErr
                     l.state_cmd.as_deref(),
                 )?;
             }
+            if p.doctor {
+                lf.set_doctor(target, "power", true)?;
+            }
         }
     }
     if let Some(v) = &t.video {
@@ -113,6 +116,9 @@ pub fn build_slice(lab: &Lab, target: &str, host: &str) -> Result<String, LabErr
     if let Some(h) = &t.hid {
         if on(&h.host) {
             lf.set_hid(target, h.cmd.as_deref(), None, h.port)?;
+            if h.doctor {
+                lf.set_doctor(target, "hid", true)?;
+            }
         }
     }
     if let Some(a) = &t.adb {
@@ -123,6 +129,9 @@ pub fn build_slice(lab: &Lab, target: &str, host: &str) -> Result<String, LabErr
     if let Some(u) = &t.usb {
         if on(&u.host) {
             lf.set_usb(target, u.cmd.as_deref(), None)?;
+            if u.doctor {
+                lf.set_doctor(target, "usb", true)?;
+            }
         }
     }
     if let Some(acts) = &t.actions {
@@ -136,6 +145,10 @@ pub fn build_slice(lab: &Lab, target: &str, host: &str) -> Result<String, LabErr
                     a.requires_power.as_deref(),
                     None,
                 )?;
+            }
+            // The table only exists in the slice once an action is in it.
+            if acts.doctor && !acts.actions.is_empty() {
+                lf.set_doctor(target, "actions", true)?;
             }
         }
     }
@@ -971,6 +984,59 @@ mod tests {
             model::parse(&s).unwrap().targets["fortune"].serial_port(),
             8724
         );
+    }
+
+    /// The helper doctor opt-in (#304) on every channel that has one. A
+    /// dropped flag would leave a doctor run *on* the control host — e.g.
+    /// `paniolo doctor` dispatched there by a future verb — silently skipping
+    /// the check the lab asked for.
+    #[test]
+    fn slice_carries_the_doctor_opt_in() {
+        let lab = model::parse(
+            r#"
+            [hosts.bench1]
+            ssh = "u@bench1"
+            [targets.pi5]
+            host = "bench1"
+            [targets.pi5.power]
+            cycle_cmd = "shellyplug -d 192.0.2.10 cycle"
+            doctor = true
+            [targets.pi5.power.levels.hard]
+            cycle_cmd = "shellyplug -d 192.0.2.11 cycle"
+            [targets.pi5.hid]
+            cmd = "ch9329 -d /dev/ttyUSB1"
+            doctor = true
+            [targets.pi5.usb]
+            cmd = "ch9329 -d /dev/ttyUSB1"
+            doctor = true
+            [targets.pi5.actions]
+            doctor = true
+            reset = { cmd = "boardctl reset" }
+            [targets.pi6]
+            host = "bench1"
+            [targets.pi6.power]
+            cycle_cmd = "shellyplug -d 192.0.2.11 cycle"
+            "#,
+        )
+        .unwrap();
+        let s = build_slice(&lab, "pi5", "bench1").unwrap();
+        let t = &model::parse(&s).unwrap().targets["pi5"];
+        let p = t.power.as_ref().unwrap();
+        assert!(p.doctor, "{s}");
+        // Levels (#302) and the flag travel together.
+        assert_eq!(
+            p.levels["hard"].cycle_cmd.as_deref(),
+            Some("shellyplug -d 192.0.2.11 cycle"),
+            "{s}"
+        );
+        assert!(t.hid.as_ref().unwrap().doctor, "{s}");
+        assert!(t.usb.as_ref().unwrap().doctor, "{s}");
+        let acts = t.actions.as_ref().unwrap();
+        assert!(acts.doctor, "{s}");
+        assert_eq!(acts.actions.keys().collect::<Vec<_>>(), ["reset"]);
+        // Off stays off: nothing is written for the default.
+        let s = build_slice(&lab, "pi6", "bench1").unwrap();
+        assert!(!s.contains("doctor"), "{s}");
     }
 
     #[test]

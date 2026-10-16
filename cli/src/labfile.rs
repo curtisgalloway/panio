@@ -650,8 +650,10 @@ impl LabFile {
         host: Option<&str>,
     ) -> Result<(), LabError> {
         model::validate_name("action", name)?;
-        if name == "host" {
-            return lab_err("'host' names the actions table's host; pick another action name");
+        if model::ACTIONS_TABLE_KEYS.contains(&name) {
+            return lab_err(format!(
+                "'{name}' is a setting of the actions table itself; pick another action name"
+            ));
         }
         self.set_singleton(target, "actions", &[("host", host)])?;
         let acts = self
@@ -659,9 +661,10 @@ impl LabFile {
             .get_mut("actions")
             .and_then(|i| i.as_table_mut())
             .ok_or_else(|| LabError(format!("target '{target}': actions is not a table")))?;
-        // Rendered as a bare `[…actions]` header only when it carries a host;
-        // otherwise only the `[…actions.<name>]` tables appear.
-        acts.set_implicit(!acts.contains_key("host"));
+        // Rendered as a bare `[…actions]` header only when it carries a
+        // table-level key (host, doctor); otherwise only the
+        // `[…actions.<name>]` tables appear.
+        set_actions_implicit(acts);
         if !acts.contains_key(name) {
             if cmd.is_none() {
                 return lab_err(format!(
@@ -706,15 +709,58 @@ impl LabFile {
             .get_mut("actions")
             .and_then(|i| i.as_table_mut())
             .ok_or_else(|| LabError(format!("target '{target}': no actions channel")))?;
-        if name == "host" || acts.remove(name).is_none() {
+        if model::ACTIONS_TABLE_KEYS.contains(&name) || acts.remove(name).is_none() {
             return lab_err(format!("target '{target}': no action '{name}'"));
         }
-        if acts.iter().all(|(k, _)| k == "host") {
+        if acts
+            .iter()
+            .all(|(k, _)| model::ACTIONS_TABLE_KEYS.contains(&k))
+        {
             t.remove("actions");
         }
         Ok(())
     }
 
+    /// Turn a channel's opt-in helper doctor check (#304) on or off.
+    /// `kind` is `power`, `hid`, `usb`, or `actions` — the channels whose
+    /// hooks name a helper program. On writes `doctor = true`; off removes
+    /// the key, since off is the default.
+    pub fn set_doctor(&mut self, target: &str, kind: &str, on: bool) -> Result<(), LabError> {
+        if !DOCTOR_KINDS.contains(&kind) {
+            return lab_err(format!("the {kind} channel has no helper doctor check"));
+        }
+        let c = self
+            .target_mut(target)?
+            .get_mut(kind)
+            .ok_or_else(|| LabError(format!("target '{target}': no {kind} channel")))?
+            .as_table_mut()
+            .ok_or_else(|| not_a_standard_table(&format!("targets.{target}.{kind}")))?;
+        if on {
+            c.insert("doctor", value(true));
+        } else {
+            c.remove("doctor");
+        }
+        if kind == "actions" {
+            set_actions_implicit(c);
+        }
+        Ok(())
+    }
+}
+
+/// The channels that can opt in to a helper doctor check.
+pub const DOCTOR_KINDS: &[&str] = &["power", "hid", "usb", "actions"];
+
+/// An `actions` table renders as a bare `[…actions]` header only when it
+/// carries a table-level key; otherwise only its `[…actions.<name>]` tables
+/// appear.
+fn set_actions_implicit(acts: &mut Table) {
+    let has_own_key = model::ACTIONS_TABLE_KEYS
+        .iter()
+        .any(|k| acts.contains_key(k));
+    acts.set_implicit(!has_own_key);
+}
+
+impl LabFile {
     fn target_mut(&mut self, name: &str) -> Result<&mut Table, LabError> {
         let missing = || LabError(format!("no target '{name}'"));
         let targets = self
@@ -960,6 +1006,70 @@ mod tests {
         let p = lab.targets["nuc"].power.as_ref().unwrap();
         assert_eq!(p.cycle_cmd, None);
         assert_eq!(p.levels["hard"].cycle_cmd.as_deref(), Some("x"));
+    }
+
+    /// The opt-in helper doctor flag (#304): on writes `doctor = true`, off
+    /// removes the key, hand comments survive, and `doctor` is reserved in
+    /// the actions table the same way `host` is.
+    #[test]
+    fn doctor_flag_round_trips_on_every_hook_channel() {
+        let (_d, path) = tmp();
+        std::fs::write(
+            &path,
+            "[targets.pi5]\n\n[targets.pi5.power]\n# plug on the bench\n\
+             cycle_cmd = \"shellyplug -d 192.0.2.10 cycle\"\n\n\
+             [targets.pi5.hid]\ncmd = \"ch9329 -d /dev/ttyUSB0\"\n\n\
+             [targets.pi5.usb]\ncmd = \"ch9329 -d /dev/ttyUSB0\"\n\n\
+             [targets.pi5.actions.reset]\ncmd = \"boardctl reset\"\n",
+        )
+        .unwrap();
+        let mut lf = LabFile::load(&path).unwrap();
+        for kind in DOCTOR_KINDS {
+            lf.set_doctor("pi5", kind, true).unwrap();
+        }
+        assert!(lf.set_doctor("pi5", "video", true).is_err());
+        assert!(lf.set_doctor("pi5", "adb", true).is_err());
+        lf.save().unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("# plug on the bench"), "{text}");
+        assert!(
+            text.contains("[targets.pi5.actions]\ndoctor = true"),
+            "{text}"
+        );
+        let lab = model::load(&path).unwrap();
+        let t = &lab.targets["pi5"];
+        assert!(t.power.as_ref().unwrap().doctor);
+        assert!(t.hid.as_ref().unwrap().doctor);
+        assert!(t.usb.as_ref().unwrap().doctor);
+        let acts = t.actions.as_ref().unwrap();
+        assert!(acts.doctor);
+        assert_eq!(acts.actions.keys().collect::<Vec<_>>(), ["reset"]);
+
+        let mut lf = LabFile::load(&path).unwrap();
+        assert!(lf
+            .set_action("pi5", "doctor", Some("x"), None, None, None)
+            .is_err());
+        assert!(lf.remove_action("pi5", "doctor").is_err());
+        for kind in DOCTOR_KINDS {
+            lf.set_doctor("pi5", kind, false).unwrap();
+        }
+        lf.save().unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(!text.contains("doctor"), "{text}");
+        // Off again: the actions table goes back to an implicit header.
+        assert!(!text.contains("[targets.pi5.actions]\n"), "{text}");
+
+        // The last action going takes a table that only says `doctor` with it.
+        let mut lf = LabFile::load(&path).unwrap();
+        lf.set_doctor("pi5", "actions", true).unwrap();
+        lf.remove_action("pi5", "reset").unwrap();
+        lf.save().unwrap();
+        assert!(model::load(&path).unwrap().targets["pi5"].actions.is_none());
+
+        // A channel that does not exist cannot be opted in.
+        let mut lf = LabFile::load(&path).unwrap();
+        assert!(lf.set_doctor("pi5", "actions", true).is_err());
+        assert!(lf.set_doctor("ghost", "power", true).is_err());
     }
 
     #[test]

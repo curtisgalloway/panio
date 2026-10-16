@@ -37,6 +37,11 @@ paniolo hid set -t pi5 --cmd "ch9329 -d /dev/cu.usbmodem51201"
 paniolo usb set -t pi5 --cmd "ch9329 -d /dev/cu.usbmodem51201"
 ```
 
+`--doctor` on `usb set` has `paniolo doctor` also run `<cmd> doctor --json`,
+the helper's own read-only health check (see
+[Helper health checks](power.md#helper-health-checks-doctor)). `ch9329` does
+not implement it yet, so doctor reports `no-check` for it.
+
 ## Using it
 
 ```bash
