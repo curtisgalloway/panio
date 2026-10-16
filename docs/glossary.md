@@ -13,7 +13,9 @@ each term briefly on first use; this page is the longer reference.
 | Term | Meaning |
 |---|---|
 | **action** | A named hook command in a target's `actions` table for a control that is not power, such as a reset line or boot strap. Run with `paniolo action run`. See [Named actions](actions.md). |
+| **power level** | A named set of power hooks (such as `soft` or `hard`) beside a target's default ones, for a target with more than one independent power layer. Picked with `--level` on the power commands. See [Power levels](power.md#power-levels-soft-and-hard). |
 | **receive boundary** | A capture epoch and exclusive RX chunk sequence; only later received chunks from that epoch belong to an acquisition. |
+| **transaction / transaction lock** | One `serial transact` exchange: record the receive boundary, send a command, wait for its reply. The per-interface lock it holds makes other transactions wait their turn and refuses plain input (`serial send`, dashboard keystrokes) until it ends. See [transactions](serial.md#requestresponse-transactions). |
 | **follow / NDJSON** | Deliver completed rows as separate JSON objects, one per line, then a final result object. A row beginning at an arbitrary receive boundary may have an unknown prefix. |
 | **capture epoch** | Identifier for one serial interface supervisor lifetime. Receive chunk counters restart with a new epoch. |
 | **receive record / evidence cursor** | An immutable chunk of exact bytes received from a target, identified by a capture epoch and RX sequence. It preserves the original receive time; later reads have their own observation time. This cursor is different from a line-log sequence. |
@@ -26,7 +28,9 @@ each term briefly on first use; this page is the longer reference.
 | **lab file** | The single config file that describes your hosts, targets and their channels. Managed through the CLI; `paniolo config edit` opens it in your editor. |
 | **channel** | One connection to a target: `serial`, `video`, `hid`, `power`, `netboot`, `usb` and so on. |
 | **helper** | A separate program paniolo runs to drive one kind of hardware (`hdmicap`, `serialcap`, `amt`, `shellyplug`, `ch9329`, ...). |
+| **plugin root** | An install prefix outside paniolo's own install that holds extra helpers (`<root>/libexec/paniolo/bin`) and skills (`<root>/share/paniolo/skills`). Listed in the `PANIOLO_PLUGIN_PATH` environment variable, or a lab host's `plugin_path`. Plugins can add helpers and skills but never replace bundled ones. See [plugin roots](power.md#out-of-tree-helpers-and-skills-plugin-roots). |
 | **hook** | A shell command in the lab file that paniolo runs for an action, such as `on_cmd`, `off_cmd` and `state_cmd` for power. |
+| **helper doctor check** | A helper's own read-only health report, `<program> <transport options> doctor --json`, which `paniolo doctor` runs for a channel set with `--doctor` and lists under it as `ok`, `warn` or `FAIL`. *Transport options* are the options before a hook's verb that say how to reach the device, such as `-d 192.0.2.10`. See [Helper health checks](power.md#helper-health-checks-doctor). |
 | **daemon** | A helper that keeps running in the background and holds a device open. `hdmicap` (video) and `serialcap` (serial) are the main ones. |
 | **discovery file** | The small file a daemon writes in the runtime directory with its address, PID and token. paniolo's only record that the daemon is running. |
 | **stale / untracked daemon** | *Stale*: running executable content proven different from the installed helper; a metadata or inode replacement alone does not establish this. *Untracked*: still running after its discovery file was deleted. |

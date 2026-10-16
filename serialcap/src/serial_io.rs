@@ -204,6 +204,15 @@ pub struct SerialHandle {
     /// Button-press requests: caller sends (duration_ms, responder); the
     /// supervisor asserts DTR for that many milliseconds then replies.
     dtr_tx: mpsc::Sender<(u64, oneshot::Sender<Result<(), String>>)>,
+    /// This interface's capture directory, where the raw receive journal a
+    /// transaction reads its response from lives.
+    capture_dir: Arc<PathBuf>,
+    /// The per-interface transaction lock (see [`SerialHandle::transaction`]).
+    /// A `/transact` holds it exclusively for its whole send-and-wait; plain
+    /// input (`/input`, `/stream` keystrokes) takes it shared with `try_*`,
+    /// so input is refused rather than queued while a transaction holds the
+    /// interface or waits for it, and concurrent plain inputs still coexist.
+    txn: Arc<tokio::sync::RwLock<()>>,
 }
 
 impl SerialHandle {
@@ -241,6 +250,27 @@ impl SerialHandle {
             .await
             .map_err(|_| anyhow::anyhow!("supervisor dropped response"))?
             .map_err(anyhow::Error::msg)
+    }
+
+    /// The interface's capture directory (its raw receive journal).
+    pub fn capture_dir(&self) -> &Path {
+        &self.capture_dir
+    }
+
+    /// Wait for the interface's transaction lock, exclusively. Transactions
+    /// queue behind one another in arrival order (tokio's lock is fair); the
+    /// caller bounds the wait with its own deadline.
+    pub async fn transaction(&self) -> tokio::sync::OwnedRwLockWriteGuard<()> {
+        self.txn.clone().write_owned().await
+    }
+
+    /// Permission for one plain (non-transaction) write, or `None` while a
+    /// transaction holds the interface or is queued for it. Hold the guard
+    /// across the write so a transaction cannot start in the middle of it.
+    /// `None` is a refusal, not a reason to wait: input queued behind a
+    /// transaction would land inside the *next* transaction's response window.
+    pub fn try_input(&self) -> Option<tokio::sync::OwnedRwLockReadGuard<()>> {
+        self.txn.clone().try_read_owned().ok()
     }
 
     /// Wait until every byte has been accepted by the serial driver. Pacing
@@ -291,7 +321,7 @@ pub fn spawn_interface(
         health: Health::default(),
     }));
 
-    let line_tx = spawn_capture(capture_dir, buffer_lines, status.clone());
+    let line_tx = spawn_capture(capture_dir.clone(), buffer_lines, status.clone());
 
     tokio::spawn(supervisor(
         spec,
@@ -309,6 +339,8 @@ pub fn spawn_interface(
         ring,
         status,
         dtr_tx,
+        capture_dir: Arc::new(capture_dir),
+        txn: Arc::new(tokio::sync::RwLock::new(())),
     }
 }
 
@@ -1013,7 +1045,7 @@ fn describe(t: &tokio_serial::SerialPortType) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use tokio_serial::{SerialPortType, UsbPortInfo};
 
@@ -1113,6 +1145,8 @@ mod tests {
                 health: Health::default(),
             })),
             dtr_tx: mpsc::channel(1).0,
+            capture_dir: Arc::new(PathBuf::new()),
+            txn: Default::default(),
         };
 
         // Sample until enough verdicts are in; a lagged sample yields none, and
@@ -1344,6 +1378,8 @@ mod tests {
             ring: Arc::new(Mutex::new(VecDeque::new())),
             status,
             dtr_tx,
+            capture_dir: Arc::new(PathBuf::new()),
+            txn: Default::default(),
         };
         // _dtr_rx is held by the caller's scope only long enough to build the
         // handle; write_paced never touches the DTR path.
@@ -1472,7 +1508,7 @@ mod tests {
     }
 
     #[cfg(unix)]
-    fn tmp_dir(tag: &str) -> PathBuf {
+    pub(crate) fn tmp_dir(tag: &str) -> PathBuf {
         let p = std::env::temp_dir().join(format!("serialcap-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&p);
         std::fs::create_dir_all(&p).unwrap();
@@ -1539,7 +1575,7 @@ mod tests {
     /// A pty pair, as a hypervisor hands one out: the returned fd is the end
     /// UTM/qemu keeps, and the path is what it prints for you to attach to.
     #[cfg(unix)]
-    fn open_pty_master() -> (std::os::unix::io::RawFd, String) {
+    pub(crate) fn open_pty_master() -> (std::os::unix::io::RawFd, String) {
         use std::ffi::CStr;
         unsafe {
             let fd = libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY);
@@ -1648,7 +1684,7 @@ mod tests {
     /// "target") returned for the test to drive. The capture thread writes to
     /// a scratch directory.
     #[cfg(unix)]
-    fn spawn_on_pty(tag: &str) -> (SerialHandle, std::fs::File, PathBuf) {
+    pub(crate) fn spawn_on_pty(tag: &str) -> (SerialHandle, std::fs::File, PathBuf) {
         use std::os::unix::io::FromRawFd;
         let (master, device) = open_pty_master();
         let far = unsafe { std::fs::File::from_raw_fd(master) };
@@ -1669,7 +1705,7 @@ mod tests {
     /// Wait until the client-side stream has carried `needle`, returning
     /// everything received so far.
     #[cfg(unix)]
-    async fn recv_until(rx: &mut broadcast::Receiver<Bytes>, needle: &[u8]) -> Vec<u8> {
+    pub(crate) async fn recv_until(rx: &mut broadcast::Receiver<Bytes>, needle: &[u8]) -> Vec<u8> {
         let mut got = Vec::new();
         loop {
             let chunk = tokio::time::timeout(Duration::from_secs(5), rx.recv())

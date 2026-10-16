@@ -8,7 +8,9 @@ paniolo switches a target's power two ways:
   that has not declared it.
 - **Generic power hooks**: four optional shell commands (`on_cmd`, `off_cmd`,
   `cycle_cmd`, `state_cmd`), set with `paniolo power set` and run via `sh -c`.
-  Use them for a smart plug, a USB hub, Intel AMT, or a script.
+  Use them for a smart plug, a USB hub, Intel AMT, or a script. A target with
+  more than one power layer can add named
+  [power levels](#power-levels-soft-and-hard) (`soft`, `hard`) beside them.
 
 Device-specific logic never goes in the core crates; it lives in helper
 binaries behind the hooks (`cambrionix` is the canonical example). To support
@@ -159,6 +161,53 @@ works when all of the target's channels share one host; `--host H` names a
 lab host. It re-execs `paniolo helper` on that host over SSH, so the helper
 gets that host's own state and runtime dirs, as a hook would.
 
+### Out-of-tree helpers and skills (plugin roots)
+
+A helper or skill paniolo does not ship (a lab's own board-control tool, a
+power script, a skill describing one lab's targets) can live in its own
+checkout instead of being copied into `~/.local`. Point
+`PANIOLO_PLUGIN_PATH` at one or more **plugin roots**: install prefixes laid
+out like paniolo's own.
+
+```text
+/opt/lab-plugins/
+  libexec/paniolo/bin/labctl                 # a helper
+  share/paniolo/skills/lab-targets/SKILL.md  # a skill
+```
+
+```bash
+export PANIOLO_PLUGIN_PATH=/opt/lab-plugins:/srv/more-plugins   # ';' on Windows
+paniolo helper                 # labctl<TAB>plugin: /opt/lab-plugins
+paniolo helper labctl status
+paniolo skill lab-targets
+paniolo --plugin-path /opt/lab-plugins helper   # one command, without the variable
+```
+
+- **Plugins add; they never shadow.** paniolo searches its own helper dirs
+  first and the plugin roots after them, in list order, then `PATH`. A plugin
+  helper or skill with the same name as a bundled one is never used, so a
+  daemon always runs the binary paniolo installed. There is no setting to
+  change that; give the plugin a different name.
+- **Hooks name plugin helpers bare.** Hook commands (`*_cmd`, the hid and usb
+  `cmd`, actions) run with the plugin helper dirs on `PATH` after the bundled
+  ones, so `--cycle-cmd "labctl cycle"` works.
+- **Listing shows the source.** `paniolo helper` and `paniolo skill` print a
+  bundled entry as its bare name and a plugin entry as the name, a tab, and
+  `plugin: <root>`. The name is always the first field.
+- **Empty entries are skipped; relative ones are ignored** with a warning on
+  stderr, since they would resolve against whatever directory paniolo started
+  in.
+- **`paniolo doctor`** prints one `plugins` line per root on this machine: `ok`,
+  `MISSING` (counted as a problem), or `incomplete` (no `libexec/paniolo/bin`
+  or `share/paniolo/skills` inside, or a relative entry). It also names a
+  plugin helper that a bundled helper shadows.
+- **The variable is read on the host that runs the command.** For a remote
+  control host, set the host's `plugin_path` in the lab file (`paniolo host set
+  bench1 --plugin-path /opt/lab-plugins`); see
+  [Distributed control](distributed-control.md#plugin-roots-on-a-control-host).
+- `paniolo daemons` does not treat a process running out of a plugin root as
+  a stray, so `daemons stop --all` leaves it alone.
+
 The `hidrig` control board can also switch a DUT power relay
 (`hidrig power off|on|cycle`) behind these hooks (see
 [`hidrig/README.md`](https://github.com/curtisgalloway/paniolo/blob/main/hidrig/README.md)).
@@ -187,6 +236,91 @@ non-executable script (shell code 127/126) exits 3 (`not_configured`). See
 stdout, which must be `on` or `off` (case-insensitive). Without `state_cmd`, it
 uses the serial sense line (sense wired, serialcap daemon running).
 
+### Power levels (soft and hard)
+
+Some targets have more than one independent power layer, and a cycle at one
+does not reach the others:
+
+- a **soft** layer: a PMIC enable, a board-control MCU switching the main
+  rail, or the power button;
+- a **hard** layer: mains or DC input, the only reset for a wedged
+  controller.
+
+A debug cable that back-powers the board is the usual trap. ChromeOS Servo v4
+and v4.1 can source power through their DUT-side USB-C port, so cutting the
+barrel jack alone does not power the board off; a real hard cycle has to drop
+both, for example with a smart plug and a Cambrionix hub port.
+
+A **power level** is a named set of hooks beside the default ones. Each level
+may set any of `cycle_cmd`, `on_cmd`, `off_cmd` and `state_cmd`:
+
+```toml
+[targets.target-machine.power]            # the default level, as before
+cycle_cmd = "boardctl -d /dev/ttyUSB0 cycle"
+state_cmd = "boardctl -d /dev/ttyUSB0 state"
+
+[targets.target-machine.power.levels.hard]
+cycle_cmd = "sh -c 'shellyplug -d 192.0.2.10 off && cambrionix -d /dev/ttyUSB1 off 3 && sleep 5 && cambrionix -d /dev/ttyUSB1 on 3 && shellyplug -d 192.0.2.10 on'"
+state_cmd = "shellyplug -d 192.0.2.10 state"
+```
+
+Set and remove levels with the CLI, which keeps the rest of the file and its
+comments as they are:
+
+```bash
+paniolo power set -t target-machine --level hard \
+    --cycle-cmd "~/scripts/hard-cycle.sh" --state-cmd "shellyplug -d 192.0.2.10 state"
+paniolo power rm -t target-machine --level hard   # only that level
+paniolo power rm -t target-machine                # the whole channel, levels included
+```
+
+Then pick a level with `--level` on any power verb:
+
+```bash
+paniolo power-cycle target-machine --level hard
+paniolo power on    target-machine --level hard
+paniolo power off   target-machine --level hard
+paniolo power-state target-machine --level hard
+```
+
+Rules:
+
+- **No `--level` means the default level**, so labs without levels and the
+  scripts that drive them behave exactly as before. `--level default` names
+  the default level explicitly, which is why no level may be called
+  `default`.
+- **A level never borrows a hook from the default level.** If `hard` has no
+  `on_cmd`, `power on --level hard` fails with exit 3 (`not_configured`)
+  naming the level, rather than running the default `on_cmd`. An unknown
+  level fails the same way and lists the levels the target has.
+- **`power-cycle --level L` confirms with L's own `state_cmd`**, the same
+  500 ms / 30 s wait as the default level. Without one it prints `Power cycle
+  requested at level 'L'`.
+- **`power-state` without `--level`** prints one line per level when the
+  target has levels, the default level first; with none, it prints the single
+  line it always has:
+
+  ```text
+  Power ON  (target-machine)
+  Power OFF  (target-machine, level hard)
+  Power UNKNOWN  (target-machine, level pmic: no state_cmd)
+  ```
+
+  A level that has no way to read state is reported as `UNKNOWN … no
+  state_cmd`, not as an error. A level whose `state_cmd` fails is reported as
+  `UNKNOWN … state read failed`, and the command then exits with that
+  failure (101, `helper_failed`) after printing every line. With
+  `--level NAME` only that level's line is printed.
+- Level names follow the same rule as target names: letters, digits, `.`,
+  `_` and `-`, not starting with `-`. Each level needs at least one hook.
+- Every level runs on the power channel's host (`--host` is set for the whole
+  channel, without `--level`), and every level's hooks take the same
+  per-target hook lock as the default hooks and the
+  [named actions](actions.md), so a soft and a hard cycle never overlap.
+- **The dashboard's power controls drive the default level only**, as does
+  an action's `requires_power` check. Use the CLI or the MCP tools for the
+  others.
+
 ### `paniolo doctor` hook probing
 
 `paniolo doctor` probes every hook, over SSH for remote hosts: `test -e` for an
@@ -194,9 +328,58 @@ absolute path, `command -v` for a bare name, in the runtime lookup order:
 
 1. the per-user libexec dir (`~/.local/libexec/paniolo/bin`);
 2. the system package dir (`/usr/libexec/paniolo/bin`);
-3. `PATH`.
+3. each plugin root's `libexec/paniolo/bin` (for a remote host, its lab
+   `plugin_path`, else its own `PANIOLO_PLUGIN_PATH`; see
+   [plugin roots](#out-of-tree-helpers-and-skills-plugin-roots));
+4. `PATH`.
 
 It lists configured hooks by name, e.g. `cycle_cmd,on_cmd,off_cmd,state_cmd`.
+Each [power level](#power-levels-soft-and-hard) is probed the same way and
+listed after the default hooks (`cycle_cmd,state_cmd; level hard:
+cycle_cmd,state_cmd`); a missing program is reported with its level, as
+`level 'hard': …`.
+
+### Helper health checks (`--doctor`)
+
+That probe proves the helper is installed, not that the plug or hub answers.
+A helper with a `doctor` subcommand can check the hardware too, read-only.
+Opt the channel in:
+
+```bash
+paniolo power set -t target-machine --doctor      # --no-doctor turns it off
+```
+
+`paniolo doctor` then runs the hook's program with the hook's own transport
+options and ` doctor --json` in place of the verb. For
+`shellyplug -d 192.0.2.10 cycle 0` that is
+`shellyplug -d 192.0.2.10 doctor --json`. The check runs once per distinct
+command, has 10 s to finish, and each result is listed under the channel:
+
+```
+target-machine  power doctor: reachable  @bench1  ok    SNPL-00112EU …, gen 2, firmware 1.4.4
+target-machine  power doctor: auth       @bench1  ok    authentication disabled
+target-machine  power doctor: switch     @bench1  ok    switch:0 present
+```
+
+A `fail` (or a check that times out) is a problem and makes `doctor` exit 1;
+a `warn` is shown but is not. A helper without a `doctor` subcommand shows
+once as `no-check … helper has no doctor check` and is not a problem. Of the
+bundled power helpers, `shellyplug` implements it. Only opt in a hook whose
+program implements the check: a script that ignores its arguments would run
+its normal action. The derivation rule and the JSON contract are in
+[Adding power helpers](dev/adding-power-helpers.md#doctor-check-optional-recommended).
+The same `--doctor` flag exists on `hid set`, `usb set`, and `action set`.
+
+The flag belongs to the whole power channel, like `--host`, and also covers
+every named power level: a level's hooks are asked the same way, once per
+distinct command, so a level on the same transport as another hook folds into
+that run. When there is more than one run, each line names the hooks it came
+from; here a `hard` level on another helper gets its own:
+
+```
+target-machine  power doctor (default): reachable  @bench1  ok        SNPL-00112EU …
+target-machine  power doctor (level hard)          @bench1  no-check  helper has no doctor check (relayctl)
+```
 
 ### Example: Home Assistant script (cycle_cmd)
 
@@ -447,10 +630,18 @@ shellyplug -d <host> on     [id]          # switch on, confirm by read-back
 shellyplug -d <host> off    [id]          # switch off, confirm by read-back
 shellyplug -d <host> cycle  [id] [--delay-ms 3000]
                                           # off → confirm → delay → on → confirm
+shellyplug -d <host> doctor [id] [--json] # read-only health check (paniolo doctor)
 ```
 
 `state` reads `Switch.GetStatus` live on every call and fails if the device is
 unreachable.
+
+`doctor` never switches the relay. It reports three checks: `reachable`
+(`Shelly.GetDeviceInfo` answers; model and firmware), `auth` (fails when the
+device has authentication enabled, which shellyplug does not support yet), and
+`switch` (the switches `Shelly.GetStatus` lists, or the one `[id]` names). A
+failed check ends the list. `--json` prints the report `paniolo doctor` reads
+and exits 0; without it, one line per check and exit 1 if any failed.
 
 ### Wiring into paniolo power hooks
 
@@ -459,8 +650,12 @@ paniolo power set -t target-machine \
     --cycle-cmd "shellyplug -d 10.0.0.5 cycle 0" \
     --on-cmd    "shellyplug -d 10.0.0.5 on 0" \
     --off-cmd   "shellyplug -d 10.0.0.5 off 0" \
-    --state-cmd "shellyplug -d 10.0.0.5 state 0"
+    --state-cmd "shellyplug -d 10.0.0.5 state 0" \
+    --doctor
 ```
+
+`--doctor` makes `paniolo doctor` run `shellyplug -d 10.0.0.5 doctor --json`
+(see [Helper health checks](#helper-health-checks-doctor)).
 
 ### Gotcha: macOS Local Network privacy
 
@@ -763,10 +958,18 @@ shellyplug -d <host> on     [id]          # switch on, confirm by read-back
 shellyplug -d <host> off    [id]          # switch off, confirm by read-back
 shellyplug -d <host> cycle  [id] [--delay-ms 3000]
                                           # off → confirm → delay → on → confirm
+shellyplug -d <host> doctor [id] [--json] # read-only health check (paniolo doctor)
 ```
 
 `state` reads `Switch.GetStatus` live on every call and fails if the device is
 unreachable.
+
+`doctor` never switches the relay. It reports three checks: `reachable`
+(`Shelly.GetDeviceInfo` answers; model and firmware), `auth` (fails when the
+device has authentication enabled, which shellyplug does not support yet), and
+`switch` (the switches `Shelly.GetStatus` lists, or the one `[id]` names). A
+failed check ends the list. `--json` prints the report `paniolo doctor` reads
+and exits 0; without it, one line per check and exit 1 if any failed.
 
 ### Wiring into paniolo power hooks
 
@@ -775,8 +978,12 @@ paniolo power set -t target-machine \
     --cycle-cmd "shellyplug -d 10.0.0.5 cycle 0" \
     --on-cmd    "shellyplug -d 10.0.0.5 on 0" \
     --off-cmd   "shellyplug -d 10.0.0.5 off 0" \
-    --state-cmd "shellyplug -d 10.0.0.5 state 0"
+    --state-cmd "shellyplug -d 10.0.0.5 state 0" \
+    --doctor
 ```
+
+`--doctor` makes `paniolo doctor` run `shellyplug -d 10.0.0.5 doctor --json`
+(see [Helper health checks](#helper-health-checks-doctor)).
 
 ### Gotcha: macOS Local Network privacy
 

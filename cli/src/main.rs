@@ -79,6 +79,14 @@ struct Cli {
     // the remote paniolo, whether or not the user's argv already had it.
     #[arg(long, global = true, overrides_with = "json_errors")]
     json_errors: bool,
+    /// Plugin roots for out-of-tree helpers and skills, in PATH syntax
+    /// (`:`-separated; `;` on Windows). Replaces PANIOLO_PLUGIN_PATH for this
+    /// command and everything it starts. Dispatch passes a host's lab
+    /// `plugin_path` this way. Goes before the subcommand.
+    // Not `global`: `host add/set --plugin-path` is the lab field of the same
+    // name, and a global flag would collide with it.
+    #[arg(long, value_name = "LIST")]
+    plugin_path: Option<String>,
     #[command(subcommand)]
     command: Command,
 }
@@ -121,7 +129,7 @@ enum Command {
         #[command(subcommand)]
         cmd: NetifCmd,
     },
-    /// Configure a target's power channel.
+    /// Configure and drive a target's power channel (default hooks and named levels).
     Power {
         #[command(subcommand)]
         cmd: PowerCmd,
@@ -176,16 +184,38 @@ enum Command {
         print_url: bool,
     },
     /// Run the target's configured power-cycle command.
+    ///
+    /// With a state_cmd at the chosen level, waits until it reports power back on.
     PowerCycle {
         #[command(flatten)]
         target: TargetArg,
+        /// Use this named power level's cycle_cmd (and state_cmd) instead of
+        /// the default hooks, e.g. `hard` for a mains cut. `default` names the
+        /// default hooks.
+        #[arg(long, value_name = "NAME")]
+        level: Option<String>,
     },
-    /// Show whether the target is powered on (via the serial sense line).
+    /// Show whether the target is powered on (via state_cmd or the serial sense line).
+    ///
+    /// Without --level, a target with named power levels gets one line per
+    /// level, the default level first.
     PowerState {
         #[command(flatten)]
         target: TargetArg,
+        /// Report only this named power level (its state_cmd); `default`
+        /// reports only the default level.
+        #[arg(long, value_name = "NAME")]
+        level: Option<String>,
     },
     /// Check required configuration and probe channels against reality over SSH.
+    ///
+    /// One line per channel: target, channel, @host, status, detail. A power,
+    /// hid, usb, or actions channel set with `--doctor` also runs its helper's
+    /// own read-only check (`<program> <transport options> doctor --json`,
+    /// 10 s limit) and lists each result under the channel as `ok`, `warn`, or
+    /// `FAIL`; a helper without that check shows `no-check`. Exits 1 when any
+    /// line is a problem (MISSING, unreachable, CONFLICT, MISMATCH, FAIL);
+    /// `warn` and `no-check` are not problems.
     Doctor {
         /// Target to check (default: all).
         target: Option<String>,
@@ -243,6 +273,9 @@ enum Command {
     /// paniolo helper -t pi5 --channel power -- cambrionix -d /dev/ttyUSB0 state
     /// runs on the host the lab binds pi5's power channel to. Put these
     /// flags before the helper name.
+    ///
+    /// Helpers from a PANIOLO_PLUGIN_PATH root are listed as
+    /// "<name><TAB>plugin: <root>" and never replace a bundled helper.
     Helper {
         /// Run on this lab host instead of locally.
         #[arg(long, conflicts_with = "target")]
@@ -270,7 +303,8 @@ enum Command {
     },
     /// List the agent skills bundled with paniolo, or print one's SKILL.md
     /// (the guides that teach an agent how to drive a target). Omit NAME to
-    /// list them.
+    /// list them. Skills from a PANIOLO_PLUGIN_PATH root are listed too,
+    /// marked "plugin: <root>".
     Skill {
         /// Skill to print (e.g. paniolo, kvm-puppeting).
         name: Option<String>,
@@ -314,6 +348,33 @@ impl TargetArg {
     /// through it, so there is no per-verb merge to get wrong or forget.
     fn name(&self) -> Option<&str> {
         self.target_pos.as_deref().or(self.target.as_deref())
+    }
+}
+
+/// `--doctor` / `--no-doctor` on the `set` verbs of the channels whose hooks
+/// name a helper (power, hid, usb, action): opt the channel in to, or out
+/// of, the helper's own read-only `doctor --json` check (#304).
+#[derive(clap::Args, Debug, Clone, Default)]
+struct DoctorFlag {
+    /// Have `paniolo doctor` also run the helper's own read-only health
+    /// check, `<program> <transport options> doctor --json`. Only for a
+    /// helper that implements it (docs/dev/adding-power-helpers.md).
+    #[arg(long, conflicts_with = "no_doctor")]
+    doctor: bool,
+    /// Stop running the helper's doctor check (the default).
+    #[arg(long)]
+    no_doctor: bool,
+}
+
+impl DoctorFlag {
+    /// `Some(true)`/`Some(false)` when either flag was given, else `None`
+    /// (leave the lab file's setting alone).
+    fn value(&self) -> Option<bool> {
+        match (self.doctor, self.no_doctor) {
+            (true, _) => Some(true),
+            (_, true) => Some(false),
+            _ => None,
+        }
     }
 }
 
@@ -388,6 +449,11 @@ enum HostCmd {
         control_path: Option<String>,
         #[arg(long)]
         paniolo_cmd: Option<String>,
+        /// Plugin roots on this host for out-of-tree helpers and skills (its
+        /// PANIOLO_PLUGIN_PATH syntax), passed to the remote paniolo on every
+        /// dispatch here.
+        #[arg(long, value_name = "LIST")]
+        plugin_path: Option<String>,
     },
     /// Update an existing host (only the options you pass change).
     Set {
@@ -406,6 +472,10 @@ enum HostCmd {
         control_path: Option<String>,
         #[arg(long)]
         paniolo_cmd: Option<String>,
+        /// Plugin roots on this host (its PANIOLO_PLUGIN_PATH syntax), passed
+        /// to the remote paniolo on every dispatch here. Empty clears it.
+        #[arg(long, value_name = "LIST")]
+        plugin_path: Option<String>,
     },
     /// Remove a host (refused if any target still binds to it).
     Rm { name: String },
@@ -623,6 +693,41 @@ enum SerialCmd {
         #[arg(long)]
         follow: bool,
     },
+    /// Send input and wait for its reply as one locked exchange.
+    ///
+    /// Prints the `serial wait` result JSON (status, records, pending, …) plus
+    /// sent_bytes. Only bytes received after the send count. Other
+    /// transactions on the interface queue behind this one; `serial send`
+    /// and dashboard keystrokes are refused while it runs. A match is
+    /// observation, not proof the target executed the command; nothing is
+    /// retried. Needs a running daemon (`paniolo serial watch`).
+    Transact {
+        /// Target to act on (optional when the lab has exactly one).
+        #[arg(long, short)]
+        target: Option<String>,
+        /// Interface name (optional when only one is configured).
+        #[arg(long, short)]
+        interface: Option<String>,
+        /// Stop when this literal UTF-8 string appears in the reply.
+        #[arg(long, value_parser = clap::builder::NonEmptyStringValueParser::new())]
+        until: String,
+        /// Deadline in ms for the whole call: queueing behind other
+        /// transactions, sending and waiting (1..=3600000).
+        #[arg(long, default_value_t = 30000, value_parser = clap::value_parser!(u64).range(1..=3600000))]
+        timeout_ms: u64,
+        /// Raw reply byte cap (1..=1048576).
+        #[arg(long, default_value_t = 65536, value_parser = clap::value_parser!(u64).range(1..=1048576))]
+        max_bytes: u64,
+        /// Per-byte pacing in ms for slow polled consoles (0 = full rate).
+        #[arg(long, default_value_t = 0, value_parser = clap::value_parser!(u32).range(0..=10000))]
+        pace_ms: u32,
+        /// Don't append a carriage return after the text.
+        #[arg(long)]
+        no_newline: bool,
+        /// Text to send (put it after `--` if it starts with `-`).
+        #[arg(value_name = "TEXT")]
+        text: String,
+    },
     /// List available serial devices on this machine.
     Devices,
     /// Read serial health as JSON without starting or changing the daemon.
@@ -760,10 +865,20 @@ enum NetifCmd {
 
 #[derive(Subcommand)]
 enum PowerCmd {
-    /// Configure the target's power channel (one per target).
+    /// Configure the target's power channel (one per target), or one named power level.
+    ///
+    /// With --level NAME the hook flags set that level's hooks instead of the
+    /// default ones; the level is created on first use and needs at least one
+    /// hook. --serial-interface and --host belong to the whole channel, and
+    /// so does --doctor, which covers the default hooks and every level's.
     Set {
         #[arg(long, short)]
         target: String,
+        /// Set the hooks of this named power level (e.g. `hard`) rather than
+        /// the default ones.
+        #[arg(long, value_name = "NAME", conflicts_with_all = ["serial_interface", "host"])]
+        level: Option<String>,
+        /// Shell command to power-cycle the target.
         #[arg(long)]
         cycle_cmd: Option<String>,
         /// Shell command to power the target on.
@@ -775,25 +890,39 @@ enum PowerCmd {
         /// Shell command to query power state (stdout must begin with 'on' or 'off').
         #[arg(long)]
         state_cmd: Option<String>,
+        /// Serial interface whose sense line reports power state when the
+        /// default level has no state_cmd. Whole channel; not with --level.
         #[arg(long)]
         serial_interface: Option<String>,
+        /// Control host the power channel (every level) runs on. Not with --level.
         #[arg(long)]
         host: Option<String>,
+        #[command(flatten)]
+        doctor: DoctorFlag,
     },
-    /// Remove the target's power channel.
+    /// Remove the target's power channel, or with --level only that power level.
     Rm {
         #[arg(long, short)]
         target: String,
+        /// Remove only this named power level, keeping the rest of the channel.
+        #[arg(long, value_name = "NAME")]
+        level: Option<String>,
     },
     /// Power on the target via the configured on_cmd.
     On {
         #[command(flatten)]
         target: TargetArg,
+        /// Use this named power level's on_cmd instead of the default one.
+        #[arg(long, value_name = "NAME")]
+        level: Option<String>,
     },
     /// Power off the target via the configured off_cmd.
     Off {
         #[command(flatten)]
         target: TargetArg,
+        /// Use this named power level's off_cmd instead of the default one.
+        #[arg(long, value_name = "NAME")]
+        level: Option<String>,
     },
 }
 
@@ -821,7 +950,8 @@ enum ActionCmd {
         #[arg(long, hide = true)]
         power_checked: bool,
     },
-    /// Create or update a named action.
+    /// Create or update a named action. `--host` and `--doctor`/`--no-doctor`
+    /// apply to all of the target's actions.
     Set {
         #[arg(long, short)]
         target: String,
@@ -840,6 +970,10 @@ enum ActionCmd {
         /// Control host for all of this target's actions.
         #[arg(long)]
         host: Option<String>,
+        // `--doctor`/`--no-doctor` apply to all of this target's actions,
+        // like `--host`: each action program's doctor check runs once.
+        #[command(flatten)]
+        doctor: DoctorFlag,
     },
     /// Remove a named action (the channel goes with the last one).
     Rm {
@@ -865,6 +999,8 @@ enum HidCmd {
         /// it (OS-assigned). Takes effect when the daemon next starts.
         #[arg(long)]
         port: Option<u16>,
+        #[command(flatten)]
+        doctor: DoctorFlag,
     },
     /// Remove the target's hid channel.
     Rm {
@@ -906,6 +1042,8 @@ enum UsbCmd {
         cmd: String,
         #[arg(long)]
         host: Option<String>,
+        #[command(flatten)]
+        doctor: DoctorFlag,
     },
     /// Remove the target's usb channel.
     Rm {
@@ -1115,6 +1253,15 @@ fn main() {
     // and drop the variable, so no hook or helper inherits it (one JSON
     // object per failure). Dispatch passes `--json-errors` to a remote.
     error::take_json_request(cli.json_errors);
+    // Also single-threaded: `--plugin-path` becomes PANIOLO_PLUGIN_PATH, so
+    // the helper and skill search here, and every hook, helper and daemon
+    // this process starts, see the same roots (#303). An argument rather than
+    // a forwarded variable for the same reason as `--json-errors`: it crosses
+    // interactive dispatch and a non-POSIX control host too.
+    if let Some(p) = &cli.plugin_path {
+        // Safe: no other thread exists yet.
+        unsafe { std::env::set_var(daemons::PLUGIN_PATH_ENV, p) };
+    }
     if let Err(e) = run(cli) {
         // `report` prints the full `.context()` chain (`{e:#}`), not just the
         // outermost message — a bare `{e}` drops every cause a command added
@@ -1154,8 +1301,12 @@ fn run(cli: Cli) -> Result<()> {
             interface.as_deref(),
             ConsoleView { open, print_url },
         ),
-        Command::PowerCycle { target } => cmd_power_cycle(lab_flag, target.name()),
-        Command::PowerState { target } => cmd_power_state(lab_flag, target.name()),
+        Command::PowerCycle { target, level } => {
+            cmd_power_cycle(lab_flag, target.name(), level.as_deref())
+        }
+        Command::PowerState { target, level } => {
+            cmd_power_state(lab_flag, target.name(), level.as_deref())
+        }
         Command::Doctor { target, host } => {
             cmd_doctor(lab_flag, target.as_deref(), host.as_deref())
         }
@@ -1821,23 +1972,12 @@ fn cmd_helper(name: Option<&str>, args: &[String]) -> Result<()> {
         // Search every dir `find_binary` resolves helpers from — per-user
         // libexec, CLI-relative (Homebrew/prefix), and the system package's
         // /usr/libexec/paniolo/bin — not just the per-user dir, so a packaged
-        // (.deb/tarball) install with no per-user build still lists helpers.
-        let dirs = daemons::helper_dirs();
-        let mut names: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-        for dir in &dirs {
-            let Ok(entries) = std::fs::read_dir(dir) else {
-                continue;
-            };
-            for entry in entries.filter_map(|e| e.ok()) {
-                if entry.path().is_file() {
-                    if let Ok(n) = entry.file_name().into_string() {
-                        names.insert(n);
-                    }
-                }
-            }
-        }
-        if names.is_empty() {
-            let searched = dirs
+        // (.deb/tarball) install with no per-user build still lists helpers —
+        // and then the plugin roots (PANIOLO_PLUGIN_PATH, #303), whose
+        // entries carry a `plugin: <root>` column.
+        let (entries, _shadowed) = daemons::helper_entries();
+        if entries.is_empty() {
+            let searched = daemons::all_helper_dirs()
                 .iter()
                 .map(|d| d.display().to_string())
                 .collect::<Vec<_>>()
@@ -1848,8 +1988,8 @@ fn cmd_helper(name: Option<&str>, args: &[String]) -> Result<()> {
             );
             return Ok(());
         }
-        for n in names {
-            println!("{n}");
+        for e in &entries {
+            println!("{}", daemons::helper_list_line(e));
         }
         return Ok(());
     };
@@ -2010,16 +2150,9 @@ fn cmd_configure(lab_flag: Option<&str>, target: &str, host: &str) -> Result<()>
         discover::local_inventory()
     } else {
         eprintln!("Discovering hardware on {host} ({})…", resolved.ssh);
-        let out = ssh::run(
-            &resolved,
-            &[
-                resolved.paniolo(),
-                "discover".to_string(),
-                "--json".to_string(),
-            ],
-            None,
-            &[],
-        )?;
+        let mut argv = resolved.paniolo_argv();
+        argv.extend(["discover".to_string(), "--json".to_string()]);
+        let out = ssh::run(&resolved, &argv, None, &[])?;
         if out.status != 0 {
             bail!(
                 "discover failed on {host}: {}",
@@ -2050,7 +2183,8 @@ fn cmd_setup(lab_flag: Option<&str>, host: Option<&str>, rust_only: bool) -> Res
         let resolved = resolve_host(lab_flag, name)?;
         if !resolved.is_local(name) {
             eprintln!("Running paniolo setup on {name} ({})…", resolved.ssh);
-            let mut argv = vec![resolved.paniolo(), "setup".to_string()];
+            let mut argv = resolved.paniolo_argv();
+            argv.push("setup".to_string());
             if rust_only {
                 argv.push("--rust-only".to_string());
             }
@@ -2120,6 +2254,20 @@ fn load_for_read(lab_flag: Option<&str>) -> Result<Lab> {
 
 /// Open the lab for editing (creating it if absent), apply `mutate`, save.
 /// Config writes are always local and pure — they never touch a target or SSH.
+/// Apply a `set` verb's `--doctor`/`--no-doctor` to channel `kind`, if
+/// either was given.
+fn set_doctor_flag(
+    lf: &mut LabFile,
+    target: &str,
+    kind: &str,
+    flag: &DoctorFlag,
+) -> Result<(), model::LabError> {
+    match flag.value() {
+        Some(on) => lf.set_doctor(target, kind, on),
+        None => Ok(()),
+    }
+}
+
 fn edit_lab<F>(lab_flag: Option<&str>, mutate: F) -> Result<()>
 where
     F: FnOnce(&mut LabFile) -> Result<(), model::LabError>,
@@ -2247,6 +2395,7 @@ fn host_cmd(lab_flag: Option<&str>, cmd: HostCmd) -> Result<()> {
             identity,
             control_path,
             paniolo_cmd,
+            plugin_path,
         } => {
             edit_lab(lab_flag, |lf| {
                 lf.add_host(
@@ -2257,6 +2406,7 @@ fn host_cmd(lab_flag: Option<&str>, cmd: HostCmd) -> Result<()> {
                     identity.as_deref(),
                     control_path.as_deref(),
                     paniolo_cmd.as_deref(),
+                    plugin_path.as_deref(),
                 )
             })?;
             println!("Host '{name}' added. ({ssh})");
@@ -2270,6 +2420,7 @@ fn host_cmd(lab_flag: Option<&str>, cmd: HostCmd) -> Result<()> {
             identity,
             control_path,
             paniolo_cmd,
+            plugin_path,
         } => {
             edit_lab(lab_flag, |lf| {
                 lf.update_host(
@@ -2280,6 +2431,7 @@ fn host_cmd(lab_flag: Option<&str>, cmd: HostCmd) -> Result<()> {
                     identity.as_deref(),
                     control_path.as_deref(),
                     paniolo_cmd.as_deref(),
+                    plugin_path.as_deref(),
                 )
             })?;
             println!("Host '{name}' updated.");
@@ -2348,6 +2500,9 @@ fn host_show(lab_flag: Option<&str>, name: &str) -> Result<()> {
             }
             if let Some(v) = &h.paniolo_cmd {
                 println!("  paniolo_cmd   {v}");
+            }
+            if let Some(v) = &h.plugin_path {
+                println!("  plugin_path   {v}");
             }
             if h.is_local(name) {
                 println!("  -> resolves as LOCAL on this machine");
@@ -2669,6 +2824,28 @@ fn serial_cmd(lab_flag: Option<&str>, cmd: SerialCmd) -> Result<()> {
                 },
             )
         }
+        SerialCmd::Transact {
+            target,
+            interface,
+            until,
+            timeout_ms,
+            max_bytes,
+            pace_ms,
+            no_newline,
+            text,
+        } => cmd_serial_transact(
+            lab_flag,
+            target.as_deref(),
+            interface.as_deref(),
+            &text,
+            !no_newline,
+            &serial::TransactOptions {
+                until: &until,
+                timeout_ms,
+                max_bytes,
+                pace_ms,
+            },
+        ),
         SerialCmd::Devices => {
             let devices = serial::list_devices();
             if devices.is_empty() {
@@ -3433,6 +3610,63 @@ fn local_power(lab: &Lab, target: &str) -> Result<model::PowerChannel> {
     Ok(p)
 }
 
+/// `--level`, normalized: `None` for the default level, whether spelled by
+/// omitting the flag or as `--level default`.
+fn named_level(level: Option<&str>) -> Option<&str> {
+    level.filter(|l| *l != model::DEFAULT_POWER_LEVEL)
+}
+
+/// `" at level 'NAME'"` for a named level, empty for the default one, so the
+/// default level's messages read exactly as before levels existed.
+fn level_suffix(level: Option<&str>) -> String {
+    match level {
+        Some(l) => format!(" at level '{l}'"),
+        None => String::new(),
+    }
+}
+
+/// The hooks of `level` (see [`named_level`]) on the target's power channel
+/// as visible on *this* host. An unknown level is `not_configured`, listing
+/// the levels the target does have.
+fn local_power_level(lab: &Lab, target: &str, level: Option<&str>) -> Result<model::PowerLevel> {
+    let p = local_power(lab, target)?;
+    p.level(level).ok_or_else(|| {
+        let name = level.unwrap_or_default();
+        let have: Vec<&str> = p.levels.keys().map(String::as_str).collect();
+        error::channel_missing(
+            target,
+            "power",
+            format!(
+                "target '{target}' has no power level '{name}' (have: {}; \
+                 paniolo power set -t {target} --level {name} --cycle-cmd ...)",
+                if have.is_empty() {
+                    "none".to_string()
+                } else {
+                    have.join(", ")
+                }
+            ),
+        )
+        .into()
+    })
+}
+
+/// `not_configured` for a power verb whose hook `key` (set with `--flag`) the
+/// chosen level lacks. A named level never borrows the default level's hook,
+/// so the message names the level and how to give it one.
+fn missing_power_hook(target: &str, level: Option<&str>, key: &str, flag: &str) -> anyhow::Error {
+    let msg = match level {
+        None => format!(
+            "no {key} configured for '{target}' \
+             (paniolo power set -t {target} --{flag} /path/to/script)"
+        ),
+        Some(l) => format!(
+            "no {key} configured for '{target}' power level '{l}' \
+             (paniolo power set -t {target} --level {l} --{flag} /path/to/script)"
+        ),
+    };
+    error::channel_missing(target, "power", msg).into()
+}
+
 /// State/runtime-dir env pairs for an opaque hook command (named after the
 /// hook's program basename); empty when underivable.
 fn hook_envs(cmd: &str) -> Vec<(&'static str, std::path::PathBuf)> {
@@ -3448,9 +3682,9 @@ fn hook_envs(cmd: &str) -> Vec<(&'static str, std::path::PathBuf)> {
 ///
 /// Holds the target's hook lock, shared with the action hooks: both often
 /// drive the same exclusive device ([`actions`]).
-fn run_power_hook(cmd: &str, label: &str, target: &str) -> Result<()> {
+fn run_power_hook(cmd: &str, label: &str, target: &str, level: Option<&str>) -> Result<()> {
     let lock = actions::hook_lock(target, actions::LOCK_WAIT)?;
-    eprintln!("{label} '{target}' via {cmd}");
+    eprintln!("{label} '{target}'{} via {cmd}", level_suffix(level));
     let (k, v) = lock.env();
     let status = platform::shell_command(cmd)
         .env("PATH", daemons::hook_path())
@@ -3463,7 +3697,8 @@ fn run_power_hook(cmd: &str, label: &str, target: &str) -> Result<()> {
         Err(error::hook_failed(
             status,
             format!(
-                "{label} script exited with code {}",
+                "{label} script{} exited with code {}",
+                level_suffix(level),
                 error::shell_code(status)
             ),
         )
@@ -3538,7 +3773,12 @@ fn wait_for_power_on(
     }
 }
 
-fn cmd_power_cycle(lab_flag: Option<&str>, target: Option<&str>) -> Result<()> {
+fn cmd_power_cycle(
+    lab_flag: Option<&str>,
+    target: Option<&str>,
+    level: Option<&str>,
+) -> Result<()> {
+    let level = named_level(level);
     let lab = load_for_read(lab_flag)?;
     let target = resolve_single_target(&lab, target)?;
     if let Some(code) = dispatch::maybe_dispatch(
@@ -3550,28 +3790,29 @@ fn cmd_power_cycle(lab_flag: Option<&str>, target: Option<&str>) -> Result<()> {
     )? {
         std::process::exit(code);
     }
-    let p = local_power(&lab, &target)?;
-    let cmd = p.cycle_cmd.ok_or_else(|| {
-        error::channel_missing(
-            &target,
-            "power",
-            format!(
-                "no cycle_cmd configured for '{target}' \
-             (paniolo power set -t {target} --cycle-cmd /path/to/script)"
-            ),
-        )
-    })?;
-    run_power_hook(&cmd, "Power cycling", &target)?;
+    let p = local_power_level(&lab, &target, level)?;
+    let cmd = p
+        .cycle_cmd
+        .ok_or_else(|| missing_power_hook(&target, level, "cycle_cmd", "cycle-cmd"))?;
+    run_power_hook(&cmd, "Power cycling", &target, level)?;
     // A cycle_cmd may return before the cycle ends: a relay board that
     // accepts "cycle" and times the off period itself (#259). With a
     // state_cmd, "complete" means power is back on; without one, paniolo
-    // cannot tell, so it says only that the hook finished.
+    // cannot tell, so it says only that the hook finished. A named level
+    // confirms with its own state_cmd only, never the default level's.
+    let sfx = level_suffix(level);
     let Some(state_cmd) = p.state_cmd else {
-        println!("Power cycle requested (cycle_cmd exited 0; no state_cmd to confirm power).");
+        println!("Power cycle requested{sfx} (cycle_cmd exited 0; no state_cmd to confirm power).");
         return Ok(());
     };
-    confirm_power_on(&state_cmd, &target, POWER_CYCLE_POLL, POWER_CYCLE_DEADLINE)?;
-    println!("Power cycle complete (power is back on).");
+    confirm_power_on(
+        &state_cmd,
+        &target,
+        level,
+        POWER_CYCLE_POLL,
+        POWER_CYCLE_DEADLINE,
+    )?;
+    println!("Power cycle complete{sfx} (power is back on).");
     Ok(())
 }
 
@@ -3580,6 +3821,7 @@ fn cmd_power_cycle(lab_flag: Option<&str>, target: Option<&str>) -> Result<()> {
 fn confirm_power_on(
     state_cmd: &str,
     target: &str,
+    level: Option<&str>,
     poll: std::time::Duration,
     deadline: std::time::Duration,
 ) -> Result<()> {
@@ -3589,7 +3831,8 @@ fn confirm_power_on(
     Err(error::PanioloError::new(
         error::Kind::Timeout,
         format!(
-            "cycle_cmd exited 0, but state_cmd still reports '{target}' off after {} ms",
+            "cycle_cmd exited 0, but state_cmd still reports '{target}' off{} after {} ms",
+            level_suffix(level),
             deadline.as_millis()
         ),
     )
@@ -3598,7 +3841,8 @@ fn confirm_power_on(
     .into())
 }
 
-fn cmd_power_on(lab_flag: Option<&str>, target: Option<&str>) -> Result<()> {
+fn cmd_power_on(lab_flag: Option<&str>, target: Option<&str>, level: Option<&str>) -> Result<()> {
+    let level = named_level(level);
     let lab = load_for_read(lab_flag)?;
     let target = resolve_single_target(&lab, target)?;
     if let Some(code) = dispatch::maybe_dispatch(
@@ -3610,23 +3854,17 @@ fn cmd_power_on(lab_flag: Option<&str>, target: Option<&str>) -> Result<()> {
     )? {
         std::process::exit(code);
     }
-    let p = local_power(&lab, &target)?;
-    let cmd = p.on_cmd.ok_or_else(|| {
-        error::channel_missing(
-            &target,
-            "power",
-            format!(
-                "no on_cmd configured for '{target}' \
-             (paniolo power set -t {target} --on-cmd /path/to/script)"
-            ),
-        )
-    })?;
-    run_power_hook(&cmd, "Powering on", &target)?;
-    println!("Power on complete.");
+    let p = local_power_level(&lab, &target, level)?;
+    let cmd = p
+        .on_cmd
+        .ok_or_else(|| missing_power_hook(&target, level, "on_cmd", "on-cmd"))?;
+    run_power_hook(&cmd, "Powering on", &target, level)?;
+    println!("Power on complete{}.", level_suffix(level));
     Ok(())
 }
 
-fn cmd_power_off(lab_flag: Option<&str>, target: Option<&str>) -> Result<()> {
+fn cmd_power_off(lab_flag: Option<&str>, target: Option<&str>, level: Option<&str>) -> Result<()> {
+    let level = named_level(level);
     let lab = load_for_read(lab_flag)?;
     let target = resolve_single_target(&lab, target)?;
     if let Some(code) = dispatch::maybe_dispatch(
@@ -3638,23 +3876,20 @@ fn cmd_power_off(lab_flag: Option<&str>, target: Option<&str>) -> Result<()> {
     )? {
         std::process::exit(code);
     }
-    let p = local_power(&lab, &target)?;
-    let cmd = p.off_cmd.ok_or_else(|| {
-        error::channel_missing(
-            &target,
-            "power",
-            format!(
-                "no off_cmd configured for '{target}' \
-             (paniolo power set -t {target} --off-cmd /path/to/script)"
-            ),
-        )
-    })?;
-    run_power_hook(&cmd, "Powering off", &target)?;
-    println!("Power off complete.");
+    let p = local_power_level(&lab, &target, level)?;
+    let cmd = p
+        .off_cmd
+        .ok_or_else(|| missing_power_hook(&target, level, "off_cmd", "off-cmd"))?;
+    run_power_hook(&cmd, "Powering off", &target, level)?;
+    println!("Power off complete{}.", level_suffix(level));
     Ok(())
 }
 
-fn cmd_power_state(lab_flag: Option<&str>, target: Option<&str>) -> Result<()> {
+fn cmd_power_state(
+    lab_flag: Option<&str>,
+    target: Option<&str>,
+    level: Option<&str>,
+) -> Result<()> {
     let lab = load_for_read(lab_flag)?;
     let target = resolve_single_target(&lab, target)?;
     if let Some(code) = dispatch::maybe_dispatch(
@@ -3665,6 +3900,23 @@ fn cmd_power_state(lab_flag: Option<&str>, target: Option<&str>) -> Result<()> {
         dispatch::Mode::Reexec,
     )? {
         std::process::exit(code);
+    }
+    match level {
+        // `--level default`: the default level alone, exactly as before levels.
+        Some(model::DEFAULT_POWER_LEVEL) => {}
+        Some(l) => {
+            let p = local_power_level(&lab, &target, Some(l))?;
+            let cmd = p
+                .state_cmd
+                .ok_or_else(|| missing_power_hook(&target, Some(l), "state_cmd", "state-cmd"))?;
+            let on = read_state_cmd(&cmd, &target)?;
+            println!("{}", power_state_line(&target, Some(l), Ok(on)));
+            return Ok(());
+        }
+        None if !local_power(&lab, &target)?.levels.is_empty() => {
+            return power_state_all_levels(&lab, &target);
+        }
+        None => {}
     }
     let state = if local_power_is_on(&lab, &target)? {
         "ON"
@@ -3673,6 +3925,73 @@ fn cmd_power_state(lab_flag: Option<&str>, target: Option<&str>) -> Result<()> {
     };
     println!("Power {state}  ({target})");
     Ok(())
+}
+
+/// What one level's state read came to, for [`power_state_line`].
+#[derive(Debug)]
+enum LevelState {
+    /// The level has no way to read state (no `state_cmd`, and for the
+    /// default level no sense signal either).
+    Unconfigured,
+    /// Reading it failed; the error is reported after every line.
+    Failed,
+}
+
+/// One line of `power-state`: `Power ON  (pi5)` for the default level,
+/// `Power OFF  (pi5, level hard)` for a named one, and `Power UNKNOWN …`
+/// with the reason when the level cannot be read. Every line starts with
+/// `Power <VERDICT>`, so readers that take the first line still work.
+fn power_state_line(target: &str, level: Option<&str>, state: Result<bool, LevelState>) -> String {
+    let at = match level {
+        Some(l) => format!("{target}, level {l}"),
+        None => target.to_string(),
+    };
+    match state {
+        Ok(true) => format!("Power ON  ({at})"),
+        Ok(false) => format!("Power OFF  ({at})"),
+        Err(LevelState::Unconfigured) => format!("Power UNKNOWN  ({at}: no state_cmd)"),
+        Err(LevelState::Failed) => format!("Power UNKNOWN  ({at}: state read failed)"),
+    }
+}
+
+/// `power-state` without `--level` on a target with named levels: one line
+/// per level, the default level first (the line the dashboard and the
+/// `requires_power` check read). A level without a state source is reported
+/// as such, not as an error; a failed read is reported in its line and its
+/// error returned after every line is printed. When no level can be read at
+/// all, the default level's error is returned, as without levels.
+fn power_state_all_levels(lab: &Lab, target: &str) -> Result<()> {
+    let p = local_power(lab, target)?;
+    let default_readable = p.state_cmd.is_some() || p.serial_interface.is_some();
+    if !default_readable && p.levels.values().all(|l| l.state_cmd.is_none()) {
+        local_power_is_on(lab, target)?;
+    }
+    let mut first_err: Option<anyhow::Error> = None;
+    let mut report = |level: Option<&str>, read: Option<Result<bool>>| {
+        let state = match read {
+            None => Err(LevelState::Unconfigured),
+            Some(Ok(on)) => Ok(on),
+            Some(Err(e)) => {
+                first_err.get_or_insert(e);
+                Err(LevelState::Failed)
+            }
+        };
+        println!("{}", power_state_line(target, level, state));
+    };
+    report(
+        None,
+        default_readable.then(|| local_power_is_on(lab, target)),
+    );
+    for (name, l) in &p.levels {
+        report(
+            Some(name),
+            l.state_cmd.as_deref().map(|c| read_state_cmd(c, target)),
+        );
+    }
+    match first_err {
+        Some(e) => Err(e),
+        None => Ok(()),
+    }
 }
 
 /// Read the target's power state on *this* host: `state_cmd` when configured,
@@ -3884,6 +4203,33 @@ fn cmd_serial_send(
     serial::send_input(&daemon, &ch.name, &payload, pace_ms)
         .map_err(|e| error::with_target(e, &target))?;
     println!("Sent.");
+    Ok(())
+}
+
+fn cmd_serial_transact(
+    lab_flag: Option<&str>,
+    target: Option<&str>,
+    interface: Option<&str>,
+    text: &str,
+    newline: bool,
+    options: &serial::TransactOptions<'_>,
+) -> Result<()> {
+    let (target, serials) = serial_runtime(lab_flag, target, interface, dispatch::Mode::Reexec)?;
+    let ch = pick_serial(&target, &serials, interface)?;
+    let daemon = serial::daemon(&target).ok_or_else(|| {
+        error::daemon_down(
+            serial::DAEMON,
+            "serialcap daemon not running — start it with `paniolo serial watch`",
+        )
+        .target(&target)
+    })?;
+    let mut payload = text.as_bytes().to_vec();
+    if newline {
+        payload.push(b'\r');
+    }
+    let result = serial::transact(&daemon, &ch.name, &payload, options)
+        .map_err(|e| error::with_target(e, &target))?;
+    println!("{result}");
     Ok(())
 }
 
@@ -4763,12 +5109,40 @@ fn power_cmd(lab_flag: Option<&str>, cmd: PowerCmd) -> Result<()> {
     match cmd {
         PowerCmd::Set {
             target,
+            level: Some(level),
+            cycle_cmd,
+            on_cmd,
+            off_cmd,
+            state_cmd,
+            doctor,
+            ..
+        } => {
+            edit_lab(lab_flag, |lf| {
+                lf.set_power_level(
+                    &target,
+                    &level,
+                    cycle_cmd.as_deref(),
+                    on_cmd.as_deref(),
+                    off_cmd.as_deref(),
+                    state_cmd.as_deref(),
+                )?;
+                // Whole channel, like --host, but harmless beside --level:
+                // the flag already covers every level's hooks.
+                set_doctor_flag(lf, &target, "power", &doctor)
+            })?;
+            println!("power level '{level}' set for '{target}'.");
+            Ok(())
+        }
+        PowerCmd::Set {
+            target,
+            level: None,
             cycle_cmd,
             on_cmd,
             off_cmd,
             state_cmd,
             serial_interface,
             host,
+            doctor,
         } => {
             edit_lab(lab_flag, |lf| {
                 lf.set_power(
@@ -4779,18 +5153,30 @@ fn power_cmd(lab_flag: Option<&str>, cmd: PowerCmd) -> Result<()> {
                     state_cmd.as_deref(),
                     serial_interface.as_deref(),
                     host.as_deref(),
-                )
+                )?;
+                set_doctor_flag(lf, &target, "power", &doctor)
             })?;
             println!("power channel set for '{target}'.");
             Ok(())
         }
-        PowerCmd::Rm { target } => {
+        PowerCmd::Rm {
+            target,
+            level: Some(level),
+        } => {
+            edit_lab(lab_flag, |lf| lf.remove_power_level(&target, &level))?;
+            println!("power level '{level}' removed from '{target}'.");
+            Ok(())
+        }
+        PowerCmd::Rm {
+            target,
+            level: None,
+        } => {
             edit_lab(lab_flag, |lf| lf.remove_power(&target))?;
             println!("power channel removed from '{target}'.");
             Ok(())
         }
-        PowerCmd::On { target } => cmd_power_on(lab_flag, target.name()),
-        PowerCmd::Off { target } => cmd_power_off(lab_flag, target.name()),
+        PowerCmd::On { target, level } => cmd_power_on(lab_flag, target.name(), level.as_deref()),
+        PowerCmd::Off { target, level } => cmd_power_off(lab_flag, target.name(), level.as_deref()),
     }
 }
 
@@ -4801,9 +5187,11 @@ fn hid_cmd(lab_flag: Option<&str>, cmd: HidCmd) -> Result<()> {
             cmd,
             host,
             port,
+            doctor,
         } => {
             edit_lab(lab_flag, |lf| {
-                lf.set_hid(&target, Some(&cmd), host.as_deref(), port)
+                lf.set_hid(&target, Some(&cmd), host.as_deref(), port)?;
+                set_doctor_flag(lf, &target, "hid", &doctor)
             })?;
             println!("hid channel set for '{target}'.");
             Ok(())
@@ -4837,6 +5225,7 @@ fn action_cmd(lab_flag: Option<&str>, cmd: ActionCmd) -> Result<()> {
             description,
             requires_power,
             host,
+            doctor,
         } => {
             edit_lab(lab_flag, |lf| {
                 lf.set_action(
@@ -4846,7 +5235,8 @@ fn action_cmd(lab_flag: Option<&str>, cmd: ActionCmd) -> Result<()> {
                     description.as_deref(),
                     requires_power.as_deref(),
                     host.as_deref(),
-                )
+                )?;
+                set_doctor_flag(lf, &target, "actions", &doctor)
             })?;
             println!("action '{name}' set for '{target}'.");
             Ok(())
@@ -4981,7 +5371,19 @@ fn power_is_on_anywhere(lab: &Lab, target: &str) -> Result<bool> {
     if lab.host(&host_name).is_local(&host_name) {
         return local_power_is_on(lab, target);
     }
-    let out = dispatch::run_subcommand(lab, target, &host_name, &["power-state", "-t", target])?;
+    // With named levels, `power-state` alone reports every level; ask for the
+    // default one, which is what requires_power means. Without levels the
+    // plain form is kept, so an older paniolo on the power host still works.
+    let has_levels = lab
+        .targets
+        .get(target)
+        .and_then(|t| t.power.as_ref())
+        .is_some_and(|p| !p.levels.is_empty());
+    let mut argv = vec!["power-state", "-t", target];
+    if has_levels {
+        argv.extend(["--level", model::DEFAULT_POWER_LEVEL]);
+    }
+    let out = dispatch::run_subcommand(lab, target, &host_name, &argv)?;
     if out.status != 0 {
         let kind = error::Kind::from_exit_code(out.status).unwrap_or(error::Kind::Internal);
         return Err(error::PanioloError::new(
@@ -5015,9 +5417,15 @@ fn parse_power_state_line(stdout: &str) -> Option<bool> {
 
 fn usb_cmd(lab_flag: Option<&str>, cmd: UsbCmd) -> Result<()> {
     match cmd {
-        UsbCmd::Set { target, cmd, host } => {
+        UsbCmd::Set {
+            target,
+            cmd,
+            host,
+            doctor,
+        } => {
             edit_lab(lab_flag, |lf| {
-                lf.set_usb(&target, Some(&cmd), host.as_deref())
+                lf.set_usb(&target, Some(&cmd), host.as_deref())?;
+                set_doctor_flag(lf, &target, "usb", &doctor)
             })?;
             println!("usb channel set for '{target}'.");
             Ok(())
@@ -5645,6 +6053,7 @@ mod tests {
         let err = confirm_power_on(
             "echo off",
             "nuc",
+            None,
             std::time::Duration::from_millis(10),
             std::time::Duration::from_millis(50),
         )
@@ -5652,6 +6061,185 @@ mod tests {
         let pe = error::classify(&err);
         assert_eq!(pe.kind, error::Kind::Timeout, "{err:#}");
         assert_eq!(pe.kind.exit_code(), 22);
+    }
+
+    /// A lab file for the power-level tests (#302): `t` has default hooks and
+    /// a `hard` level with only some of its own.
+    fn power_levels_lab(dir: &std::path::Path, extra: &str) -> String {
+        let path = dir.join("lab.toml");
+        std::fs::write(
+            &path,
+            format!(
+                "[targets.t.power]\ncycle_cmd = \"true\"\non_cmd = \"true\"\n\
+                 off_cmd = \"true\"\nstate_cmd = \"echo on\"\n\
+                 [targets.t.power.levels.hard]\n{extra}"
+            ),
+        )
+        .unwrap();
+        path.to_string_lossy().into_owned()
+    }
+
+    /// Each verb resolves `--level`: an unknown level and a level without the
+    /// verb's hook are `not_configured` naming the level, never a fallback to
+    /// the default level's hook. Fails before any hook runs.
+    #[test]
+    fn power_verbs_refuse_a_level_without_the_hook() {
+        let dir = tempfile::tempdir().unwrap();
+        let lab = power_levels_lab(dir.path(), "cycle_cmd = \"true\"\n");
+        let lab = Some(lab.as_str());
+        let not_configured = |r: Result<()>, want: &[&str]| {
+            let e = r.unwrap_err();
+            let pe = error::classify(&e);
+            assert_eq!(pe.kind, error::Kind::NotConfigured, "{e:#}");
+            for w in want {
+                assert!(format!("{e:#}").contains(w), "{e:#} lacks {w}");
+            }
+        };
+        not_configured(
+            cmd_power_on(lab, Some("t"), Some("hard")),
+            &[
+                "no on_cmd configured for 't' power level 'hard'",
+                "--level hard --on-cmd",
+            ],
+        );
+        not_configured(
+            cmd_power_off(lab, Some("t"), Some("hard")),
+            &["no off_cmd configured for 't' power level 'hard'"],
+        );
+        not_configured(
+            cmd_power_state(lab, Some("t"), Some("hard")),
+            &["no state_cmd configured for 't' power level 'hard'"],
+        );
+        not_configured(
+            cmd_power_cycle(lab, Some("t"), Some("soft")),
+            &["has no power level 'soft' (have: hard"],
+        );
+        // The default level's message is unchanged.
+        let dir2 = tempfile::tempdir().unwrap();
+        let path = dir2.path().join("lab.toml");
+        std::fs::write(&path, "[targets.t.power]\nstate_cmd = \"echo on\"\n").unwrap();
+        not_configured(
+            cmd_power_on(path.to_str(), Some("t"), None),
+            &["no on_cmd configured for 't' (paniolo power set -t t --on-cmd /path/to/script)"],
+        );
+    }
+
+    /// The level's own hooks run (under the per-target hook lock, in a
+    /// private runtime base), `--level default` is the default level, and a
+    /// level's cycle confirms with its own state_cmd.
+    #[cfg(unix)]
+    #[test]
+    fn power_verbs_run_the_chosen_levels_hooks() {
+        let _guard = daemons::RUNTIME_BASE_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let base = tempfile::tempdir().unwrap();
+        let prev = std::env::var_os("PANIOLO_RUNTIME_BASE");
+        // Safe: serialized by RUNTIME_BASE_LOCK; restored below.
+        unsafe { std::env::set_var("PANIOLO_RUNTIME_BASE", base.path()) };
+        let dir = tempfile::tempdir().unwrap();
+        let mark = |n: &str| dir.path().join(n);
+        let lab = power_levels_lab(
+            dir.path(),
+            &format!(
+                "on_cmd = \"touch {}\"\ncycle_cmd = \"touch {}\"\nstate_cmd = \"echo on\"\n",
+                mark("hard-on").display(),
+                mark("hard-cycle").display()
+            ),
+        );
+        // Point the default on_cmd at its own marker.
+        let text = std::fs::read_to_string(&lab).unwrap().replacen(
+            "on_cmd = \"true\"",
+            &format!("on_cmd = \"touch {}\"", mark("default-on").display()),
+            1,
+        );
+        std::fs::write(&lab, text).unwrap();
+        let lab = Some(lab.as_str());
+        let on_hard = cmd_power_on(lab, Some("t"), Some("hard"));
+        let hard_on = mark("hard-on").exists();
+        let default_on_after_hard = mark("default-on").exists();
+        let on_default = cmd_power_on(lab, Some("t"), Some("default"));
+        let cycle_hard = cmd_power_cycle(lab, Some("t"), Some("hard"));
+        let state_hard = cmd_power_state(lab, Some("t"), Some("hard"));
+        match prev {
+            Some(p) => unsafe { std::env::set_var("PANIOLO_RUNTIME_BASE", p) },
+            None => unsafe { std::env::remove_var("PANIOLO_RUNTIME_BASE") },
+        }
+        on_hard.unwrap();
+        assert!(hard_on);
+        assert!(!default_on_after_hard, "the default on_cmd must not run");
+        on_default.unwrap();
+        assert!(mark("default-on").exists());
+        cycle_hard.unwrap();
+        assert!(mark("hard-cycle").exists());
+        state_hard.unwrap();
+    }
+
+    /// `power-state` with levels: one line per level, default first, the
+    /// verdict always the second word; an unreadable level is reported, not
+    /// an error; a failed read fails the command after every line; nothing
+    /// readable at all is the default level's own error.
+    #[cfg(unix)]
+    #[test]
+    fn power_state_reports_every_level() {
+        assert_eq!(power_state_line("pi5", None, Ok(true)), "Power ON  (pi5)");
+        assert_eq!(
+            power_state_line("pi5", Some("hard"), Ok(false)),
+            "Power OFF  (pi5, level hard)"
+        );
+        assert_eq!(
+            power_state_line("pi5", Some("pmic"), Err(LevelState::Unconfigured)),
+            "Power UNKNOWN  (pi5, level pmic: no state_cmd)"
+        );
+        assert_eq!(
+            parse_power_state_line("Power ON  (pi5)\nPower OFF  (pi5, level hard)\n"),
+            Some(true)
+        );
+
+        let _guard = daemons::RUNTIME_BASE_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let base = tempfile::tempdir().unwrap();
+        let prev = std::env::var_os("PANIOLO_RUNTIME_BASE");
+        // Safe: serialized by RUNTIME_BASE_LOCK; restored below.
+        unsafe { std::env::set_var("PANIOLO_RUNTIME_BASE", base.path()) };
+        let parse = |s: &str| model::parse(s).unwrap();
+        let ok = power_state_all_levels(
+            &parse(
+                "[targets.t.power]\nstate_cmd = \"echo on\"\n\
+                 [targets.t.power.levels.hard]\nstate_cmd = \"echo off\"\n\
+                 [targets.t.power.levels.pmic]\non_cmd = \"true\"\n",
+            ),
+            "t",
+        );
+        let failed = power_state_all_levels(
+            &parse(
+                "[targets.t.power]\nstate_cmd = \"echo on\"\n\
+                 [targets.t.power.levels.hard]\nstate_cmd = \"exit 3\"\n",
+            ),
+            "t",
+        );
+        let nothing = power_state_all_levels(
+            &parse("[targets.t.power]\n[targets.t.power.levels.hard]\non_cmd = \"true\"\n"),
+            "t",
+        );
+        match prev {
+            Some(p) => unsafe { std::env::set_var("PANIOLO_RUNTIME_BASE", p) },
+            None => unsafe { std::env::remove_var("PANIOLO_RUNTIME_BASE") },
+        }
+        ok.unwrap();
+        let e = failed.unwrap_err();
+        assert_eq!(error::classify(&e).kind, error::Kind::HelperFailed, "{e:#}");
+        let e = nothing.unwrap_err();
+        assert_eq!(
+            error::classify(&e).kind,
+            error::Kind::NotConfigured,
+            "{e:#}"
+        );
+        assert!(
+            format!("{e:#}").contains("no power serial_interface"),
+            "{e:#}"
+        );
     }
 
     /// `--version` is the stamped release version when the build had one,

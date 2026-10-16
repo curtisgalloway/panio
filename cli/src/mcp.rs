@@ -473,6 +473,43 @@ fn cli_call(tool: &str, args: &Value) -> Result<CliCall, String> {
             argv.extend([s("--"), text]);
             write(argv)
         }
+        "serial_transact" => {
+            let target = a.target()?;
+            let text = a.opt_str("text")?.ok_or(format!("{tool} needs text"))?;
+            let until = a
+                .opt_str("until")?
+                .filter(|u| !u.is_empty())
+                .ok_or(format!("{tool} needs a nonempty until"))?;
+            let mut argv = vec![
+                s("serial"),
+                s("transact"),
+                s("-t"),
+                target,
+                s("--until"),
+                until,
+            ];
+            if let Some(i) = a.opt_str("interface")? {
+                argv.extend([s("-i"), i]);
+            }
+            for (name, flag, max, min) in [
+                ("timeout_ms", "--timeout-ms", 3600000, 1),
+                ("max_bytes", "--max-bytes", 1048576, 1),
+                ("pace_ms", "--pace-ms", MAX_PACE_MS, 0),
+            ] {
+                if let Some(value) = a.opt_u64(name, max)? {
+                    if value < min {
+                        return Err(format!("{tool}: {name} must be >= {min}"));
+                    }
+                    argv.extend([s(flag), value.to_string()]);
+                }
+            }
+            if !a.opt_bool("newline")?.unwrap_or(true) {
+                argv.push(s("--no-newline"));
+            }
+            // `--` so text that starts with `-` stays text.
+            argv.extend([s("--"), text]);
+            write(argv)
+        }
         "hid_send" => {
             let target = a.target()?;
             let words: Vec<String> = match args.get("command") {
@@ -522,10 +559,27 @@ fn cli_call(tool: &str, args: &Value) -> Result<CliCall, String> {
                 name.to_string(),
             ])
         }
-        "power_state" => read(vec![s("power-state"), s("-t"), a.target()?]),
-        "power_on" => write(vec![s("power"), s("on"), s("-t"), a.target()?]),
-        "power_off" => write(vec![s("power"), s("off"), s("-t"), a.target()?]),
-        "power_cycle" => write(vec![s("power-cycle"), s("-t"), a.target()?]),
+        "power_state" | "power_on" | "power_off" | "power_cycle" => {
+            let mut argv = match tool {
+                "power_state" => vec![s("power-state")],
+                "power_on" => vec![s("power"), s("on")],
+                "power_off" => vec![s("power"), s("off")],
+                _ => vec![s("power-cycle")],
+            };
+            argv.extend([s("-t"), a.target()?]);
+            if let Some(level) = a.opt_str("level")? {
+                // A name that reads as a flag would reach clap as one.
+                if level.is_empty() || level.starts_with('-') {
+                    return Err(format!("{tool}: level must be a level name, got {level:?}"));
+                }
+                argv.extend([s("--level"), level]);
+            }
+            if tool == "power_state" {
+                read(argv)
+            } else {
+                write(argv)
+            }
+        }
         other => Err(format!("unknown tool: {other}")),
     }
 }
@@ -613,8 +667,9 @@ fn initialize(params: &Value) -> Value {
             To see the screen, video_shot returns it as an image plus a hash; after \
             acting (hid_send, serial_send), pass that hash back as changed_since to \
             wait for the screen to change. video_read returns the screen's text, and \
-            serial_log the console output. A write tool (hid_send, serial_send, \
-            power_*) whose outcome is unknown says so: check state before retrying it.",
+            serial_log the console output; serial_transact sends a command and \
+            returns its reply in one call. A write tool (hid_send, serial_send, \
+            serial_transact, power_*) whose outcome is unknown says so: check state before retrying it.",
     })
 }
 
@@ -729,6 +784,20 @@ fn tool_list() -> Value {
             "annotations": { "readOnlyHint": false, "destructiveHint": true, "idempotentHint": false },
         },
         {
+            "name": "serial_transact",
+            "description": "Send text to the target's serial console (followed by Enter unless newline is false) and wait for the reply, as one exchange: only bytes received after the send count, and it stops when the literal until string appears, at timeout_ms, or at max_bytes. Returns the serial_wait result JSON (status matched/timeout/cap/disconnected/…, records, pending) plus sent_bytes. Other transactions on the interface wait their turn; serial_send is refused while one runs. A match is observation, not proof the target executed the command; nothing is retried.",
+            "inputSchema": schema_requiring(&["text", "until"], &[
+                ("text", json!({ "type": "string", "description": "Text to send. \"\" with newline true sends just Enter." })),
+                ("until", json!({ "type": "string", "minLength": 1, "description": "Literal string that ends the wait when it appears in the reply." })),
+                ("interface", json!({ "type": "string", "description": "Serial interface name, for a target with several." })),
+                ("timeout_ms", json!({ "type": "integer", "minimum": 1, "maximum": 3600000, "description": "Deadline for the whole call, including waiting for another transaction (default 30000)." })),
+                ("max_bytes", json!({ "type": "integer", "minimum": 1, "maximum": 1048576, "description": "Raw reply byte cap (default 65536)." })),
+                ("newline", json!({ "type": "boolean", "description": "Append Enter (a carriage return). Default true." })),
+                ("pace_ms", json!({ "type": "integer", "minimum": 0, "maximum": MAX_PACE_MS, "description": "Delay between bytes, for slow polled consoles (default 0)." })),
+            ]),
+            "annotations": { "readOnlyHint": false, "destructiveHint": true, "idempotentHint": false },
+        },
+        {
             "name": "hid_send",
             "description": "Send keyboard or mouse input to the target through its USB HID \
                 injector. command is one HID command as words, for example \
@@ -765,20 +834,24 @@ fn tool_list() -> Value {
         },
         {
             "name": "power_state",
-            "description": "Report whether the target is powered on: prints on or off.",
-            "inputSchema": schema(&[]),
+            "description": "Report whether the target is powered on: a line like \
+                `Power ON  (pi5)`. With no level, a target that has named power levels \
+                gets one line per level, the default level first \
+                (`Power OFF  (pi5, level hard)`), and `Power UNKNOWN` with the reason for \
+                a level that cannot be read. With a level, only that level's line.",
+            "inputSchema": schema(&[("level", level_schema())]),
             "annotations": { "readOnlyHint": true },
         },
         {
             "name": "power_on",
             "description": "Switch the target's power on.",
-            "inputSchema": schema(&[]),
+            "inputSchema": schema(&[("level", level_schema())]),
             "annotations": { "readOnlyHint": false, "destructiveHint": true },
         },
         {
             "name": "power_off",
             "description": "Switch the target's power off (a hard power-off, not a shutdown).",
-            "inputSchema": schema(&[]),
+            "inputSchema": schema(&[("level", level_schema())]),
             "annotations": { "readOnlyHint": false, "destructiveHint": true },
         },
         {
@@ -786,11 +859,25 @@ fn tool_list() -> Value {
             "description": "Power-cycle the target: off, then on (a hard reset). When the \
                 target has a power state reader, the call returns once power is back on; \
                 otherwise only once the cycle was requested. If the call fails with an \
-                unknown outcome, check power_state before trying again.",
-            "inputSchema": schema(&[]),
+                unknown outcome, check power_state before trying again. A target with \
+                more than one power layer may define named levels: try the default \
+                level first, and a stronger level (often `hard`) only when it fails to \
+                recover the target.",
+            "inputSchema": schema(&[("level", level_schema())]),
             "annotations": { "readOnlyHint": false, "destructiveHint": true, "idempotentHint": false },
         },
     ])
+}
+
+/// The optional `level` argument of the power tools (#302).
+fn level_schema() -> Value {
+    json!({
+        "type": "string",
+        "description": "Named power level (for example soft or hard), as the target's \
+            lab file defines it. Omit for the default level. A level without the hook \
+            this call needs fails as not configured; it never falls back to the \
+            default level.",
+    })
 }
 
 /// An input schema with a required `target` plus `extra` optional properties.
@@ -992,6 +1079,7 @@ mod tests {
                 "serial_evidence",
                 "serial_log",
                 "serial_send",
+                "serial_transact",
                 "hid_send",
                 "action_list",
                 "action_run",
@@ -1017,6 +1105,7 @@ mod tests {
             // read-only, or a harness may run it without asking.
             let writes = [
                 "serial_send",
+                "serial_transact",
                 "hid_send",
                 "action_run",
                 "power_on",
@@ -1057,6 +1146,14 @@ mod tests {
             ),
             ("serial_send", json!({ "target": "pi5", "text": "" })),
             (
+                "serial_transact",
+                json!({ "target": "pi5", "text": "-v", "until": "OK", "interface": "uart0", "timeout_ms": 500, "max_bytes": 4096, "newline": false, "pace_ms": 5 }),
+            ),
+            (
+                "serial_transact",
+                json!({ "target": "pi5", "text": "version", "until": "> " }),
+            ),
+            (
                 "hid_send",
                 json!({ "target": "pi5", "command": ["move", "50", "-30"] }),
             ),
@@ -1070,6 +1167,10 @@ mod tests {
             ("power_on", json!({ "target": "pi5" })),
             ("power_off", json!({ "target": "pi5" })),
             ("power_cycle", json!({ "target": "pi5" })),
+            ("power_state", json!({ "target": "pi5", "level": "hard" })),
+            ("power_on", json!({ "target": "pi5", "level": "hard" })),
+            ("power_off", json!({ "target": "pi5", "level": "default" })),
+            ("power_cycle", json!({ "target": "pi5", "level": "hard" })),
         ]
     }
 
@@ -1156,6 +1257,33 @@ mod tests {
         assert!(cli_call("action_run", &json!({ "target": "pi5" })).is_err());
     }
 
+    /// Power levels (#302): `level` becomes `--level NAME` on every power
+    /// tool, is optional, and a flag-shaped or empty name is refused.
+    #[test]
+    fn power_tools_map_the_level_argument() {
+        for (tool, verb, writes) in [
+            ("power_state", vec!["power-state"], false),
+            ("power_on", vec!["power", "on"], true),
+            ("power_off", vec!["power", "off"], true),
+            ("power_cycle", vec!["power-cycle"], true),
+        ] {
+            let plain = cli_call(tool, &json!({ "target": "pi5" })).unwrap();
+            let mut want: Vec<&str> = verb.clone();
+            want.extend(["-t", "pi5"]);
+            assert_eq!(plain.argv, want, "{tool}");
+            assert_eq!(plain.writes, writes, "{tool}");
+            let hard = cli_call(tool, &json!({ "target": "pi5", "level": "hard" })).unwrap();
+            want.extend(["--level", "hard"]);
+            assert_eq!(hard.argv, want, "{tool}");
+            for bad in [json!("--help"), json!(""), json!(3)] {
+                assert!(
+                    cli_call(tool, &json!({ "target": "pi5", "level": bad })).is_err(),
+                    "{tool}: {bad}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn cli_calls_mark_writes_and_map_arguments() {
         let send = cli_call(
@@ -1169,6 +1297,28 @@ mod tests {
             ["serial", "send", "-t", "pi5", "--no-newline", "--", "ls"]
         );
         assert_eq!(send.verb(), "serial send");
+
+        let transact = cli_call(
+            "serial_transact",
+            &json!({ "target": "pi5", "text": "ver", "until": "OK", "timeout_ms": 900 }),
+        )
+        .unwrap();
+        assert!(transact.writes);
+        assert_eq!(
+            transact.argv,
+            [
+                "serial",
+                "transact",
+                "-t",
+                "pi5",
+                "--until",
+                "OK",
+                "--timeout-ms",
+                "900",
+                "--",
+                "ver"
+            ]
+        );
 
         let log = cli_call("serial_log", &json!({ "target": "pi5", "since": 42 })).unwrap();
         assert!(!log.writes);
@@ -1190,6 +1340,16 @@ mod tests {
             ("power_on", json!({})),
             ("serial_send", json!({ "target": "pi5" })),
             ("serial_send", json!({ "target": "pi5", "text": 7 })),
+            ("serial_transact", json!({ "target": "pi5", "text": "x" })),
+            (
+                "serial_transact",
+                json!({ "target": "pi5", "text": "x", "until": "" }),
+            ),
+            ("serial_transact", json!({ "target": "pi5", "until": "OK" })),
+            (
+                "serial_transact",
+                json!({ "target": "pi5", "text": "x", "until": "OK", "timeout_ms": 0 }),
+            ),
             (
                 "serial_send",
                 json!({ "target": "pi5", "text": "x", "pace_ms": MAX_PACE_MS + 1 }),

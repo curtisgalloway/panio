@@ -69,6 +69,7 @@ ssh = "user@bench1.local"      # ssh destination — how OTHER machines reach it
 # identity = "~/.ssh/id_lab"      # optional key; set it to avoid agent key-spray (below)
 # control_path = "~/.ssh/cm-%h"   # optional ControlMaster socket (see Transport)
 # paniolo_cmd = "/Users/me/.local/bin/paniolo"  # if paniolo isn't on the host's ssh PATH
+# plugin_path = "/opt/lab-plugins"  # plugin roots on bench1 (below); set on every dispatch there
 
 [hosts.bench2]
 ssh = "user@bench2.local"
@@ -185,6 +186,44 @@ Forwarding is one way to get the password there. A hook can instead name a
 [power.md](power.md#setting-up-the-credential-source)), which is read on the
 control host where the hook runs, so a runner on the control host itself
 needs nothing forwarded. A forwarded `AMT_PASSWORD` wins over either.
+
+### Plugin roots on a control host
+
+A **plugin root** is an install prefix for out-of-tree helpers and skills,
+named in `PANIOLO_PLUGIN_PATH` (see
+[power.md](power.md#out-of-tree-helpers-and-skills-plugin-roots)). The
+variable is read on whichever host runs the command, so a re-exec sees the
+control host's own environment, which for a non-interactive SSH session is
+often not the one a login shell sets.
+
+The host's optional `plugin_path` field fixes that from the lab file:
+
+```bash
+paniolo host set bench1 --plugin-path /opt/lab-plugins
+paniolo host set bench1 --plugin-path ""     # clear it again
+```
+
+When it is set, every paniolo re-exec on that host starts
+`paniolo --plugin-path=/opt/lab-plugins …`, and the remote paniolo exports
+that value as `PANIOLO_PLUGIN_PATH` before doing anything else. The hooks,
+helpers and daemons it starts inherit it. The field replaces the host's own
+variable for dispatched commands; leave it unset to let the host's environment
+decide.
+
+- **An argument, not a forwarded variable.** It crosses `run_interactive`
+  (`serial connect`, `setup --host`) and needs no POSIX shell on the far side,
+  so it works for a Windows control host too. Write the value in the host's
+  own syntax (`;`-separated on Windows). It is not a secret.
+- **Version skew.** A paniolo on the control host that predates the flag
+  rejects it with a usage error. Upgrade the host, or leave the field unset.
+- **It applies to dispatch only.** A command run on the control host itself
+  (including one that recognizes itself through `hostname`) reads its own
+  environment, not this field.
+- **`paniolo doctor`** checks each root in the field over SSH and reports a
+  missing one. A remote host without the field is not reported, since its
+  roots live in an environment the dev machine does not read. The remote hook
+  probes still find plugin helpers there: they read the host's own
+  `PANIOLO_PLUGIN_PATH` from the SSH session.
 
 ### The dashboard, and why multi-host rules out a reverse-proxy
 

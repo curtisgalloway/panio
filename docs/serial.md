@@ -271,6 +271,10 @@ Success means the driver accepted every byte, not that the target ran the
 command. Bytes unsent at a disconnect are dropped, not replayed. An error can
 follow partial delivery, so check the console before retrying.
 
+To send a command and read its reply in one call, use
+[`serial transact`](#requestresponse-transactions). While a transaction runs,
+`serial send` is refused (409) rather than queued; nothing is sent.
+
 ### Pacing a slow console (`--pace-ms`)
 
 A **polled** console with no flow control drops input sent at full rate
@@ -393,18 +397,34 @@ older daemon without that endpoint, run `paniolo daemons stop serialcap`.
 | GET | `/devices` | Serial devices on the host |
 | POST | `/button` | Pulse DTR for `?ms=N`; 503 if assertion or release fails; see [power.md](power.md) |
 | POST | `/input` | Write the request body to the port; `?pace_ms=N` drips one byte per N ms |
+| POST | `/transact` | Send the body and wait for the reply under the transaction lock; see below |
 
 **`POST /input`:**
 
 - Waits until the driver accepts all bytes.
 - The body is capped at 64 KiB and `pace_ms` at 10 000.
 - Returns 200 on completion, 400 for a pace past the ceiling, 404 for an
-  unknown interface, 413 for an oversized body, and 503 for a disconnected
-  interface or interrupted write.
+  unknown interface, 409 while a transaction holds the interface or is queued
+  for it (nothing is sent), 413 for an oversized body, and 503 for a
+  disconnected interface or interrupted write.
 - A failed write may have partly reached the target; the rest is discarded.
 
 `/stream` client messages are also capped at 64 KiB and share the same FIFO
-writer.
+writer. During a transaction a message is dropped and the sender's own stream
+gets an `input refused: transaction in progress` marker; the socket stays open.
+
+**`POST /transact?until=LITERAL[&interface=NAME][&timeout_ms=N][&max_bytes=N][&pace_ms=N]`:**
+
+- The body is sent as given (nothing is appended), capped at 64 KiB.
+- `until` is required. `timeout_ms` (default 30000, 1–3600000) bounds the
+  whole call; `max_bytes` (default 65536, 1–1048576) caps the raw reply;
+  `pace_ms` is capped at 10 000.
+- Returns 200 with the [`serial wait`](#bounded-fresh-wait-and-follow) result
+  JSON plus `sent_bytes`, 400 for a bad parameter, 404 for an unknown
+  interface, 409 when another transaction held the interface for the whole
+  deadline (nothing was sent), 413 for an oversized body, and 503 for a
+  disconnected interface or failed write (the bytes may be partly sent).
+- See [Request/response transactions](#requestresponse-transactions).
 
 ## Read-only health
 
@@ -503,3 +523,52 @@ mid-line. Later complete rows need no partial-row merging. The final pending
 bytes are included only with `--include-pending`. The MCP server returns its
 collected follow objects after the tool call finishes; it does not stream them
 as protocol notifications.
+
+## Request/response transactions
+
+Many consoles answer each command with a known terminator: a U-Boot prompt, a
+debug monitor, a modem AT port, an embedded-controller console. `serial
+transact` sends one command and returns its reply in one call, without
+opening the port and without stopping capture:
+
+```bash
+paniolo serial transact -t target-machine -i console --until 'OK' -- 'version'
+```
+
+It prints the same result JSON as [`serial wait`](#bounded-fresh-wait-and-follow)
+(`status`, `records`, `through_rx_seq`, `pending`, …) with `--pattern` set to
+`--until` and pending bytes always included, plus `sent_bytes`. The daemon
+does three things, in order, while holding the interface's **transaction
+lock**:
+
+1. Records the receive boundary (the epoch and last RX sequence). Output that
+   arrived before the send, including an old copy of the terminator, is
+   outside the result and cannot end the wait.
+2. Sends the text (a carriage return is appended unless `--no-newline`;
+   `--pace-ms` drips it as for `serial send`).
+3. Waits for the reply until `--until` appears, `--timeout-ms` ends, or
+   `--max-bytes` is reached, exactly as `serial wait` does.
+
+The lock serializes the console:
+
+- **Other transactions queue** behind the running one, in arrival order.
+  `--timeout-ms` (default 30000, at most one hour) bounds the whole call,
+  including that wait. A transaction that cannot get the lock in time fails
+  with *interface busy* and sends nothing.
+- **Plain input is refused, not queued**, while a transaction holds the
+  interface or is waiting for it. `serial send` (`POST /input`) gets 409 and
+  sends nothing; retry it when the console is free. A keystroke typed in the
+  dashboard terminal (`/stream`) is dropped, and that terminal shows
+  `── serial input refused: transaction in progress [HH:MM:SS UTC] ──`. A
+  keystroke held back and sent later would land in the next transaction's
+  reply window, which is the mixing the lock exists to prevent.
+
+A `matched` status proves only that the bytes arrived, not that the target
+executed the command. There is no regex, prompt detection, or retry; read the
+reply and decide. `timeout`, `cap`, and `disconnected` keep the bytes that did
+arrive. The JSON is printed with exit 0 for any status, as for `serial wait`;
+an unknown interface, a stopped daemon, a busy interface or a failed write is a
+CLI error. MCP `serial_transact` maps to this command.
+
+A daemon started by a paniolo without this endpoint answers 404; replace it
+with `paniolo daemons restart serialcap`.

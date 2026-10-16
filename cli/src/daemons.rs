@@ -106,7 +106,8 @@ fn exe_relative_dirs() -> Vec<PathBuf> {
 /// back to `$PATH` and `~/.cargo/bin`), [`hook_path`] prepends them, and
 /// `paniolo helper` lists them. A per-user `make install` thus shadows an
 /// installed system package. The system dir is always present, so this is
-/// never empty.
+/// never empty. Plugin roots (`PANIOLO_PLUGIN_PATH`) are deliberately not
+/// here: they come after all of these, see [`all_helper_dirs`].
 pub fn helper_dirs() -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> = libexec_dir().into_iter().collect();
     dirs.extend(exe_relative_dirs());
@@ -114,23 +115,181 @@ pub fn helper_dirs() -> Vec<PathBuf> {
     dirs
 }
 
+/// Environment variable naming extra **plugin roots**: install prefixes for
+/// out-of-tree helpers and skills (GitHub #303). A list in the platform's
+/// `PATH` syntax (`:`-separated on Unix, `;` on Windows). Each root
+/// contributes `<root>/libexec/paniolo/bin` to the helper search
+/// ([`plugin_helper_dirs`]) and `<root>/share/paniolo/skills` to the skill
+/// search (`skills.rs`). Read on whichever host runs the command; dispatch to
+/// a control host sets it there from the host's `plugin_path` lab field, via
+/// the global `--plugin-path` flag.
+pub const PLUGIN_PATH_ENV: &str = "PANIOLO_PLUGIN_PATH";
+
+/// Split a `PANIOLO_PLUGIN_PATH` value into usable roots and ignored entries.
+///
+/// Empty components (a leading, trailing or doubled separator) are skipped
+/// silently, like an empty `PATH` component. A relative entry is returned in
+/// the second list: it would resolve against whatever directory paniolo
+/// happens to be started from (the user's home over SSH, a daemon's cwd), so
+/// it is never searched, and the caller warns about it. No other validation:
+/// the variable names directories, not lab names.
+pub fn parse_plugin_path(raw: &std::ffi::OsStr) -> (Vec<PathBuf>, Vec<PathBuf>) {
+    let mut roots = Vec::new();
+    let mut ignored = Vec::new();
+    for p in std::env::split_paths(raw) {
+        if p.as_os_str().is_empty() {
+            continue;
+        }
+        if p.is_absolute() {
+            roots.push(p);
+        } else {
+            ignored.push(p);
+        }
+    }
+    (roots, ignored)
+}
+
+/// The plugin roots from [`PLUGIN_PATH_ENV`] in this process, in list order.
+/// The first call that finds an entry [`parse_plugin_path`] ignored warns
+/// about it once, on stderr.
+pub fn plugin_roots() -> Vec<PathBuf> {
+    let raw = std::env::var_os(PLUGIN_PATH_ENV).unwrap_or_default();
+    let (roots, ignored) = parse_plugin_path(&raw);
+    static WARNED: std::sync::Once = std::sync::Once::new();
+    if !ignored.is_empty() {
+        WARNED.call_once(|| {
+            for p in &ignored {
+                eprintln!(
+                    "warning: {PLUGIN_PATH_ENV}: ignoring '{}' (not an absolute path)",
+                    p.display()
+                );
+            }
+        });
+    }
+    roots
+}
+
+/// A plugin root's helper dir: `<root>/libexec/paniolo/bin`.
+pub fn plugin_helper_dir(root: &Path) -> PathBuf {
+    root.join("libexec/paniolo/bin")
+}
+
+/// The helper dirs of every plugin root ([`plugin_roots`]), in order.
+pub fn plugin_helper_dirs() -> Vec<PathBuf> {
+    plugin_roots()
+        .iter()
+        .map(|r| plugin_helper_dir(r))
+        .collect()
+}
+
+/// Every directory paniolo resolves a helper from before `$PATH`: the
+/// bundled [`helper_dirs`] first, then the plugin dirs. The order is the
+/// guarantee #303 keeps from #206: a plugin can **add** a helper, but one
+/// with the same name as a bundled helper never wins, so a daemon still runs
+/// the binary paniolo installed. There is no opt-in to shadow a bundled
+/// helper.
+pub fn all_helper_dirs() -> Vec<PathBuf> {
+    with_plugins(helper_dirs(), plugin_helper_dirs())
+}
+
+/// `bundled` followed by `plugins`. Pure, so the order is testable.
+fn with_plugins(bundled: Vec<PathBuf>, plugins: Vec<PathBuf>) -> Vec<PathBuf> {
+    let mut dirs = bundled;
+    dirs.extend(plugins);
+    dirs
+}
+
+/// One entry of `paniolo helper` (list): a helper's file name and, when it
+/// resolves from a plugin dir, the plugin root it came from (`None` = one of
+/// the bundled [`helper_dirs`]).
+#[derive(Debug, PartialEq, Eq)]
+pub struct HelperEntry {
+    pub name: String,
+    pub plugin_root: Option<PathBuf>,
+}
+
+/// The helpers `paniolo helper` lists, sorted by name, each attributed to the
+/// first dir that has it (the one [`find_binary`] would run). Also returns the
+/// plugin helpers that lost to an earlier dir, as `(name, root)`, for
+/// `doctor`.
+pub fn helper_entries() -> (Vec<HelperEntry>, Vec<(String, PathBuf)>) {
+    helper_entries_in(&helper_dirs(), &plugin_roots())
+}
+
+/// [`helper_entries`] over explicit dirs, so a test can build the layout.
+pub fn helper_entries_in(
+    bundled: &[PathBuf],
+    plugin_roots: &[PathBuf],
+) -> (Vec<HelperEntry>, Vec<(String, PathBuf)>) {
+    let files_in = |dir: &Path| -> Vec<String> {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return Vec::new();
+        };
+        let mut names: Vec<String> = entries
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().is_file())
+            .filter_map(|e| e.file_name().into_string().ok())
+            .collect();
+        names.sort();
+        names
+    };
+    let mut found: std::collections::BTreeMap<String, Option<PathBuf>> =
+        std::collections::BTreeMap::new();
+    let mut shadowed = Vec::new();
+    for dir in bundled {
+        for n in files_in(dir) {
+            found.entry(n).or_insert(None);
+        }
+    }
+    for root in plugin_roots {
+        for n in files_in(&plugin_helper_dir(root)) {
+            match found.entry(n) {
+                std::collections::btree_map::Entry::Occupied(e) => {
+                    shadowed.push((e.key().clone(), root.clone()));
+                }
+                std::collections::btree_map::Entry::Vacant(e) => {
+                    e.insert(Some(root.clone()));
+                }
+            }
+        }
+    }
+    let entries = found
+        .into_iter()
+        .map(|(name, plugin_root)| HelperEntry { name, plugin_root })
+        .collect();
+    (entries, shadowed)
+}
+
+/// One `paniolo helper` list line: the bare name for a bundled helper, or the
+/// name, a tab, and `plugin: <root>` for one from a plugin root. The name is
+/// always the first whitespace-separated field, so a script that read the
+/// one-name-per-line output keeps working.
+pub fn helper_list_line(e: &HelperEntry) -> String {
+    match &e.plugin_root {
+        None => e.name.clone(),
+        Some(root) => format!("{}\tplugin: {}", e.name, root.display()),
+    }
+}
+
 /// Find an installed binary: the paniolo helper dirs first (per-user, then
 /// relative to the running CLI — Homebrew keg or other prefix install — then
 /// the system package's `/usr/libexec/paniolo/bin`; see [`helper_dirs`]), then
-/// $PATH, then ~/.cargo/bin (the pre-libexec install location, kept as a
-/// transitional fallback). Never the in-repo build tree, so a running daemon
-/// can't point at an ephemeral build artifact.
+/// the plugin roots' helper dirs ([`plugin_helper_dirs`]), then $PATH, then
+/// ~/.cargo/bin (the pre-libexec install location, kept as a transitional
+/// fallback). Never the in-repo build tree, so a running daemon can't point at
+/// an ephemeral build artifact.
 pub fn find_binary(name: &str) -> Option<PathBuf> {
     let path_dirs: Vec<PathBuf> = std::env::var_os("PATH")
         .map(|p| std::env::split_paths(&p).collect())
         .unwrap_or_default();
     let cargo_bin = dirs::home_dir().map(|h| h.join(".cargo/bin"));
-    let dirs = search_dirs(helper_dirs(), path_dirs, cargo_bin);
+    let dirs = search_dirs(all_helper_dirs(), path_dirs, cargo_bin);
     first_match(&dirs, &binary_names(name), |p| p.is_file())
 }
 
-/// The directories [`find_binary`] searches, in order: the paniolo helper dirs,
-/// then `$PATH`, then `~/.cargo/bin`.
+/// The directories [`find_binary`] searches, in order: the paniolo helper dirs
+/// (bundled, then plugin: [`all_helper_dirs`]), then `$PATH`, then
+/// `~/.cargo/bin`.
 ///
 /// Pure, so the **order** is testable without a host that happens to have a
 /// helper installed. The order is the whole point: a packaged helper in
@@ -161,13 +320,15 @@ fn first_match(
         .find_map(|dir| names.iter().map(|n| dir.join(n)).find(|p| exists(p)))
 }
 
-/// PATH value with the libexec dir prepended, for `sh -c` hook commands
-/// (power on/off/cycle/state, hid cmd). Lab files reference helpers by bare
-/// name (`zigplug …`, `cambrionix …`); prepending libexec keeps those names
-/// resolving without the helpers being user-visible on PATH.
+/// PATH value with the helper dirs prepended, for `sh -c` hook commands
+/// (power on/off/cycle/state, hid cmd, actions). Lab files reference helpers
+/// by bare name (`zigplug …`, `cambrionix …`); prepending libexec keeps those
+/// names resolving without the helpers being user-visible on PATH. The plugin
+/// helper dirs follow the bundled ones ([`all_helper_dirs`]), so a hook can
+/// name a plugin helper bare too, and a bundled one still wins a name clash.
 pub fn hook_path() -> std::ffi::OsString {
     let current = std::env::var_os("PATH").unwrap_or_default();
-    let mut paths: Vec<PathBuf> = helper_dirs();
+    let mut paths: Vec<PathBuf> = all_helper_dirs();
     paths.extend(std::env::split_paths(&current));
     std::env::join_paths(paths).unwrap_or(current)
 }
@@ -230,7 +391,7 @@ pub(crate) fn sanitize_component(s: &str) -> String {
 /// (`VAR=value`) rather than a program name — the shape a hook or helper
 /// `cmd` can legitimately be prefixed with, e.g.
 /// `AMT_PASSWORD=... amt-tool cycle` (docs/power.md "Credentials").
-fn is_env_assignment(tok: &str) -> bool {
+pub(crate) fn is_env_assignment(tok: &str) -> bool {
     let Some((var, _)) = tok.split_once('=') else {
         return false;
     };
@@ -794,7 +955,9 @@ pub fn list_discovered() -> Vec<DaemonInfo> {
 /// (e.g. a wedged one-shot holding a serial port).
 ///
 /// "Launched from" means the process's program path (argv[0]) sits directly
-/// in one of [`helper_dirs`]; the rest of the command line is not consulted,
+/// in one of [`helper_dirs`], the bundled dirs only: a process running out of
+/// a plugin root (#303) is not paniolo's to signal, so `daemons stop --all`
+/// leaves it alone. The rest of the command line is not consulted,
 /// so the `cargo install --root …/libexec/paniolo …` that `make install`
 /// runs, an editor, or an `ls` that merely *mentions* the dir is not a stray
 /// and is not TERMed by `daemons stop --all`. Descendants of an excluded pid
@@ -1716,6 +1879,111 @@ mod tests {
             Some(cargo_bin.join("hdmicap")),
         );
         assert_eq!(first_match(&dirs, &names, |_| false), None);
+    }
+
+    /// An absolute path in the platform's own syntax, for the plugin tests:
+    /// `/opt/x` is not absolute on Windows.
+    fn abs(p: &str) -> PathBuf {
+        if cfg!(windows) {
+            PathBuf::from(format!("C:{}", p.replace('/', "\\")))
+        } else {
+            PathBuf::from(p)
+        }
+    }
+
+    /// Plugin helper dirs come after every bundled dir and before `$PATH`, so
+    /// a same-name plugin helper never wins over the one paniolo installed
+    /// (#303 keeps #206's guarantee), but still beats `$PATH`.
+    #[test]
+    fn plugin_dirs_follow_bundled_dirs_and_precede_path() {
+        let user = abs("/home/u/.local/libexec/paniolo/bin");
+        let system = abs("/usr/libexec/paniolo/bin");
+        let plugin = plugin_helper_dir(&abs("/opt/lab-plugins"));
+        let on_path = abs("/usr/local/bin");
+        let helper = with_plugins(vec![user.clone(), system.clone()], vec![plugin.clone()]);
+        assert_eq!(helper, vec![user.clone(), system.clone(), plugin.clone()]);
+        let dirs = search_dirs(helper, vec![on_path.clone()], None);
+        assert_eq!(
+            dirs,
+            vec![user, system.clone(), plugin.clone(), on_path.clone()]
+        );
+
+        let names = vec!["hdmicap".to_string()];
+        assert_eq!(
+            first_match(&dirs, &names, |p| p.starts_with(&system)
+                || p.starts_with(&plugin)),
+            Some(system.join("hdmicap")),
+            "a plugin helper must not shadow a bundled one"
+        );
+        assert_eq!(
+            first_match(&dirs, &names, |p| !p.starts_with(&system)
+                && (p.starts_with(&plugin) || p.starts_with(&on_path))),
+            Some(plugin.join("hdmicap")),
+            "a plugin helper wins over $PATH"
+        );
+    }
+
+    #[test]
+    fn plugin_path_parsing_skips_empty_and_sets_aside_relative_entries() {
+        let a = abs("/opt/lab-plugins");
+        let b = abs("/srv/more");
+        let raw = std::env::join_paths([
+            PathBuf::new(),
+            a.clone(),
+            PathBuf::from("rel/dir"),
+            b.clone(),
+        ])
+        .unwrap();
+        let (roots, ignored) = parse_plugin_path(&raw);
+        assert_eq!(roots, vec![a, b]);
+        assert_eq!(ignored, vec![PathBuf::from("rel/dir")]);
+        assert_eq!(
+            parse_plugin_path(std::ffi::OsStr::new("")),
+            (Vec::new(), Vec::new())
+        );
+    }
+
+    /// The list attributes each helper to the dir `find_binary` would run it
+    /// from, annotates only plugin entries, and reports a plugin helper that
+    /// lost to a bundled one of the same name.
+    #[test]
+    fn helper_list_annotates_plugin_entries_and_reports_shadowed_ones() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bundled = tmp.path().join("libexec");
+        let root = tmp.path().join("plugins");
+        let pdir = plugin_helper_dir(&root);
+        std::fs::create_dir_all(&bundled).unwrap();
+        std::fs::create_dir_all(&pdir).unwrap();
+        std::fs::write(bundled.join("hdmicap"), b"").unwrap();
+        std::fs::write(pdir.join("hdmicap"), b"").unwrap();
+        std::fs::write(pdir.join("labctl"), b"").unwrap();
+
+        let (entries, shadowed) =
+            helper_entries_in(std::slice::from_ref(&bundled), std::slice::from_ref(&root));
+        assert_eq!(
+            entries,
+            vec![
+                HelperEntry {
+                    name: "hdmicap".into(),
+                    plugin_root: None
+                },
+                HelperEntry {
+                    name: "labctl".into(),
+                    plugin_root: Some(root.clone())
+                },
+            ]
+        );
+        assert_eq!(shadowed, vec![("hdmicap".to_string(), root.clone())]);
+        assert_eq!(helper_list_line(&entries[0]), "hdmicap");
+        assert_eq!(
+            helper_list_line(&entries[1]),
+            format!("labctl\tplugin: {}", root.display())
+        );
+        assert_eq!(
+            helper_list_line(&entries[1]).split_whitespace().next(),
+            Some("labctl"),
+            "the name stays the first field"
+        );
     }
 
     /// Within one directory the Windows-suffixed name is tried first, so a

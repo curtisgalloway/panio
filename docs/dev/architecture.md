@@ -74,7 +74,9 @@ invocations. State lives in plain files.
 
 Only `paniolo` lands on PATH (`~/.cargo/bin`). Helpers and daemons install into
 `~/.local/libexec/paniolo/bin`: `paniolo helper <name>` runs one directly, and `paniolo daemons`
-lists/stops/restarts running ones.
+lists/stops/restarts running ones. Out-of-tree helpers and skills come from **plugin roots**
+(`PANIOLO_PLUGIN_PATH`, or a lab host's `plugin_path` on dispatch), searched after every
+bundled dir so they can add but never shadow ([power.md](../power.md#out-of-tree-helpers-and-skills-plugin-roots)).
 
 *Option B* (one long-running server with socket RPC) is noted in `AGENTS.md` but **not**
 implemented. The only cross-subsystem coupling is the dashboard's hdmicap→serialcap link (§7).

@@ -22,6 +22,12 @@
 //! port. The hdmicap preview page connects here cross-port; the auth layer
 //! (`auth.rs`) admits only loopback origins that present the daemon's token and
 //! echoes that one origin in the CORS header — never `*`.
+//!
+//! `/transact` is a request/response exchange under a per-interface lock (see
+//! `transact.rs`). While a transaction holds an interface, or is queued for
+//! it, plain input is refused rather than queued: `/input` answers 409, and a
+//! `/stream` keystroke message is dropped and answered with an in-band marker
+//! on that client's own stream (the socket stays open).
 
 use axum::{
     extract::{
@@ -88,6 +94,31 @@ pub struct InputParam {
     pace_ms: u64,
 }
 
+#[derive(Deserialize)]
+pub struct TransactParam {
+    interface: Option<String>,
+    /// Literal UTF-8 string that ends the wait. Required.
+    until: Option<String>,
+    #[serde(default = "default_transact_timeout")]
+    timeout_ms: u64,
+    #[serde(default = "default_transact_max_bytes")]
+    max_bytes: u64,
+    #[serde(default)]
+    pace_ms: u64,
+}
+
+fn default_transact_timeout() -> u64 {
+    crate::transact::DEFAULT_TIMEOUT_MS
+}
+
+fn default_transact_max_bytes() -> u64 {
+    crate::transact::DEFAULT_MAX_BYTES
+}
+
+/// The answer to plain input that arrives during a transaction.
+const BUSY_INPUT: &str = "interface busy: a transaction holds it or is queued for it; \
+                          input refused, nothing sent\n";
+
 /// The API router. Every route sits behind the auth layer: loopback Host and
 /// Origin, and the daemon token (see `auth.rs`).
 pub fn router(state: AppState, auth: crate::auth::Auth) -> Router {
@@ -101,6 +132,10 @@ pub fn router(state: AppState, auth: crate::auth::Auth) -> Router {
         .route(
             "/input",
             post(input).layer(DefaultBodyLimit::max(MAX_INPUT_BYTES)),
+        )
+        .route(
+            "/transact",
+            post(transact).layer(DefaultBodyLimit::max(MAX_INPUT_BYTES)),
         )
         .layer(middleware::from_fn_with_state(auth, crate::auth::require))
         .with_state(state)
@@ -232,8 +267,10 @@ async fn button(State(s): State<AppState>, Query(q): Query<ButtonParam>) -> Resp
 /// takes at least `(N - 1) * pace_ms` ms. Completion means driver acceptance,
 /// not target execution. Disconnects fail pending writes without replay. The body is capped at [`MAX_INPUT_BYTES`] and
 /// the pacing at [`MAX_PACE_MS`]. Returns 200 on success, 400 for a pace past
-/// the ceiling, 404 for an unknown interface, 413 for an oversized body, 503
-/// if the interface is disconnected or a driver write fails.
+/// the ceiling, 404 for an unknown interface, 409 while a `/transact` holds
+/// the interface or is queued for it (refused, not queued: nothing is sent),
+/// 413 for an oversized body, 503 if the interface is disconnected or a
+/// driver write fails.
 async fn input(State(s): State<AppState>, Query(q): Query<InputParam>, body: Bytes) -> Response {
     let handle = match resolve(&s.serials, &q.interface) {
         Some(h) => h.clone(),
@@ -247,9 +284,75 @@ async fn input(State(s): State<AppState>, Query(q): Query<InputParam>, body: Byt
         Ok(p) => p,
         Err(msg) => return (StatusCode::BAD_REQUEST, msg).into_response(),
     };
+    // Held across the write, so a transaction cannot start in the middle of it.
+    let Some(_input) = handle.try_input() else {
+        return (StatusCode::CONFLICT, BUSY_INPUT).into_response();
+    };
     match handle.write_paced(body, pace).await {
         Ok(()) => (format!("wrote {n} bytes\n")).into_response(),
         Err(e) => (StatusCode::SERVICE_UNAVAILABLE, format!("{e:#}\n")).into_response(),
+    }
+}
+
+/// Send the request body and wait for the reply, under the interface's
+/// transaction lock.
+///
+/// `POST /transact?until=LITERAL[&interface=NAME][&timeout_ms=N][&max_bytes=N][&pace_ms=N]`,
+/// body = raw bytes to send (sent as given; nothing is appended).
+///
+/// Records the receive boundary before writing, so the result holds exactly
+/// the bytes received after the send, then acquires them exactly as
+/// `serialcap wait --pattern UNTIL --include-pending` does and returns that
+/// result JSON (`status` is `matched`, `timeout`, `cap`, `disconnected`, …),
+/// plus `sent_bytes`. `timeout_ms` (default 30000, 1..=3600000) bounds the
+/// whole call: waiting for the lock, the write and the reply. `max_bytes`
+/// (default 65536, 1..=1048576) caps the raw reply.
+///
+/// Concurrent transactions on one interface queue in arrival order. Returns
+/// 200 with the result, 400 for a bad parameter, 404 for an unknown
+/// interface, 409 if another transaction held the interface for the whole
+/// deadline (nothing was sent), 413 for an oversized body, 503 if the
+/// interface is disconnected or the write fails (the bytes may be partly
+/// sent).
+async fn transact(
+    State(s): State<AppState>,
+    Query(q): Query<TransactParam>,
+    body: Bytes,
+) -> Response {
+    use crate::transact::{Params, Refusal};
+    let handle = match resolve(&s.serials, &q.interface) {
+        Some(h) => h.clone(),
+        None => {
+            let what = q.interface.as_deref().unwrap_or("(default)");
+            return (StatusCode::NOT_FOUND, format!("no interface '{what}'")).into_response();
+        }
+    };
+    let pace = match pace_of(q.pace_ms) {
+        Ok(p) => p,
+        Err(msg) => return (StatusCode::BAD_REQUEST, msg).into_response(),
+    };
+    let Some(until) = q.until else {
+        return (StatusCode::BAD_REQUEST, "until is required\n").into_response();
+    };
+    let params = Params {
+        until,
+        timeout_ms: q.timeout_ms,
+        max_bytes: q.max_bytes,
+        pace,
+    };
+    match crate::transact::run(handle, body, params).await {
+        Ok(result) => Json(result).into_response(),
+        Err(Refusal::BadRequest(msg)) => {
+            (StatusCode::BAD_REQUEST, format!("{msg}\n")).into_response()
+        }
+        Err(Refusal::Busy) => (
+            StatusCode::CONFLICT,
+            "interface busy: another transaction held it for the whole timeout; nothing sent\n",
+        )
+            .into_response(),
+        Err(Refusal::Unavailable(msg)) => {
+            (StatusCode::SERVICE_UNAVAILABLE, format!("{msg}\n")).into_response()
+        }
     }
 }
 
@@ -279,10 +382,22 @@ async fn handle_ws(socket: WebSocket, serial: SerialHandle) {
         return;
     }
 
+    // Notices for this client alone (input refused during a transaction).
+    let (notice_tx, mut notice_rx) = tokio::sync::mpsc::channel::<Bytes>(8);
+
     // serial -> client
     let mut send_task = tokio::spawn(async move {
         loop {
-            match rx.recv().await {
+            let received = tokio::select! {
+                received = rx.recv() => received,
+                Some(notice) = notice_rx.recv() => {
+                    if sender.send(Message::Binary(notice.to_vec())).await.is_err() {
+                        break;
+                    }
+                    continue;
+                }
+            };
+            match received {
                 Ok(bytes) => {
                     if sender.send(Message::Binary(bytes.to_vec())).await.is_err() {
                         break;
@@ -315,6 +430,19 @@ async fn handle_ws(socket: WebSocket, serial: SerialHandle) {
                 Message::Text(t) => Bytes::from(t.into_bytes()),
                 Message::Close(_) => break,
                 _ => continue,
+            };
+            // Refused, not queued, while a transaction holds the interface:
+            // a keystroke held back would land in the next transaction's
+            // reply window. The socket has no status code, so say so in this
+            // client's own stream, in the style of the lagged marker.
+            let Some(_input) = input.try_input() else {
+                let marker = crate::serial_io::marker_line(
+                    "input refused: transaction in progress",
+                    31, // red
+                );
+                // A full notice queue only drops a duplicate notice.
+                let _ = notice_tx.try_send(marker);
+                continue;
             };
             // Wait for the supervisor's driver acknowledgement. A write
             // failure closes this connection; never silently replay input.
@@ -430,6 +558,92 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    fn disconnected_app(tag: &str) -> (Router, Serials, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("serialcap-http-{tag}-{}", std::process::id()));
+        let serials = Serials::spawn_all(
+            &[crate::serial_io::InterfaceSpec {
+                name: "console".into(),
+                device: dir.join("missing-device").to_string_lossy().into_owned(),
+                baud: 115200,
+                power_sense_signal: None,
+            }],
+            &dir,
+            100,
+        );
+        let app = router(
+            AppState {
+                serials: serials.clone(),
+            },
+            crate::auth::Auth::new("test-token".into(), &[]),
+        );
+        (app, serials, dir)
+    }
+
+    async fn post(app: &Router, uri: &str, body: &'static str) -> StatusCode {
+        use axum::{body::Body, http::Request};
+        use tower::ServiceExt;
+        app.clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(uri)
+                    .header("Host", "127.0.0.1")
+                    .header("Authorization", "Bearer test-token")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+            .status()
+    }
+
+    /// Plain input during a transaction is refused with 409 before any write
+    /// is attempted — the maintainer's choice over queueing it (#301).
+    #[tokio::test]
+    async fn input_is_refused_with_409_during_a_transaction() {
+        let (app, serials, dir) = disconnected_app("input-409");
+        let held = serials.get("console").unwrap().transaction().await;
+        assert_eq!(post(&app, "/input", "reboot\n").await, StatusCode::CONFLICT);
+        drop(held);
+        // Free again: the disconnected interface now gets as far as the write.
+        assert_eq!(
+            post(&app, "/input", "reboot\n").await,
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn transact_maps_refusals_to_status_codes() {
+        let (app, serials, dir) = disconnected_app("transact-codes");
+        assert_eq!(post(&app, "/transact", "x").await, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            post(&app, "/transact?until=OK&timeout_ms=0", "x").await,
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            post(&app, "/transact?until=OK&pace_ms=10001", "x").await,
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            post(&app, "/transact?until=OK&interface=nope", "x").await,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            post(&app, "/transact?until=OK&timeout_ms=100", "x").await,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "disconnected"
+        );
+        let held = serials.get("console").unwrap().transaction().await;
+        assert_eq!(
+            post(&app, "/transact?until=OK&timeout_ms=100", "x").await,
+            StatusCode::CONFLICT,
+            "queued past its own deadline"
+        );
+        drop(held);
         std::fs::remove_dir_all(dir).ok();
     }
 }

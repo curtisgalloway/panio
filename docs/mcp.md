@@ -57,14 +57,15 @@ server holds no state of its own, so restarting it loses nothing.
 | `serial_evidence` | `target`; `interface`; `epoch`; `since` (requires epoch); `max_bytes` (1–1048576, default 65536) | Read-only JSON: immutable exact-byte receive records, original RX/capture times, observation time, epoch/generation, retained cursors and cap/gap/fault diagnostics. See [receive evidence](serial.md#immutable-receive-evidence). |
 | `serial_log` | `target`; `interface`; a window: `tail` (≤ 5000), `since`, `from`, `to` (sequence numbers) | Console lines `[time] #<seq> <text>`, as `paniolo serial log`; the last 200 when no window is given. |
 | `serial_send` | `target`; `text` (required); `interface`; `newline` (default true); `pace_ms` (≤ 10000) | Writes the text to the console, as `paniolo serial send`. |
+| `serial_transact` | `target`; `text` and `until` (required); `interface`; `timeout_ms` (1–3600000, default 30000); `max_bytes` (1–1048576, default 65536); `newline` (default true); `pace_ms` (≤ 10000) | Sends the text and waits for the reply under the interface's transaction lock, as `paniolo serial transact`: the `serial_wait` result JSON for the bytes received after the send, plus `sent_bytes`. See [transactions](serial.md#requestresponse-transactions). |
 | `hid_send` | `target`; `command` (required): one HID command as an array of words, e.g. `["key", "ENTER"]` | Injects keyboard or mouse input, as `paniolo hid send`. |
 | `action_list` | `target` | JSON array of the target's named actions (name, description, requires_power, host), as `paniolo action list --json`. See [Named actions](actions.md). |
 | `action_run` | `target`; `name` (required) | Runs one named action, as `paniolo action run`. |
-| `power_state` | `target` | `on` or `off`, as `paniolo power-state`. |
-| `power_on`, `power_off`, `power_cycle` | `target` | Switches power, as `paniolo power on`/`off` and `paniolo power-cycle`. |
+| `power_state` | `target`; `level` | A line like `Power ON  (pi5)`, as `paniolo power-state`. With no `level`, a target with [power levels](power.md#power-levels-soft-and-hard) gets one line per level, the default first (`Power OFF  (pi5, level hard)`; `Power UNKNOWN … no state_cmd` for a level that cannot be read). With `level`, only that level. |
+| `power_on`, `power_off`, `power_cycle` | `target`; `level` | Switches power, as `paniolo power on`/`off` and `paniolo power-cycle`, with `--level` when `level` is given. A level without the needed hook fails as `not_configured` (3); it never falls back to the default level. |
 
 Every tool but `target_list` needs `target`. The tools that change the target
-(`serial_send`, `hid_send`, `action_run`, `power_on`, `power_off`,
+(`serial_send`, `serial_transact`, `hid_send`, `action_run`, `power_on`, `power_off`,
 `power_cycle`) are
 marked as such, so a harness that asks before side effects will ask.
 
@@ -87,8 +88,8 @@ target's state before repeating it. A malformed call (unknown tool, missing
   as a child process with stdin closed and stdout captured, so nothing a
   command prints can corrupt the stream. Diagnostics go to stderr, which
   harnesses usually log.
-- **One call at a time.** `serial_wait` can block other calls up to its finite
-  deadline (default 30 seconds, maximum one hour); use a deadline appropriate
+- **One call at a time.** `serial_wait` and `serial_transact` can block other
+  calls up to their finite deadline (default 30 seconds, maximum one hour); use a deadline appropriate
   for the task. A `video_shot` waiting on `changed_since` blocks
   other calls until it returns, for at most `timeout_ms`; so does a slow
   `power_cycle`.

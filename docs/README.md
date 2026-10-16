@@ -47,7 +47,7 @@ running, 101 hook failed, …); `--json-errors` adds a one-line JSON object. See
 |---|---|---|
 | [Netboot](netboot.md) | `paniolo netboot` | DHCP + TFTP + HTTP over a direct USB-Ethernet link (`netbootd`), incl. UEFI PXE / HTTP Boot. |
 | [Link mode](netif.md) | `paniolo netif` | Switch the link between `netboot`, `link`, `ffx`-over-IPv6 (host `fe80::1`), and `off`; `down-hard` forces a real carrier drop. |
-| [Serial](serial.md) | `paniolo serial` | `serialcap` daemon (JSONL log, immutable raw evidence, bounded fresh wait/follow, health snapshots and WebSocket terminal) and interactive `tio`. |
+| [Serial](serial.md) | `paniolo serial` | `serialcap` daemon (JSONL log, immutable raw evidence, bounded fresh wait/follow, locked request/response transactions, health snapshots and WebSocket terminal) and interactive `tio`. |
 | [Power](power.md) | `paniolo power on/off`, `power-cycle`, `power-state`, `serial dtr/reset` | DTR power button (J2) and shell-command hooks; helpers `cambrionix`, `zigplug`, `shellyplug`, `amt`. |
 | [Named actions](actions.md) | `paniolo action` | Reset lines, boot straps, recovery modes: named hook commands per target, with an optional power-state precondition. |
 | [Video](video.md) | `paniolo video` | `hdmicap` HDMI capture, or a network RFB source (JetKVM); on-device OCR. |
@@ -55,7 +55,7 @@ running, 101 hook failed, …); `--json-errors` adds a one-line JSON object. See
 | [Switchable USB media](usb.md) | `paniolo usb` | Switch a KVM-Go's microSD card between control host and target, as boot media. |
 | [HID injection](hid.md) | `paniolo hid` | USB keyboard/mouse injection via `hidrig` (KB2040) or `ch9329` (Openterface Mini-KVM / KVM-Go, Sipeed NanoKVM-USB). |
 | [adb (Android targets)](adb.md) | `paniolo adb` | Console (`adb shell`/`run`), screen (`screencap`), and input (`adb input`) over one USB cable. |
-| [MCP server (experimental)](mcp.md) | `paniolo mcp` | Runtime commands as MCP tools over stdio, for agent harnesses: screen (image and OCR), serial health/evidence/wait/log/input, HID input, power. |
+| [MCP server (experimental)](mcp.md) | `paniolo mcp` | Runtime commands as MCP tools over stdio, for agent harnesses: screen (image and OCR), serial health/evidence/wait/log/input/transact, HID input, power. |
 
 ## Distributed control (Phases 0–5 shipped)
 

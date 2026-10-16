@@ -43,13 +43,14 @@ Roles only; reach recipes and addresses are in `RELEASE-TRAIN.local.md`
 Run against the **installed** copy with `HOME` (or `USERPROFILE` and
 `APPDATA`/`LOCALAPPDATA`) pointed at a fresh temp dir, from a working
 directory outside the checkout so `paniolo skill` resolves the packaged copy
-rather than the repo's `skills/`.
+rather than the repo's `skills/`, and with `PANIOLO_PLUGIN_PATH` unset so no
+plugin root (#303) adds entries to the S2/S3 lists.
 
 | id | check | pass condition |
 |---|---|---|
 | S1 | `paniolo --help`, then `paniolo --version` | exit 0; lists `target`, `serial`, `video`, `hid`, `doctor`, `daemons`, `skill`, `helper`; `--version` prints exactly `paniolo X.Y.Z` |
 | S2 | `paniolo skill` and `paniolo skill paniolo` | exit 0; lists `paniolo`, `kvm-puppeting`, `control-host`; the second prints a SKILL.md body |
-| S3 | `paniolo helper` then `paniolo helper -- <h> --help` for each helper (since #300 everything after the helper name goes to the helper, so the `--` is optional; it stays here because a pre-#300 paniolo needs it, where clap otherwise answers for the `helper` verb and the binary never runs) | each exit 0 (a `--help` that returns 0 proves the shared libraries loaded), except `netbootd-bpf-helper` on macOS: the setuid helper takes no arguments and answers any call, `--help` included, with a usage line and exit 2 (`release.yml` asserts exactly that), which is its pass condition |
+| S3 | `paniolo helper` then `paniolo helper -- <h> --help` for each helper, `<h>` being the first field of each list line (a plugin-root entry adds `<TAB>plugin: <root>`; none appear with the variable unset) (since #300 everything after the helper name goes to the helper, so the `--` is optional; it stays here because a pre-#300 paniolo needs it, where clap otherwise answers for the `helper` verb and the binary never runs) | each exit 0 (a `--help` that returns 0 proves the shared libraries loaded), except `netbootd-bpf-helper` on macOS: the setuid helper takes no arguments and answers any call, `--help` included, with a usage line and exit 2 (`release.yml` asserts exactly that), which is its pass condition |
 | S4 | `paniolo --lab $T/lab.toml init`, `target add smoke`, `target list`, `config show`, `target rm smoke`, `target list` | exit 0 each; `smoke` listed before `rm`, absent after |
 | S5 | `paniolo --lab $T/lab.toml doctor` on that hardware-free lab, then `paniolo daemons list` | exit 0 or a clean "nothing configured" exit; never a panic or traceback |
 | S6 | the platform's OCR helper answers: `visionocr` (macOS) and `winocr.exe` (Windows) decode the 8x8 PNG the release workflow's macOS smoke step uses and print the v1 envelope; `linuxocr --help` and `rapidocr --help` on Linux | exit 0, `engine` field matches |
@@ -170,9 +171,9 @@ feeds needs re-reading before `--update` re-pins it.
 | `packaging/scripts/build-apt-repo.sh` | fb2205eeab8e | Channels: deb, install like a user |
 | `Makefile` | 36543cf5ec97 | Project: helpers; Channels: source |
 | `cli/src/setup.rs` | ba262db163f0 | Channels: source |
-| `cli/src/skills.rs` | eada6fa6ec0c | Smoke contract S2; Channels: homebrew, windows |
-| `cli/src/daemons.rs` | 5d1e89ba6e23 | Smoke contract S3 |
+| `cli/src/skills.rs` | 3ef32377e11c | Smoke contract S2; Channels: homebrew, windows |
+| `cli/src/daemons.rs` | 780f949680dd | Smoke contract S3 |
 | `scripts/ci-coverage-check.sh` | 84a938b2dbf0 | Project: helpers |
 | `scripts/sync-brik.sh` | b8b5a15775a9 | Channels: windows |
-| `README.md` | 9d5dea9f0654 | Channels: source; Publish: re-verify apt |
-| `AGENTS.md` | e9d5c072e45d | Project: bump rules, tag format; Publish |
+| `README.md` | 5deaa6ca6e4b | Channels: source; Publish: re-verify apt |
+| `AGENTS.md` | 74902bbb0214 | Project: bump rules, tag format; Publish |

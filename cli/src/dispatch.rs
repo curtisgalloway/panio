@@ -86,6 +86,19 @@ pub fn build_slice(lab: &Lab, target: &str, host: &str) -> Result<String, LabErr
                 p.serial_interface.as_deref(),
                 None,
             )?;
+            for (name, l) in &p.levels {
+                lf.set_power_level(
+                    target,
+                    name,
+                    l.cycle_cmd.as_deref(),
+                    l.on_cmd.as_deref(),
+                    l.off_cmd.as_deref(),
+                    l.state_cmd.as_deref(),
+                )?;
+            }
+            if p.doctor {
+                lf.set_doctor(target, "power", true)?;
+            }
         }
     }
     if let Some(v) = &t.video {
@@ -103,6 +116,9 @@ pub fn build_slice(lab: &Lab, target: &str, host: &str) -> Result<String, LabErr
     if let Some(h) = &t.hid {
         if on(&h.host) {
             lf.set_hid(target, h.cmd.as_deref(), None, h.port)?;
+            if h.doctor {
+                lf.set_doctor(target, "hid", true)?;
+            }
         }
     }
     if let Some(a) = &t.adb {
@@ -113,6 +129,9 @@ pub fn build_slice(lab: &Lab, target: &str, host: &str) -> Result<String, LabErr
     if let Some(u) = &t.usb {
         if on(&u.host) {
             lf.set_usb(target, u.cmd.as_deref(), None)?;
+            if u.doctor {
+                lf.set_doctor(target, "usb", true)?;
+            }
         }
     }
     if let Some(acts) = &t.actions {
@@ -126,6 +145,10 @@ pub fn build_slice(lab: &Lab, target: &str, host: &str) -> Result<String, LabErr
                     a.requires_power.as_deref(),
                     None,
                 )?;
+            }
+            // The table only exists in the slice once an action is in it.
+            if acts.doctor && !acts.actions.is_empty() {
+                lf.set_doctor(target, "actions", true)?;
             }
         }
     }
@@ -281,10 +304,12 @@ fn transport_checked(code: i32, host_name: &str, target: &str) -> anyhow::Result
     Ok(code)
 }
 
-/// The remote paniolo's argv for a user-facing dispatch: `paniolo --lab
-/// <slice>`, then `--json-errors` when requested here, then `sub_argv`.
+/// The remote paniolo's argv for a user-facing dispatch: `paniolo
+/// [--plugin-path=…] --lab <slice>` (see [`crate::model::Host::paniolo_argv`]),
+/// then `--json-errors` when requested here, then `sub_argv`.
 fn remote_argv(host: &crate::model::Host, remote_path: &str, sub_argv: &[String]) -> Vec<String> {
-    let mut argv = vec![host.paniolo(), "--lab".to_string(), remote_path.to_string()];
+    let mut argv = host.paniolo_argv();
+    argv.extend(["--lab".to_string(), remote_path.to_string()]);
     argv.extend(json_errors_arg(crate::error::json_requested()));
     argv.extend(sub_argv.iter().cloned());
     argv
@@ -315,7 +340,8 @@ pub fn run_subcommand(
     let host = lab.host(host_name);
     let slice = build_slice(lab, target, host_name)?;
     let remote_path = ship_slice(&host, host_name, target, &slice)?;
-    let mut argv = vec![host.paniolo(), "--lab".to_string(), remote_path.clone()];
+    let mut argv = host.paniolo_argv();
+    argv.extend(["--lab".to_string(), remote_path.clone()]);
     argv.extend(subargs.iter().map(|s| s.to_string()));
     let out = ssh::run(&host, &argv, None, &ssh::forwarded_env()?);
     let _ = ssh::sftp_rm(&host, &remote_path);
@@ -557,7 +583,7 @@ pub fn helper_host(
 /// slice is shipped. ssh's own 255 becomes `unreachable`, as in [`dispatch`].
 pub fn run_on_host(lab: &Lab, host_name: &str, sub_argv: &[String]) -> anyhow::Result<i32> {
     let host = lab.host(host_name);
-    let mut argv = vec![host.paniolo()];
+    let mut argv = host.paniolo_argv();
     argv.extend(json_errors_arg(crate::error::json_requested()));
     argv.extend(sub_argv.iter().cloned());
     let code = ssh::run_passthrough(&host, &argv, &ssh::forwarded_env()?)?;
@@ -789,6 +815,42 @@ mod tests {
         assert_eq!(helper_host(&lab, None, None, None, None).unwrap(), "local");
     }
 
+    /// Power levels (#302) ride in the slice with the power channel, to its
+    /// host only, so `power-cycle --level` re-exec'd there finds them.
+    #[test]
+    fn slice_carries_power_levels_to_the_power_host() {
+        let lab = model::parse(
+            r#"
+            [hosts.bench1]
+            ssh = "u@bench1"
+            [hosts.bench2]
+            ssh = "u@bench2"
+            [targets.pi5]
+            host = "bench1"
+            [targets.pi5.power]
+            host = "bench2"
+            cycle_cmd = "boardctl cycle"
+            [targets.pi5.power.levels.hard]
+            cycle_cmd = "shellyplug -d 192.0.2.10 cycle"
+            state_cmd = "shellyplug -d 192.0.2.10 state"
+            [targets.pi5.power.levels.pmic]
+            off_cmd = "pmic off"
+            "#,
+        )
+        .unwrap();
+        let on2 = model::parse(&build_slice(&lab, "pi5", "bench2").unwrap()).unwrap();
+        let p = on2.targets["pi5"].power.as_ref().unwrap();
+        assert_eq!(p.host, None);
+        assert_eq!(p.cycle_cmd.as_deref(), Some("boardctl cycle"));
+        assert_eq!(
+            p.levels,
+            lab.targets["pi5"].power.as_ref().unwrap().levels,
+            "every level crosses unchanged"
+        );
+        let on1 = model::parse(&build_slice(&lab, "pi5", "bench1").unwrap()).unwrap();
+        assert!(on1.targets["pi5"].power.is_none());
+    }
+
     /// The actions table rides in the slice for the host it is bound to, and
     /// only that one.
     #[test]
@@ -924,10 +986,93 @@ mod tests {
         );
     }
 
+    /// The helper doctor opt-in (#304) on every channel that has one. A
+    /// dropped flag would leave a doctor run *on* the control host — e.g.
+    /// `paniolo doctor` dispatched there by a future verb — silently skipping
+    /// the check the lab asked for.
+    #[test]
+    fn slice_carries_the_doctor_opt_in() {
+        let lab = model::parse(
+            r#"
+            [hosts.bench1]
+            ssh = "u@bench1"
+            [targets.pi5]
+            host = "bench1"
+            [targets.pi5.power]
+            cycle_cmd = "shellyplug -d 192.0.2.10 cycle"
+            doctor = true
+            [targets.pi5.power.levels.hard]
+            cycle_cmd = "shellyplug -d 192.0.2.11 cycle"
+            [targets.pi5.hid]
+            cmd = "ch9329 -d /dev/ttyUSB1"
+            doctor = true
+            [targets.pi5.usb]
+            cmd = "ch9329 -d /dev/ttyUSB1"
+            doctor = true
+            [targets.pi5.actions]
+            doctor = true
+            reset = { cmd = "boardctl reset" }
+            [targets.pi6]
+            host = "bench1"
+            [targets.pi6.power]
+            cycle_cmd = "shellyplug -d 192.0.2.11 cycle"
+            "#,
+        )
+        .unwrap();
+        let s = build_slice(&lab, "pi5", "bench1").unwrap();
+        let t = &model::parse(&s).unwrap().targets["pi5"];
+        let p = t.power.as_ref().unwrap();
+        assert!(p.doctor, "{s}");
+        // Levels (#302) and the flag travel together.
+        assert_eq!(
+            p.levels["hard"].cycle_cmd.as_deref(),
+            Some("shellyplug -d 192.0.2.11 cycle"),
+            "{s}"
+        );
+        assert!(t.hid.as_ref().unwrap().doctor, "{s}");
+        assert!(t.usb.as_ref().unwrap().doctor, "{s}");
+        let acts = t.actions.as_ref().unwrap();
+        assert!(acts.doctor, "{s}");
+        assert_eq!(acts.actions.keys().collect::<Vec<_>>(), ["reset"]);
+        // Off stays off: nothing is written for the default.
+        let s = build_slice(&lab, "pi6", "bench1").unwrap();
+        assert!(!s.contains("doctor"), "{s}");
+    }
+
     #[test]
     fn json_errors_crosses_the_hop_when_requested() {
         assert_eq!(json_errors_arg(true).as_deref(), Some("--json-errors"));
         assert_eq!(json_errors_arg(false), None);
+    }
+
+    /// A host's lab `plugin_path` rides on the re-exec as `--plugin-path=…`
+    /// ahead of the subcommand, where the remote paniolo's real parser takes
+    /// it; a host without one adds nothing.
+    #[test]
+    fn the_reexec_carries_the_hosts_plugin_path() {
+        use clap::Parser;
+        let mut host = model::Host {
+            ssh: "u@bench1".to_string(),
+            plugin_path: Some("/opt/lab-plugins:/srv/more".to_string()),
+            ..Default::default()
+        };
+        let sub = vec!["helper".to_string()];
+        let argv = remote_argv(&host, ".slice.toml", &sub);
+        assert_eq!(argv[0], "paniolo");
+        assert_eq!(argv[1], "--plugin-path=/opt/lab-plugins:/srv/more");
+        assert_eq!(&argv[2..4], ["--lab", ".slice.toml"]);
+        let cli = crate::Cli::try_parse_from(&argv).expect("the remote parser accepts it");
+        assert_eq!(
+            cli.plugin_path.as_deref(),
+            Some("/opt/lab-plugins:/srv/more")
+        );
+
+        host.plugin_path = None;
+        let argv = remote_argv(&host, ".slice.toml", &sub);
+        assert!(
+            !argv.iter().any(|a| a.starts_with("--plugin-path")),
+            "{argv:?}"
+        );
     }
 
     #[test]

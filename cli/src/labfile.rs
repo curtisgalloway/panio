@@ -100,6 +100,7 @@ impl LabFile {
         identity: Option<&str>,
         control_path: Option<&str>,
         paniolo_cmd: Option<&str>,
+        plugin_path: Option<&str>,
     ) -> Result<(), LabError> {
         model::validate_name("host", name)?;
         let hosts = super_table(&mut self.doc, "hosts")?;
@@ -113,6 +114,7 @@ impl LabFile {
         set_opt(&mut t, "identity", identity);
         set_opt(&mut t, "control_path", control_path);
         set_opt(&mut t, "paniolo_cmd", paniolo_cmd);
+        set_opt(&mut t, "plugin_path", plugin_path);
         hosts.insert(name, Item::Table(t));
         Ok(())
     }
@@ -127,6 +129,7 @@ impl LabFile {
         identity: Option<&str>,
         control_path: Option<&str>,
         paniolo_cmd: Option<&str>,
+        plugin_path: Option<&str>,
     ) -> Result<(), LabError> {
         model::validate_name("host", name)?;
         let t = self
@@ -142,6 +145,14 @@ impl LabFile {
         set_opt(t, "identity", identity);
         set_opt(t, "control_path", control_path);
         set_opt(t, "paniolo_cmd", paniolo_cmd);
+        // An empty value clears the field, handing the host's plugin roots
+        // back to its own environment.
+        match plugin_path {
+            Some("") => {
+                t.remove("plugin_path");
+            }
+            other => set_opt(t, "plugin_path", other),
+        }
         Ok(())
     }
 
@@ -451,6 +462,97 @@ impl LabFile {
         self.remove_singleton(target, "power")
     }
 
+    /// Create or update the named power level `level` (#302): sets each hook
+    /// given, leaving the others untouched. Creating the level needs at least
+    /// one hook; the power channel is created when absent. A level written
+    /// inline (`hard = { cycle_cmd = "…" }`) is edited in place.
+    pub fn set_power_level(
+        &mut self,
+        target: &str,
+        level: &str,
+        cycle_cmd: Option<&str>,
+        on_cmd: Option<&str>,
+        off_cmd: Option<&str>,
+        state_cmd: Option<&str>,
+    ) -> Result<(), LabError> {
+        model::validate_name("power level", level)?;
+        if level == model::DEFAULT_POWER_LEVEL {
+            return lab_err(format!(
+                "'{}' names the hooks set without --level; pick another level name",
+                model::DEFAULT_POWER_LEVEL
+            ));
+        }
+        let hooks = [
+            ("cycle_cmd", cycle_cmd),
+            ("on_cmd", on_cmd),
+            ("off_cmd", off_cmd),
+            ("state_cmd", state_cmd),
+        ];
+        self.set_singleton(target, "power", &[])?;
+        let power = self
+            .target_mut(target)?
+            .get_mut("power")
+            .and_then(|i| i.as_table_mut())
+            .ok_or_else(|| LabError(format!("target '{target}': power is not a table")))?;
+        if !power.contains_key("levels") {
+            let mut t = Table::new();
+            t.set_implicit(true);
+            power.insert("levels", Item::Table(t));
+        }
+        let levels = power
+            .get_mut("levels")
+            .and_then(|i| i.as_table_mut())
+            .ok_or_else(|| not_a_standard_table(&format!("targets.{target}.power.levels")))?;
+        if !levels.contains_key(level) {
+            if hooks.iter().all(|(_, v)| v.is_none()) {
+                return lab_err(format!(
+                    "target '{target}': new power level '{level}' needs at least one of \
+                     --cycle-cmd, --on-cmd, --off-cmd, --state-cmd"
+                ));
+            }
+            levels.insert(level, Item::Table(Table::new()));
+        }
+        let l = levels
+            .get_mut(level)
+            .and_then(|i| i.as_table_like_mut())
+            .ok_or_else(|| {
+                LabError(format!(
+                    "target '{target}': power level '{level}' is not a table"
+                ))
+            })?;
+        for (k, v) in hooks {
+            if let Some(v) = v {
+                l.insert(k, value(v));
+            }
+        }
+        if let Some(inline) = levels.get_mut(level).and_then(|i| i.as_inline_table_mut()) {
+            inline.fmt();
+        }
+        Ok(())
+    }
+
+    /// Remove the named power level, leaving the default hooks and any other
+    /// level alone; the `levels` table goes too when it was the last one.
+    pub fn remove_power_level(&mut self, target: &str, level: &str) -> Result<(), LabError> {
+        let missing = || LabError(format!("target '{target}': no power level '{level}'"));
+        let power = self
+            .target_mut(target)?
+            .get_mut("power")
+            .and_then(|i| i.as_table_mut())
+            .ok_or_else(|| LabError(format!("target '{target}': no power channel")))?;
+        let levels = power
+            .get_mut("levels")
+            .and_then(|i| i.as_table_like_mut())
+            .ok_or_else(missing)?;
+        if levels.remove(level).is_none() {
+            return Err(missing());
+        }
+        if levels.is_empty() {
+            power.remove("levels");
+        }
+        Ok(())
+    }
+
     pub fn set_video(
         &mut self,
         target: &str,
@@ -548,8 +650,10 @@ impl LabFile {
         host: Option<&str>,
     ) -> Result<(), LabError> {
         model::validate_name("action", name)?;
-        if name == "host" {
-            return lab_err("'host' names the actions table's host; pick another action name");
+        if model::ACTIONS_TABLE_KEYS.contains(&name) {
+            return lab_err(format!(
+                "'{name}' is a setting of the actions table itself; pick another action name"
+            ));
         }
         self.set_singleton(target, "actions", &[("host", host)])?;
         let acts = self
@@ -557,9 +661,10 @@ impl LabFile {
             .get_mut("actions")
             .and_then(|i| i.as_table_mut())
             .ok_or_else(|| LabError(format!("target '{target}': actions is not a table")))?;
-        // Rendered as a bare `[…actions]` header only when it carries a host;
-        // otherwise only the `[…actions.<name>]` tables appear.
-        acts.set_implicit(!acts.contains_key("host"));
+        // Rendered as a bare `[…actions]` header only when it carries a
+        // table-level key (host, doctor); otherwise only the
+        // `[…actions.<name>]` tables appear.
+        set_actions_implicit(acts);
         if !acts.contains_key(name) {
             if cmd.is_none() {
                 return lab_err(format!(
@@ -604,15 +709,58 @@ impl LabFile {
             .get_mut("actions")
             .and_then(|i| i.as_table_mut())
             .ok_or_else(|| LabError(format!("target '{target}': no actions channel")))?;
-        if name == "host" || acts.remove(name).is_none() {
+        if model::ACTIONS_TABLE_KEYS.contains(&name) || acts.remove(name).is_none() {
             return lab_err(format!("target '{target}': no action '{name}'"));
         }
-        if acts.iter().all(|(k, _)| k == "host") {
+        if acts
+            .iter()
+            .all(|(k, _)| model::ACTIONS_TABLE_KEYS.contains(&k))
+        {
             t.remove("actions");
         }
         Ok(())
     }
 
+    /// Turn a channel's opt-in helper doctor check (#304) on or off.
+    /// `kind` is `power`, `hid`, `usb`, or `actions` — the channels whose
+    /// hooks name a helper program. On writes `doctor = true`; off removes
+    /// the key, since off is the default.
+    pub fn set_doctor(&mut self, target: &str, kind: &str, on: bool) -> Result<(), LabError> {
+        if !DOCTOR_KINDS.contains(&kind) {
+            return lab_err(format!("the {kind} channel has no helper doctor check"));
+        }
+        let c = self
+            .target_mut(target)?
+            .get_mut(kind)
+            .ok_or_else(|| LabError(format!("target '{target}': no {kind} channel")))?
+            .as_table_mut()
+            .ok_or_else(|| not_a_standard_table(&format!("targets.{target}.{kind}")))?;
+        if on {
+            c.insert("doctor", value(true));
+        } else {
+            c.remove("doctor");
+        }
+        if kind == "actions" {
+            set_actions_implicit(c);
+        }
+        Ok(())
+    }
+}
+
+/// The channels that can opt in to a helper doctor check.
+pub const DOCTOR_KINDS: &[&str] = &["power", "hid", "usb", "actions"];
+
+/// An `actions` table renders as a bare `[…actions]` header only when it
+/// carries a table-level key; otherwise only its `[…actions.<name>]` tables
+/// appear.
+fn set_actions_implicit(acts: &mut Table) {
+    let has_own_key = model::ACTIONS_TABLE_KEYS
+        .iter()
+        .any(|k| acts.contains_key(k));
+    acts.set_implicit(!has_own_key);
+}
+
+impl LabFile {
     fn target_mut(&mut self, name: &str) -> Result<&mut Table, LabError> {
         let missing = || LabError(format!("no target '{name}'"));
         let targets = self
@@ -764,6 +912,166 @@ mod tests {
         assert!(model::load(&path).unwrap().targets["pi5"].actions.is_none());
     }
 
+    /// Power levels (#302): create beside the default hooks (keeping a hand
+    /// comment), update one hook without touching the others or the default
+    /// set, edit an inline level in place, refuse bad names and an empty new
+    /// level, and remove one level and then the last.
+    #[test]
+    fn power_levels_round_trip() {
+        let (_d, path) = tmp();
+        std::fs::write(
+            &path,
+            "[targets.pi5]\n\n[targets.pi5.power]\n# soft layer: the board MCU\n\
+             cycle_cmd = \"boardctl cycle\"\n\n\
+             [targets.pi5.power.levels]\npmic = { on_cmd = \"pmic on\" }\n",
+        )
+        .unwrap();
+        let mut lf = LabFile::load(&path).unwrap();
+        lf.set_power_level(
+            "pi5",
+            "hard",
+            Some("shellyplug -d 192.0.2.10 cycle"),
+            None,
+            None,
+            Some("shellyplug -d 192.0.2.10 state"),
+        )
+        .unwrap();
+        lf.set_power_level("pi5", "pmic", None, None, Some("pmic off"), None)
+            .unwrap();
+        lf.save().unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("# soft layer: the board MCU"), "{text}");
+        assert!(text.contains("[targets.pi5.power.levels.hard]"), "{text}");
+        assert!(
+            text.contains("pmic = { on_cmd = \"pmic on\", off_cmd = \"pmic off\" }"),
+            "{text}"
+        );
+        let lab = model::load(&path).unwrap();
+        let p = lab.targets["pi5"].power.as_ref().unwrap();
+        assert_eq!(p.cycle_cmd.as_deref(), Some("boardctl cycle"));
+        assert_eq!(
+            p.levels["hard"].state_cmd.as_deref(),
+            Some("shellyplug -d 192.0.2.10 state")
+        );
+
+        let mut lf = LabFile::load(&path).unwrap();
+        lf.set_power_level(
+            "pi5",
+            "hard",
+            None,
+            Some("shellyplug -d 192.0.2.10 on"),
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(lf
+            .set_power_level("pi5", "new", None, None, None, None)
+            .is_err());
+        assert!(lf
+            .set_power_level("pi5", "default", Some("x"), None, None, None)
+            .is_err());
+        assert!(lf
+            .set_power_level("pi5", "-x", Some("x"), None, None, None)
+            .is_err());
+        lf.save().unwrap();
+        let lab = model::load(&path).unwrap();
+        let hard = &lab.targets["pi5"].power.as_ref().unwrap().levels["hard"];
+        assert_eq!(
+            hard.cycle_cmd.as_deref(),
+            Some("shellyplug -d 192.0.2.10 cycle")
+        );
+        assert_eq!(hard.on_cmd.as_deref(), Some("shellyplug -d 192.0.2.10 on"));
+
+        let mut lf = LabFile::load(&path).unwrap();
+        lf.remove_power_level("pi5", "hard").unwrap();
+        assert!(lf.remove_power_level("pi5", "hard").is_err());
+        lf.remove_power_level("pi5", "pmic").unwrap();
+        lf.save().unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(!text.contains("levels"), "{text}");
+        assert!(text.contains("# soft layer: the board MCU"), "{text}");
+        let lab = model::load(&path).unwrap();
+        let p = lab.targets["pi5"].power.as_ref().unwrap();
+        assert!(p.levels.is_empty());
+        assert_eq!(p.cycle_cmd.as_deref(), Some("boardctl cycle"));
+
+        // A level on a target with no power channel creates the channel.
+        let mut lf = LabFile::load(&path).unwrap();
+        lf.add_target("nuc", None, None).unwrap();
+        lf.set_power_level("nuc", "hard", Some("x"), None, None, None)
+            .unwrap();
+        assert!(lf.remove_power_level("pi5", "nope").is_err());
+        lf.save().unwrap();
+        let lab = model::load(&path).unwrap();
+        let p = lab.targets["nuc"].power.as_ref().unwrap();
+        assert_eq!(p.cycle_cmd, None);
+        assert_eq!(p.levels["hard"].cycle_cmd.as_deref(), Some("x"));
+    }
+
+    /// The opt-in helper doctor flag (#304): on writes `doctor = true`, off
+    /// removes the key, hand comments survive, and `doctor` is reserved in
+    /// the actions table the same way `host` is.
+    #[test]
+    fn doctor_flag_round_trips_on_every_hook_channel() {
+        let (_d, path) = tmp();
+        std::fs::write(
+            &path,
+            "[targets.pi5]\n\n[targets.pi5.power]\n# plug on the bench\n\
+             cycle_cmd = \"shellyplug -d 192.0.2.10 cycle\"\n\n\
+             [targets.pi5.hid]\ncmd = \"ch9329 -d /dev/ttyUSB0\"\n\n\
+             [targets.pi5.usb]\ncmd = \"ch9329 -d /dev/ttyUSB0\"\n\n\
+             [targets.pi5.actions.reset]\ncmd = \"boardctl reset\"\n",
+        )
+        .unwrap();
+        let mut lf = LabFile::load(&path).unwrap();
+        for kind in DOCTOR_KINDS {
+            lf.set_doctor("pi5", kind, true).unwrap();
+        }
+        assert!(lf.set_doctor("pi5", "video", true).is_err());
+        assert!(lf.set_doctor("pi5", "adb", true).is_err());
+        lf.save().unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("# plug on the bench"), "{text}");
+        assert!(
+            text.contains("[targets.pi5.actions]\ndoctor = true"),
+            "{text}"
+        );
+        let lab = model::load(&path).unwrap();
+        let t = &lab.targets["pi5"];
+        assert!(t.power.as_ref().unwrap().doctor);
+        assert!(t.hid.as_ref().unwrap().doctor);
+        assert!(t.usb.as_ref().unwrap().doctor);
+        let acts = t.actions.as_ref().unwrap();
+        assert!(acts.doctor);
+        assert_eq!(acts.actions.keys().collect::<Vec<_>>(), ["reset"]);
+
+        let mut lf = LabFile::load(&path).unwrap();
+        assert!(lf
+            .set_action("pi5", "doctor", Some("x"), None, None, None)
+            .is_err());
+        assert!(lf.remove_action("pi5", "doctor").is_err());
+        for kind in DOCTOR_KINDS {
+            lf.set_doctor("pi5", kind, false).unwrap();
+        }
+        lf.save().unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(!text.contains("doctor"), "{text}");
+        // Off again: the actions table goes back to an implicit header.
+        assert!(!text.contains("[targets.pi5.actions]\n"), "{text}");
+
+        // The last action going takes a table that only says `doctor` with it.
+        let mut lf = LabFile::load(&path).unwrap();
+        lf.set_doctor("pi5", "actions", true).unwrap();
+        lf.remove_action("pi5", "reset").unwrap();
+        lf.save().unwrap();
+        assert!(model::load(&path).unwrap().targets["pi5"].actions.is_none());
+
+        // A channel that does not exist cannot be opted in.
+        let mut lf = LabFile::load(&path).unwrap();
+        assert!(lf.set_doctor("pi5", "actions", true).is_err());
+        assert!(lf.set_doctor("ghost", "power", true).is_err());
+    }
+
     #[test]
     fn build_round_trips() {
         let (_d, path) = tmp();
@@ -774,6 +1082,7 @@ mod tests {
             None,
             None,
             Some("~/.ssh/id"),
+            None,
             None,
             None,
         )
@@ -831,6 +1140,49 @@ mod tests {
         assert_eq!(t.serial[1].baud, 9600);
     }
 
+    /// `plugin_path` survives add → save → load, `host set` replaces it, and
+    /// an empty value removes the key rather than storing "".
+    #[test]
+    fn host_plugin_path_round_trips_and_clears() {
+        let (_d, path) = tmp();
+        let mut lf = LabFile::create(&path);
+        lf.add_host(
+            "bench1",
+            "u@bench1",
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some("/opt/lab-plugins"),
+        )
+        .unwrap();
+        lf.save().unwrap();
+        let lab = model::load(&path).unwrap();
+        assert_eq!(
+            lab.hosts["bench1"].plugin_path.as_deref(),
+            Some("/opt/lab-plugins")
+        );
+
+        let mut lf = LabFile::load(&path).unwrap();
+        let both = "/opt/lab-plugins:/srv/more";
+        lf.update_host("bench1", None, None, None, None, None, None, Some(both))
+            .unwrap();
+        lf.save().unwrap();
+        let lab = model::load(&path).unwrap();
+        assert_eq!(lab.hosts["bench1"].plugin_path.as_deref(), Some(both));
+
+        let mut lf = LabFile::load(&path).unwrap();
+        lf.update_host("bench1", None, None, None, None, None, None, Some(""))
+            .unwrap();
+        lf.save().unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(!text.contains("plugin_path"), "{text}");
+        assert!(model::load(&path).unwrap().hosts["bench1"]
+            .plugin_path
+            .is_none());
+    }
+
     #[test]
     fn comments_preserved_across_edit() {
         let (_d, path) = tmp();
@@ -840,8 +1192,17 @@ mod tests {
         )
         .unwrap();
         let mut lf = LabFile::load(&path).unwrap();
-        lf.update_host("bench1", None, None, None, Some("~/.ssh/id"), None, None)
-            .unwrap();
+        lf.update_host(
+            "bench1",
+            None,
+            None,
+            None,
+            Some("~/.ssh/id"),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
         lf.save().unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("# hand-written"), "{text}");
@@ -894,7 +1255,7 @@ mod tests {
     fn remove_host_blocked_while_referenced() {
         let (_d, path) = tmp();
         let mut lf = LabFile::create(&path);
-        lf.add_host("bench1", "u@b1", None, None, None, None, None)
+        lf.add_host("bench1", "u@b1", None, None, None, None, None, None)
             .unwrap();
         lf.add_target("fortune", Some("bench1"), None).unwrap();
         let e = lf.remove_host("bench1").unwrap_err();
@@ -1133,7 +1494,7 @@ mod tests {
         std::fs::write(&path, "hosts = { b1 = { ssh = \"u@b1\" } }\n").unwrap();
         let mut lf = LabFile::load(&path).unwrap();
         let e = lf
-            .add_host("b2", "u@b2", None, None, None, None, None)
+            .add_host("b2", "u@b2", None, None, None, None, None, None)
             .unwrap_err();
         assert!(e.0.contains("`hosts` is not a standard table"), "{}", e.0);
         assert!(e.0.contains("[hosts]"), "{}", e.0);
@@ -1175,7 +1536,7 @@ mod tests {
         let mut lf = LabFile::create(&path);
         for bad in ["", ".", "..", "-x", "a b", "a/b"] {
             let e = lf
-                .add_host(bad, "u@b", None, None, None, None, None)
+                .add_host(bad, "u@b", None, None, None, None, None, None)
                 .unwrap_err();
             assert!(e.0.starts_with("invalid host name"), "{bad:?}: {}", e.0);
             let e = lf.add_target(bad, None, None).unwrap_err();
@@ -1229,7 +1590,7 @@ mod tests {
     fn set_netboot_refuses_a_second_link_in_the_first_links_slash_24() {
         let (_d, path) = tmp();
         let mut lf = LabFile::create(&path);
-        lf.add_host("bench1", "u@bench1", None, None, None, None, None)
+        lf.add_host("bench1", "u@bench1", None, None, None, None, None, None)
             .unwrap();
         for t in ["a", "b", "c"] {
             lf.add_target(t, Some("bench1"), None).unwrap();

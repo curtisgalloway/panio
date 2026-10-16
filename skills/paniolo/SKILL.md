@@ -121,6 +121,14 @@ interface; `-t` alone when the target has one host), and
 `paniolo helper --host <labhost> zigplug -d <dev> list` names a host
 directly. Prefer these over `ssh <host> paniolo helper …`.
 
+A lab can add its own helpers and skills through **plugin roots**: prefixes in
+`PANIOLO_PLUGIN_PATH` (`:`-separated; a control host gets its lab
+`plugin_path`) holding `libexec/paniolo/bin/<helper>` and
+`share/paniolo/skills/<name>/SKILL.md`. In `paniolo helper` and `paniolo
+skill` output a plugin entry reads `<name><TAB>plugin: <root>`; take the
+first field as the name. Hooks can name a plugin helper bare. A plugin never
+replaces a bundled helper or skill of the same name.
+
 ## Bounded fresh serial acquisition
 
 Use `paniolo serial wait <target> [-i console] --epoch E --since N` (MCP:
@@ -198,6 +206,7 @@ paniolo target add <name> [--host <labhost>] [--description <text>]
 paniolo netboot set -t <name> --interface <iface> [--tftp-root <dir>] [--host-ip <ip>] [--boot-file grubaa64.efi] [--http-port 80] [--content-type <mime>]
 paniolo serial add console -t <name> --device <path> [--baud 115200] [--sense cts] [--power-button] [--port N]
 paniolo power set -t <name> [--cycle-cmd C] [--on-cmd C] [--off-cmd C] [--state-cmd C] [--serial-interface console]
+paniolo power set -t <name> --level hard [--cycle-cmd C] [--on-cmd C] [--off-cmd C] [--state-cmd C]   # a named power level
 paniolo video set -t <name> --device "<capture id or name>" [--ocr-mode text|gui] [--change-threshold N] [--port N]
 paniolo hid set -t <name> --cmd "hidrig -d <uart>" [--port N]   # USB HID injection helper
 paniolo usb set -t <name> --cmd "ch9329 -d <uart>"   # switchable USB media (KVM-Go microSD)
@@ -251,6 +260,16 @@ channel to a remote control host (see the lab section below).
   exist, netboot interfaces hold the address they are configured for, over SSH
   for remote hosts); `doctor [target]` checks one target,
   `doctor --host <name>` only channels on that host.
+- A power, hid, usb, or actions channel set with `--doctor` (`power set -t
+  <name> --doctor`, likewise `hid set`, `usb set`, `action set`; `--no-doctor`
+  turns it off) also has `doctor` run the helper's own read-only check,
+  `<program> <transport options> doctor --json`. Its results appear under the
+  channel as `power doctor: <check>` lines (on a power channel it covers every
+  named level too; with more than one run each line says which, e.g.
+  `power doctor (level hard): <check>`): `FAIL` is a problem (exit 1),
+  `warn` and `no-check` (the helper has no doctor check) are not. Of the
+  bundled helpers only `shellyplug` implements it. A doctor `FAIL` on a channel
+  that still works is still a hint, not ground truth (see the gotchas).
 
 ## Netboot (DHCP + TFTP + HTTP)
 
@@ -448,6 +467,8 @@ paniolo serial watch [target]                  # run the daemon for ALL interfac
                                                #   they appear in the dashboard pane
 paniolo serial send [target] "text"            # send one line of input through
                                                #   the running daemon (see below)
+paniolo serial transact -t <target> [-i name] --until 'OK' -- "cmd"
+                                               # send + wait for the reply, locked
 paniolo serial log [target] [-i name] [options] # print captured output (timestamped)
 paniolo serial evidence [target] [-i name] [--epoch E] [--since N] [--max-bytes N]
 paniolo serial show [target]                   # list interfaces + daemon status
@@ -461,8 +482,9 @@ paniolo serial reset [target] [-i name]        # soft reset via brief DTR pulse
 optional positional (omit it when the lab has one target); channel-config
 commands (`add`/`set`/`rm`) take `-t`. `serial send`/`serial log` accept
 `-t` too — `serial send` reads two positionals as `<target> <text>`, one as
-just the text. The `-t`-only runtime commands are `hid send`, `adb run`, and
-`adb input`, whose positional tails belong to the helper / to `adb`.
+just the text. The `-t`-only runtime commands are `hid send`, `adb run`,
+`adb input` and `serial transact`, whose positional tails belong to the
+helper / to `adb` / are the text to send.
 
 The interface name is a required positional on `add`/`set`/`rm` (`console` is
 just the conventional name for the main one). With
@@ -533,6 +555,30 @@ paniolo serial send --pace-ms 8 "long command"       # per-byte pacing for slow
 Note the input only reaches the target if its console actually reads the UART
 (a kernel with a broken serial driver logs output but ignores input).
 
+### Command and reply in one call (`serial transact`)
+
+For a request/response console (U-Boot prompt, debug monitor, AT port, EC
+console), `serial transact` (MCP: `serial_transact`) sends one command and
+waits for its reply under the interface's transaction lock:
+
+```
+paniolo serial transact -t <target> -i console --until '=> ' -- "printenv bootcmd"
+paniolo serial transact -t <target> --until 'OK' --timeout-ms 5000 -- "AT"
+```
+
+- It records the receive boundary **before** sending, so the reply holds only
+  bytes received after the send; a stale prompt cannot match.
+- Output is the `serial wait` result JSON (`status`, `records`, `pending`, …)
+  plus `sent_bytes`; exit 0 for any status. Read `status`: `matched` means the
+  `--until` bytes arrived, not that the command succeeded. `timeout`/`cap`
+  keep what arrived. Nothing is retried; never re-send blindly.
+- `--timeout-ms` (default 30000) covers queueing behind another transaction
+  too; a transaction that never gets the lock fails *interface busy* and sends
+  nothing. A CR is appended unless `--no-newline`; `--pace-ms` as for `send`.
+- While a transaction runs, `serial send` fails (409, nothing sent) and
+  dashboard keystrokes are dropped with an `input refused` marker. Retry the
+  send after the transaction ends; don't loop on it.
+
 ## adb (Android targets)
 
 When the target is an Android device, the `adb` channel gives you console,
@@ -566,10 +612,10 @@ paniolo adb input -t <target> <args...>  # adb shell input: keyevent/text/tap/sw
 ## Power control
 
 ```
-paniolo power on  [target]             # run on_cmd hook (error with hint if unset)
-paniolo power off [target]             # run off_cmd hook (error with hint if unset)
-paniolo power-cycle [target]           # run cycle_cmd hook
-paniolo power-state [target]           # state_cmd stdout ("on"/"off") or serial sense-line
+paniolo power on  [target] [--level L] # run on_cmd hook (error with hint if unset)
+paniolo power off [target] [--level L] # run off_cmd hook (error with hint if unset)
+paniolo power-cycle [target] [--level L]  # run cycle_cmd hook
+paniolo power-state [target] [--level L]  # state_cmd stdout ("on"/"off") or serial sense-line
 paniolo serial dtr [target] [--ms N]   # pulse DTR line on J2 header (opt-in; see below)
 paniolo serial reset [target]          # soft reset via brief DTR pulse (opt-in)
 ```
@@ -585,6 +631,26 @@ paniolo power set -t <name> \
 All four hooks are optional and run via `sh -c`. `power-state` uses `state_cmd`
 if set (first whitespace token of stdout must be `on` or `off`); falls back to
 the serial sense-line otherwise.
+
+**Power levels (soft vs hard).** A target with more than one power layer (a
+board MCU or PMIC switch, and a mains/DC cut behind it) may define named
+levels beside the default hooks: `[targets.<t>.power.levels.hard]`, set with
+`paniolo power set -t <t> --level hard …`, removed with `paniolo power rm -t
+<t> --level hard`. `target show` lists them (`levels=hard`).
+
+- No `--level` = the default hooks, exactly as before. `--level default` says
+  the same thing explicitly.
+- A level never falls back to the default hooks: a level without the verb's
+  hook exits 3 (`not_configured`) naming the level. Do not retry without
+  `--level` to "make it work"; that runs a different layer.
+- Escalate in order: try the default `power-cycle` first; reach for `--level
+  hard` when the target stays wedged after it (a back-powered board, a hung
+  board-control MCU).
+- `power-state` without `--level` prints one line per level when there are
+  levels, default first (`Power ON  (pi5)`, `Power OFF  (pi5, level hard)`,
+  `Power UNKNOWN  (pi5, level pmic: no state_cmd)`).
+- The dashboard's power controls and an action's `requires_power` check use
+  the default level only.
 
 **"Reboot over serial" ≠ DTR reset — pick the right one.** Two unrelated things
 share the word "serial/reset":
@@ -800,7 +866,8 @@ If your harness has a `paniolo` MCP server configured (`paniolo mcp`), its
 tools are the runtime verbs above: `target_list`, `video_shot`, `video_read`,
 `serial_log`, `serial_send`, `hid_send` (`command` is an array of words, e.g.
 `["key", "ENTER"]`), `action_list`, `action_run`, `power_state`, `power_on`,
-`power_off`, `power_cycle`.
+`power_off`, `power_cycle` (the power tools take an optional `level`, as
+`--level`).
 `video_shot` returns the screen as an image plus `signal=…  hash=…`; pass the
 hash back as `changed_since` to wait for a change, as with `video shot
 --changed-since`. Configuration (`set`, `add`, `watch`) is still the CLI. A
@@ -826,6 +893,8 @@ ssh = "user@bench1.local"     # ssh destination — how others reach it ("local"
 #                                  (avoids "Too many authentication failures")
 # paniolo_cmd = "~/.local/bin/paniolo"  # if paniolo isn't on the
 #                                  host's non-interactive ssh PATH
+# plugin_path = "/opt/lab-plugins"  # plugin roots on bench1, passed on every
+#                                  dispatch there (`host set --plugin-path`)
 
 [targets.fortune]
 host = "bench1"
@@ -958,6 +1027,8 @@ the device is free just because a daemon is gone from the tracked list.
 - `doctor` flags a channel that still works? Believe the working channel and
   report the discrepancy — never rewrite the lab config to silence `doctor`.
 - Serial port is exclusive: one of `connect` / `watch` / external `tio`/`screen`.
+- `serial send` failing with *interface busy* (409) means a `serial transact`
+  holds the console; nothing was sent. Wait for it, then send again.
 - A JetKVM's screen arrives as `--device rfb+hid:` on the video channel; the
   `jetkvm` daemon decodes it with `ffmpeg` (must be installed). Video and `hid`
   share the daemon's one session, so they do not evict each other, but a

@@ -360,7 +360,7 @@ Current capabilities:
 - USB HID input (keyboard/mouse injection) via a generic helper hook (`paniolo hid send`); the `hidrig` helper drives the dual-board KB2040 injector — it composes HID reports in Rust and writes binary frames to the control board's USB-CDC endpoint, which relays them over I2C1 to the target board (the "dumb pipe", docs/dev/hid-dual-board-design.md; command vocabulary in docs/dev/hid-serial-protocol.md). `hidrig serve` runs a daemon that owns the control link and re-exposes the command vocabulary over a WebSocket, so `paniolo console` works as a **KVM** — stream the browser's keyboard + absolute mouse (`moveabs`) to the target, intermixed with CLI injection on the one wire. The same control board can also **bridge the DUT serial console** (its hardware UART, re-exported by the daemon as a PTY into the `serial` channel) and **switch DUT power** via a relay (`hidrig power off|on|cycle`), so one USB device backs the target's HID, console, and power (design §6–§7; the relay/power path is hardware-verified, incl. NVM state persistence across a control-board reset — the console bridge is not yet)
 - Named target actions (`paniolo action list|run|set|rm`, #299): a per-target `actions` table of opaque hook commands for controls that are not power (reset lines, boot straps, recovery modes), each with a `description` and an optional `requires_power = "on"|"off"` checked against `power-state` (read wherever the power channel lives) before running. Same contract as the power hooks, plus a **per-target hook lock** (`actions.rs`, a lock file under `<runtime>/hooks/<target>/`) shared by action and power hooks, since both often drive one exclusive device; the holder exports `PANIOLO_HOOK_LOCK=<target>` so a nested paniolo call for that target skips it. No extra arguments and no fixed verbs: paniolo stays a dispatcher. MCP `action_list`/`action_run`. Guide: docs/actions.md
 - Switchable USB media via a generic per-target `usb` channel (`paniolo usb attach-host|attach-target|state`): one physical USB device routed to the control host or the target, never both. Supported today on the **Openterface KVM-Go**, whose onboard microSD reader sits behind an FSUSB42 mux driven by the same CH32V208 (and the same serial port) as its `hid` channel — so the `ch9329` helper backs both, and the two channels normally carry the same `--cmd`. The point is hands-free *physical* boot media, which firmware can see and streamed virtual media generally cannot. Like the power hooks the helper is opaque, but the vocabulary is **fixed** rather than passed through: paniolo appends `usb host`, `usb target`, or `usb state`, keeping the surface a constrained remote host must expose to three verbs. Guide: docs/usb.md; clean-room protocol: notes/openterface-usb-mux-spec.md. The Mini-KVM's switchable USB-A port uses a different mechanism (a register write over the capture chip's HID config interface) that is documented but not yet implemented by any helper
-- Power control via DTR (J2 wiring; **opt-in per serial interface** via `power_button = true` — `serial dtr`/`reset` refuse interfaces that haven't declared it) or generic shell-command hooks (`on_cmd`, `off_cmd`, `cycle_cmd`, `state_cmd`): `paniolo serial dtr`, `paniolo power on/off`, `paniolo power-cycle`, `paniolo power-state`. Note: "reboot over the serial console" means `serial send <t> "reboot"` (software), *not* the DTR `serial reset` (hardware). Helpers that wire into the hooks: `cambrionix` (Cambrionix hub port power via control UART), `zigplug` (Zigbee smart plugs via a CC2652 coordinator dongle), `shellyplug` (Shelly Gen2+ smart plugs/relays over the device's local HTTP RPC API — no cloud/HA/Matter), and `amt` (Intel AMT/vPro machines over WS-Management on port 16992 with HTTP Digest auth — per-target power with no plug hardware, plus true power-state readback from the ME; password via `AMT_PASSWORD`, `--password-file` or `--password-command`, never in the lab file). The dual-board `hidrig` control board can also drive a DUT power relay (`hidrig power off|on|cycle`) as a power-helper backend, consolidating HID + console + power on one USB device
+- Power control via DTR (J2 wiring; **opt-in per serial interface** via `power_button = true` — `serial dtr`/`reset` refuse interfaces that haven't declared it) or generic shell-command hooks (`on_cmd`, `off_cmd`, `cycle_cmd`, `state_cmd`): `paniolo serial dtr`, `paniolo power on/off`, `paniolo power-cycle`, `paniolo power-state`. **Named power levels** (#302, `[targets.T.power.levels.<name>]`, `model::PowerLevel`) add further hook sets beside the default one for targets with several power layers (a `soft` MCU/PMIC switch, a `hard` mains cut); `--level NAME` on `power on/off`, `power-cycle` and `power-state` (and `power set`/`power rm` to edit them) picks one, no `--level` (or `--level default`, hence the reserved name) is the default hooks, and a level lacking the verb's hook is `not_configured` naming the level, never a fallback. Level hooks run through the same `run_power_hook`/`read_state_cmd` and so take the per-target hook lock; levels ride the dispatch slice with the power channel; `power-state` without `--level` prints one line per level, default first (hdmicap's dashboard reads only that first line, and `requires_power` asks for `--level default`); MCP power tools take `level`; `doctor` probes each level. Guide: docs/power.md#power-levels-soft-and-hard. Note: "reboot over the serial console" means `serial send <t> "reboot"` (software), *not* the DTR `serial reset` (hardware). Helpers that wire into the hooks: `cambrionix` (Cambrionix hub port power via control UART), `zigplug` (Zigbee smart plugs via a CC2652 coordinator dongle), `shellyplug` (Shelly Gen2+ smart plugs/relays over the device's local HTTP RPC API — no cloud/HA/Matter), and `amt` (Intel AMT/vPro machines over WS-Management on port 16992 with HTTP Digest auth — per-target power with no plug hardware, plus true power-state readback from the ME; password via `AMT_PASSWORD`, `--password-file` or `--password-command`, never in the lab file). The dual-board `hidrig` control board can also drive a DUT power relay (`hidrig power off|on|cycle`) as a power-helper backend, consolidating HID + console + power on one USB device
 
 ## Architecture
 
@@ -434,6 +434,24 @@ Python tree below:
   `helper` reads no lab). A channel the target lacks is refused rather than
   falling back to the default host (#300). Listing helpers and reading
   bundled helper help do not open hardware or start a daemon.
+- **Plugin roots** (`PANIOLO_PLUGIN_PATH`, #303): a PATH-syntax list of
+  install prefixes (`std::env::split_paths`; empty entries skipped, relative
+  ones ignored with a one-time stderr warning — `daemons::parse_plugin_path`).
+  Each adds `<root>/libexec/paniolo/bin` (`daemons::plugin_helper_dirs`) and
+  `<root>/share/paniolo/skills`, searched **after** every bundled dir
+  (`daemons::all_helper_dirs`, `skills::search_path`), so a plugin adds but
+  never shadows a bundled helper or skill (#206's guarantee; no opt-in to
+  shadow). `find_binary` and `hook_path` include them; stray detection
+  (`list_stray_helpers`) deliberately does not. `paniolo helper`/`skill`
+  lists print a plugin entry as `<name>\tplugin: <root>` (name stays the
+  first field). The top-level `--plugin-path` flag (before the subcommand,
+  not `global`: it would collide with `host add/set --plugin-path`) sets the
+  variable in `main()` before anything runs; a host's lab `plugin_path`
+  rides on every re-exec there as `--plugin-path=<v>`
+  (`Host::paniolo_argv`), an argument so it crosses interactive dispatch and
+  a Windows host. `doctor` prints a `plugins` line per root (local env, and
+  each remote host's lab field) and its remote hook probes add the plugin
+  dirs (`doctor::hook_path_prefix`).
 - **Bundled skills are self-describing**: the agent skills under `skills/`
   (`paniolo`, `kvm-puppeting`, `control-host`) install to
   `~/.local/share/paniolo/skills` (and `/usr/share/paniolo/skills` for the
@@ -563,14 +581,18 @@ cli/src/
   ssh.rs        SSH transport: ControlMaster run/passthrough/interactive, forward
                 (tunnels); FORWARDED_ENV + stdin_prelude carry an allowlisted var
                 (AMT_PASSWORD) to a non-interactive remote command over its stdin
-  daemons.rs    shared daemon contract: find_binary (libexec → PATH →
-                legacy ~/.cargo/bin), hook_path, daemon.json discovery
+  daemons.rs    shared daemon contract: find_binary (libexec → plugin
+                roots → PATH → legacy ~/.cargo/bin), PANIOLO_PLUGIN_PATH
+                parsing + helper_entries (the `paniolo helper` list with each
+                entry's plugin root), hook_path, daemon.json discovery
                 (Endpoint = port + token; get/post attach the bearer header,
                 http_url/ws_url carry it as ?token= for a browser), wait
   serial.rs     bounded `serial wait` forwards a receive boundary/deadline/raw
                 and total-output caps to serialcap without opening devices;
                 MCP serial_wait maps the same read-only surface.
                 serialcap orchestration + tio exec + /input + device listing
+                + `serial transact` (POST /transact, MCP serial_transact, a
+                write tool; -t only, the positional is the text)
                 + read-only health_snapshot (`serial status`, MCP serial_status)
                  + offline read_evidence (`serial evidence`, MCP serial_evidence)
   video.rs      hdmicap orchestration (daemon start/stop, client passthrough)
@@ -583,7 +605,23 @@ cli/src/
   state.rs      netboot state files (JSON-compatible with the Python's)
   doctor.rs     config-vs-reality probing (local + over SSH), including
                 required netboot tftp_root and whether an interface holds
-                its configured host_ip
+                its configured host_ip; and the opt-in helper doctor check
+                (#304): a power/hid/usb/actions channel with `doctor = true`
+                (`--doctor` on its `set` verb) runs `<program> <transport
+                options> doctor --json` (doctor_command_for_hook keeps the
+                hook up to its verb: VAR= prefixes, program, option words
+                with their values; doctor_command_for_prefix keeps a hid/usb
+                cmd whole; both refuse a shell operator before the verb), as
+                `Probe::HelperDoctor` (local: platform shell in its own
+                process group, killed at 10 s; remote: a POSIX watchdog
+                script, exit 124 = timed out). interpret_helper_doctor reads
+                `{"checks":[{name,status ok|warn|fail,detail}]}`; a non-zero
+                exit without a report is `no-check` (not a problem), exit 0
+                without one is a contract `FAIL`. Checks print under the
+                channel (`power doctor: <name>`); only FAIL counts. On power,
+                `doctor = true` also covers every named level (#302), deduped
+                by derived command; several runs are labeled by source
+                (`power doctor (level hard): <name>`)
   discover.rs   hardware inventory + the configure proposal block
   setup.rs      installer: paniolo CLI onto PATH (~/.cargo/bin); helpers into
                 the private libexec dir (~/.local/libexec/paniolo/bin) via
@@ -593,8 +631,10 @@ cli/src/
   skills.rs     `paniolo skill`: discover + read the bundled agent skills
                 (skills_dirs: repo checkout → ~/.local/share → CLI-relative
                 share → /usr/share/paniolo/skills, like daemons.rs helper_dirs
-                but under share/), list with frontmatter descriptions, print
-                one SKILL.md (or --path), install_bundled() for setup.rs
+                but under share/; then each plugin root's share/paniolo/skills
+                via search_path), list with frontmatter descriptions (plugin
+                entries annotated with their root), print one SKILL.md (or
+                --path), install_bundled() for setup.rs
   actions.rs    named target actions (#299): find, run_hook, the
                 requires_power refusal, and the per-target hook lock
                 (std File::try_lock, 120 s wait) that power hooks take too
@@ -774,7 +814,12 @@ shellyplug/      Rust crate: standalone helper for Shelly Gen2+ smart plugs/
                  API (Switch.Set/GetStatus; ureq). One-shot, stateless — no
                  daemon. Addressed by `-d <ip|host>` and `[id]` switch (default
                  0). Commands: `status [id]`, `state [id]`, `on/off [id]`,
-                 `cycle [id]`; `on/off/cycle` confirm by read-back. Gen2+ only
+                 `cycle [id]`; `on/off/cycle` confirm by read-back. `doctor
+                 [id] [--json]` is the reference helper doctor check (#304):
+                 read-only (GetDeviceInfo, Shelly.GetStatus or
+                 Switch.GetStatus, never Switch.Set), checks reachable/auth/
+                 switch, `--json` exits 0; tests drive the real client against
+                 a loopback HTTP stub. Gen2+ only
                  (no Gen1 REST); auth-disabled devices only for now. NB: first
                  helper to reach a LAN device, so first to hit the macOS
                  Local Network privacy gate — see docs/power.md gotchas.
@@ -879,6 +924,19 @@ serialcap/       Rust crate: serial console daemon (parallels hdmicap)
                  chunks, literal patterns, explicit incomplete outcomes, NDJSON
                  completed rows and optional final pending. Output budget includes
                  every follow event and final JSON; no input/reset/restart.
+    transact.rs  POST /transact (#301): take the interface's transaction lock
+                 (SerialHandle::transaction, a fair tokio RwLock held for write),
+                 read the receive boundary (epoch + last_rx_seq) BEFORE writing,
+                 write, then run wait::run in-process (journal reader + in-process
+                 health) with the remaining deadline; result = the wait JSON +
+                 sent_bytes. Runs as a spawned task so a client hang-up cannot
+                 release the lock before the reply window closes. timeout_ms
+                 bounds queue + write + wait; queued past it = 409, nothing sent.
+                 Plain input takes the lock shared with try_input(): /input
+                 answers 409 and a /stream keystroke is dropped with an in-band
+                 "input refused" marker to that client, whenever a transaction
+                 holds or is queued for the interface (refused, never queued —
+                 the maintainer's call, so input can't land in the next reply)
     capture.rs   line assembler: splits bytes into timestamped, sequence-numbered
                  lines; appends them to a rotating on-disk JSONL log under
                  capture/<name>/ (survives restarts; resumes the seq counter);
@@ -899,7 +957,8 @@ serialcap/       Rust crate: serial console daemon (parallels hdmicap)
     server.rs    axum: GET /stream (bidirectional WebSocket, 64 KiB messages),
                  /status, /interfaces, /devices; POST /button (DTR pulse),
                  /input (write bytes to port, 64 KiB body cap; ?pace_ms=N drips
-                 one byte per N ms for a slow polled console, capped at 10 000).
+                 one byte per N ms for a slow polled console, capped at 10 000;
+                 409 during a transaction), /transact (transact.rs).
                  Per-interface endpoints take ?interface=NAME, defaulting to the
                  first configured interface. A `/stream` client that falls behind
                  the broadcast channel (RecvError::Lagged) gets an in-band marker
@@ -1230,8 +1289,10 @@ width) layouts. The choice is persisted in `localStorage` under the key
 reflecting live state) plus a separate **⟳ Cycle** button appear in the video
 overlay, each gated by a confirmation modal. Availability + state come from
 **`GET /power`** — non-acting: it runs `paniolo power-state <target>` and returns
-`on`/`off`/`unknown`, and the dashboard polls it every 5 s to keep the toggle
-synced. The actions are **`POST /power-on` | `/power-off` | `/power-cycle`** →
+`on`/`off`/`unknown` from the output's *first line* (`power_state_verdict`; with
+named power levels that is the default level's line), and the dashboard polls it
+every 5 s to keep the toggle synced. The controls drive the default power level
+only. The actions are **`POST /power-on` | `/power-off` | `/power-cycle`** →
 `paniolo power on|off` / `power-cycle <target>`. All use the `PANIOLO_TARGET` env
 var set when the daemon starts via `paniolo video watch <target>`; the controls
 are hidden (501) if no target was passed, so shared dashboards are safe.
@@ -1548,6 +1609,7 @@ Daemon stderr logs and serialcap's capture files are created 0600.
 |---|---|
 | Lab file (all config) | `~/.config/paniolo/lab.toml` (or `--lab`/`PANIOLO_LAB`) |
 | Helper durable state | `~/.config/paniolo/helpers/<name>/` (`PANIOLO_STATE_DIR`) |
+| Plugin helpers / skills | `<root>/libexec/paniolo/bin/`, `<root>/share/paniolo/skills/` for each root in `PANIOLO_PLUGIN_PATH` (or `--plugin-path`), searched after the bundled dirs |
 | Netboot daemon state | `~/.local/share/paniolo/<name>/netboot.json` |
 | Combined netboot log | `~/.local/share/paniolo/<name>/netboot.log` |
 | hdmicap discovery file | `/tmp/paniolo-<uid>/hdmicap/<target>/daemon.json` (`{pid, port, token}`; owner-only) |
@@ -1807,10 +1869,13 @@ Two bugs were found by writing exactly those tests, one of them serious:
   `cmd` are user-written strings that need a shell; `platform::shell_command`
   now supplies `sh` on Unix and `cmd.exe` on Windows.
 
-`doctor` no longer needs a shell locally at all. Probes are a `Probe` enum with
-two views — `run_local()` executes natively, `to_posix()` renders the POSIX
-script still used for the SSH hop to a Unix control host — so the local path
-and the remote path cannot drift apart silently.
+`doctor` no longer needs a shell locally for its own probes. Probes are a
+`Probe` enum with two views — `run_local()` executes natively, `to_posix()`
+renders the POSIX script still used for the SSH hop to a Unix control host —
+so the local path and the remote path cannot drift apart silently. The one
+exception is `Probe::HelperDoctor` (a channel's opt-in helper doctor check):
+it runs a lab-file command, so locally it goes through
+`platform::shell_command` exactly as the hook itself would.
 
 ### Windows packaging
 

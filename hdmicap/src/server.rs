@@ -1028,15 +1028,8 @@ async fn power_state() -> Response {
     };
     match wait_with_timeout(child, POWER_TIMEOUT).await {
         Ok(o) if o.status.success() => {
-            // `power-state` prints a human line like "Power ON  (pi5)"; pull the
-            // on/off token out of it (case-insensitive, position-independent).
             let out = String::from_utf8_lossy(&o.stdout);
-            let state = out
-                .split_whitespace()
-                .map(|t| t.to_ascii_lowercase())
-                .find(|t| t == "on" || t == "off")
-                .unwrap_or_else(|| "unknown".to_string());
-            (StatusCode::OK, state).into_response()
+            (StatusCode::OK, power_state_verdict(&out)).into_response()
         }
         Ok(_) => (StatusCode::OK, "unknown").into_response(),
         Err(WaitError::TimedOut) => (
@@ -1089,9 +1082,44 @@ fn signal_name(s: Signal) -> &'static str {
 #[allow(unused_imports)]
 use watch as _watch;
 
+/// The dashboard's verdict from `paniolo power-state` output: `on`, `off` or
+/// `unknown`. It prints a human line like "Power ON  (pi5)"; the on/off token
+/// is pulled out of the *first* line only (case-insensitive,
+/// position-independent). A target with named power levels gets one line per
+/// level with the default level first, and the dashboard's controls drive
+/// the default level, so a later level's line must not answer for it.
+fn power_state_verdict(out: &str) -> &'static str {
+    let first = out.lines().next().unwrap_or("");
+    first
+        .split_whitespace()
+        .find_map(|t| match t.to_ascii_lowercase().as_str() {
+            "on" => Some("on"),
+            "off" => Some("off"),
+            _ => None,
+        })
+        .unwrap_or("unknown")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn power_state_verdict_reads_the_default_level_line_only() {
+        assert_eq!(power_state_verdict("Power ON  (pi5)\n"), "on");
+        assert_eq!(power_state_verdict("Power OFF  (pi5)\n"), "off");
+        assert_eq!(
+            power_state_verdict("Power OFF  (pi5)\nPower ON  (pi5, level hard)\n"),
+            "off"
+        );
+        assert_eq!(
+            power_state_verdict(
+                "Power UNKNOWN  (pi5: no state_cmd)\nPower ON  (pi5, level hard)\n"
+            ),
+            "unknown"
+        );
+        assert_eq!(power_state_verdict(""), "unknown");
+    }
     use crate::frame::STALE_AFTER;
     use axum::http::Request as HttpRequest;
     use futures_util::StreamExt;
