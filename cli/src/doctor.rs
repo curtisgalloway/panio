@@ -1671,8 +1671,8 @@ mod tests {
     /// because `netif::iface_addresses` parses `ip -4 -o addr show` on Linux
     /// and `ifconfig` on macOS, two entirely different parsers. Asserting on
     /// the script text alone is how `doctor` once shipped depending on a
-    /// binary that does not exist on Windows (AGENTS.md, "Testing the platform
-    /// split"). Loopback is the one interface both platforms always have, with
+    /// binary that does not exist on Windows (docs/dev/platform-support.md,
+    /// "Testing the platform split"). Loopback is the one interface both platforms always have, with
     /// an address known in advance.
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]

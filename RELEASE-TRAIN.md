@@ -123,7 +123,7 @@ enough.
 - install like a user: `Expand-Archive` into a fresh temp dir; a new `pwsh` with that dir's `paniolo\` prepended to `PATH` and `USERPROFILE`, `APPDATA`, `LOCALAPPDATA` pointed at a fresh temp dir
 - smoke: S1..S6 (S7 n/a); S6 is `libexec\winocr.exe --json <tiny png>`
 - cleanup: nothing to undo; the zip and install dir stay under the host's build-logs dir
-- caveats: signing is skipped locally (no Azure vars) so the exes are unsigned; netboot and OCR-in-paniolo are known-unsupported on Windows per AGENTS.md "Platform support"; the bench host sleeps when idle, so the local file's liveness probe and wake step come first. Fallback when the host is unreachable: `gh workflow run release.yml --ref <release branch>`, download `packages-windows-x86_64`, inspect the layout, report PARTIAL (never dispatch in a dry run)
+- caveats: signing is skipped locally (no Azure vars) so the exes are unsigned; netboot and OCR-in-paniolo are known-unsupported on Windows per docs/dev/platform-support.md; the bench host sleeps when idle, so the local file's liveness probe and wake step come first. Fallback when the host is unreachable: `gh workflow run release.yml --ref <release branch>`, download `packages-windows-x86_64`, inspect the layout, report PARTIAL (never dispatch in a dry run)
 
 ### source
 
