@@ -540,11 +540,12 @@ async fn handle_rrq(
 /// No `SO_REUSEADDR`: UDP has no TIME_WAIT to wait out on restart, and on
 /// Linux it would let a second netbootd bind the same port on the same
 /// interface and silently take some of the requests. Without it a duplicate
-/// fails here with EADDRINUSE. (A macOS duplicate wildcard bind would need
-/// `SO_REUSEPORT` either way.)
-pub fn bind_server(port: u16, interface: &str) -> Result<UdpSocket> {
+/// fails here with EADDRINUSE. macOS uses `SO_REUSEPORT` with
+/// a daemon-lifetime interface lock; see [`crate::pin::ListenerInterface`].
+pub fn bind_server(port: u16, link: &crate::pin::ListenerInterface) -> Result<UdpSocket> {
+    let interface = link.name();
     let sock = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
-    pin_socket_to_interface(&sock, interface)
+    link.pin_listener(&sock)
         .with_context(|| format!("pin TFTP socket to interface {interface}"))?;
     let addr: SocketAddr = format!("0.0.0.0:{port}").parse().unwrap();
     sock.bind(&addr.into()).with_context(|| {

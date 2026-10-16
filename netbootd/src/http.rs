@@ -53,7 +53,6 @@ use tokio::sync::Semaphore;
 use tokio::time::timeout;
 use tracing::{info, warn};
 
-use crate::pin::pin_socket_to_interface;
 use crate::served::{loggable, resolve};
 
 const DEFAULT_CONTENT_TYPE: &str = "application/octet-stream";
@@ -83,11 +82,13 @@ const BACKLOG: i32 = 128;
 /// `SO_REUSEADDR` stays on for this TCP listener: after a restart the previous
 /// instance's connections may still sit in TIME_WAIT on this port, and without
 /// it `bind` fails with EADDRINUSE for up to 2×MSL. It does not let a second
-/// live listener share the port (that would need `SO_REUSEPORT`).
-pub fn bind_server(port: u16, interface: &str) -> Result<TcpListener> {
+/// live listener share the port on Linux. macOS additionally uses
+/// `SO_REUSEPORT` under a daemon-lifetime interface lock.
+pub fn bind_server(port: u16, link: &crate::pin::ListenerInterface) -> Result<TcpListener> {
+    let interface = link.name();
     let sock = Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP))?;
     sock.set_reuse_address(true)?;
-    pin_socket_to_interface(&sock, interface)
+    link.pin_listener(&sock)
         .with_context(|| format!("pin HTTP socket to interface {interface}"))?;
     let addr = SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), port);
     sock.bind(&addr.into()).with_context(|| {

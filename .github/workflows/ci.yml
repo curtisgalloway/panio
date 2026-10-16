@@ -205,8 +205,15 @@ jobs:
         run: cargo test
 
   netbootd:
-    name: netbootd (fmt, clippy, test)
-    runs-on: ubuntu-latest
+    name: ${{ matrix.name }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            name: netbootd (fmt, clippy, test)
+          - os: macos-latest
+            name: netbootd (macOS, fmt, clippy, test)
+    runs-on: ${{ matrix.os }}
     defaults:
       run:
         working-directory: netbootd

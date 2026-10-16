@@ -224,6 +224,12 @@ daemon drops to the invoking user (`SUDO_UID`/`SUDO_GID`) once bound, so no pack
 privileged; its later `sudo ip …` calls need passwordless sudo. The client lease is `host_ip`'s
 /24 with last octet `100`. An HTTP bind failure disables only HTTP Boot.
 
+On macOS, `pin::ListenerInterface` holds a system-wide, per-interface file lock
+for the daemon lifetime before allowing `SO_REUSEPORT` on listeners. This lets
+separate adapters share the standard ports while rejecting a second netbootd
+on the same adapter. Wildcard binds still survive temporary loss of the
+interface address. Linux keeps its exclusive `SO_BINDTODEVICE` binds.
+
 **One client.** `netbootd` enforces one *client*, not just one lease:
 
 - DHCP locks onto the MAC of the first DISCOVER/REQUEST for the life of the process and ignores

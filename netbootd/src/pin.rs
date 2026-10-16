@@ -91,3 +91,190 @@ pub fn pin_socket_to_interface(_sock: &Socket, iface: &str) -> std::io::Result<(
     );
     Ok(())
 }
+
+/// Own the macOS interface lock for the entire daemon lifetime. Linux keeps
+/// relying on SO_BINDTODEVICE's exclusive per-interface bind namespace.
+pub struct ListenerInterface {
+    name: String,
+    #[cfg(target_os = "macos")]
+    _lock: std::fs::File,
+}
+
+impl ListenerInterface {
+    pub fn acquire(name: &str) -> std::io::Result<Self> {
+        #[cfg(target_os = "macos")]
+        let lock = {
+            let cname = std::ffi::CString::new(name)?;
+            let index = unsafe { libc::if_nametoindex(cname.as_ptr()) };
+            if index == 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            // A fixed, system-wide path: neither UID nor TMPDIR may split the
+            // lock namespace. Never unlink it, even at shutdown: a waiter may
+            // already have the inode open. flock releases on exit/crash.
+            lock_interface_file(std::path::Path::new(&format!(
+                "/tmp/paniolo-netboot-interface-{index}.lock"
+            )))?
+        };
+        Ok(Self {
+            name: name.to_owned(),
+            #[cfg(target_os = "macos")]
+            _lock: lock,
+        })
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Only listeners with a held interface lock may opt into macOS port
+    /// sharing. Reply sockets retain their existing options.
+    pub fn pin_listener(&self, sock: &Socket) -> std::io::Result<()> {
+        pin_socket_to_interface(sock, &self.name)?;
+        #[cfg(target_os = "macos")]
+        {
+            use std::os::fd::AsRawFd;
+            let enabled: libc::c_int = 1;
+            let rc = unsafe {
+                libc::setsockopt(
+                    sock.as_raw_fd(),
+                    libc::SOL_SOCKET,
+                    libc::SO_REUSEPORT,
+                    &enabled as *const _ as *const libc::c_void,
+                    std::mem::size_of_val(&enabled) as libc::socklen_t,
+                )
+            };
+            if rc != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+        }
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn lock_interface_file(path: &std::path::Path) -> std::io::Result<std::fs::File> {
+    use std::fs::OpenOptions;
+    use std::os::fd::AsRawFd;
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+
+    // Existing files need only be readable, so another user cannot bypass the
+    // lock. Restrictive permissions fail closed. Do not follow a symlink or
+    // block on a FIFO planted in the shared temporary directory.
+    let file = match OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .mode(0o644)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK)
+        .open(path)
+    {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK)
+            .open(path)?,
+        Err(e) => return Err(e),
+    };
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || metadata.nlink() != 1 {
+        return Err(std::io::Error::other("invalid netboot interface lock file"));
+    }
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(file)
+}
+
+#[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
+mod tests {
+    use super::*;
+    use std::net::Ipv4Addr;
+    use std::time::Duration;
+    use tokio::net::{TcpStream, UdpSocket};
+    use tokio::time::timeout;
+
+    // Only high, OS-assigned ports; no DHCP handler, ARP, interface changes,
+    // BPF helper, or traffic to a physical target. Exercise the real listener
+    // constructors on two existing interfaces and send only via loopback.
+    #[tokio::test]
+    async fn listeners_share_ports_across_interfaces_and_isolate_ingress() {
+        let interfaces = pnet_datalink::interfaces();
+        let loopback = interfaces.iter().find(|i| i.is_loopback()).unwrap();
+        let other = interfaces
+            .iter()
+            .find(|i| !i.is_loopback())
+            .expect("socket regression needs loopback and one other interface (CI provides both)");
+        let first = ListenerInterface::acquire(&loopback.name).unwrap();
+        let second = ListenerInterface::acquire(&other.name).unwrap();
+
+        #[cfg(target_os = "macos")]
+        assert!(ListenerInterface::acquire(&loopback.name).is_err());
+
+        for bind in [crate::dhcp::bind_server, crate::tftp::bind_server] {
+            let a = bind(0, &first).unwrap();
+            let port = a.local_addr().unwrap().port();
+            let b = bind(port, &second).unwrap();
+            #[cfg(target_os = "linux")]
+            assert!(bind(port, &first).is_err(), "same-interface UDP duplicate");
+            let sender = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+            sender
+                .send_to(b"probe", (Ipv4Addr::LOCALHOST, port))
+                .await
+                .unwrap();
+            let mut buf = [0; 16];
+            let (n, _) = timeout(Duration::from_secs(2), a.recv_from(&mut buf))
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(&buf[..n], b"probe");
+            assert!(timeout(Duration::from_millis(50), b.recv_from(&mut buf))
+                .await
+                .is_err());
+            drop(a);
+            // Restart on one interface while the other is still listening.
+            let _restarted = bind(port, &first).unwrap();
+        }
+
+        let a = crate::http::bind_server(0, &first).unwrap();
+        let port = a.local_addr().unwrap().port();
+        let b = crate::http::bind_server(port, &second).unwrap();
+        #[cfg(target_os = "linux")]
+        assert!(
+            crate::http::bind_server(port, &first).is_err(),
+            "same-interface TCP duplicate"
+        );
+        let _client = timeout(
+            Duration::from_secs(2),
+            TcpStream::connect((Ipv4Addr::LOCALHOST, port)),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let _accepted = timeout(Duration::from_secs(2), a.accept())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(timeout(Duration::from_millis(50), b.accept())
+            .await
+            .is_err());
+        drop(a);
+        let _restarted = crate::http::bind_server(port, &first).unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn interface_lock_rejects_duplicates_and_releases_on_close() {
+        let path = std::env::temp_dir().join(format!("netbootd-lock-test-{}", std::process::id()));
+        let first = lock_interface_file(&path).unwrap();
+        let error = lock_interface_file(&path).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::WouldBlock);
+        drop(first);
+        let second = lock_interface_file(&path).unwrap();
+        drop(second);
+        std::fs::remove_file(&path).unwrap();
+        std::os::unix::fs::symlink("/dev/null", &path).unwrap();
+        assert!(lock_interface_file(&path).is_err());
+        std::fs::remove_file(&path).unwrap();
+    }
+}

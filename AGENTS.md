@@ -1308,7 +1308,8 @@ and "Transfer-slot bound" test groups).
 
 Startup order is fixed: validate → bind and pin every listener → drop root
 (Linux) → serve. Each server exposes `bind_server(port, interface)` (sync,
-called from `main` before anything runs concurrently) and `serve(socket, …)`.
+called from `main` before anything runs concurrently; `interface` is a
+`pin::ListenerInterface` holding the macOS lock) and `serve(socket, …)`.
 
 Key differences from the Python servers:
 
@@ -1329,6 +1330,13 @@ Key differences from the Python servers:
   nothing (#144). The UDP listeners carry no
   `SO_REUSEADDR` (UDP has no TIME_WAIT, and on Linux it would let a duplicate
   daemon silently share the port); the TCP listener keeps it for TIME_WAIT.
+  macOS listeners additionally use `SO_REUSEPORT`, allowing separate pinned
+  interfaces to share the standard ports (#204). `pin::ListenerInterface`
+  holds a system-wide, per-interface `flock` before any listener binds, until
+  daemon exit; a duplicate direct launch fails too. The lock file stays in
+  `/tmp` (never unlink a live lock). Linux socket options are unchanged.
+  The netbootd CI job runs on both Linux and macOS, including real socket
+  tests for concurrent binds, loopback ingress isolation, and restart.
 - **Root is dropped on Linux** (`src/privdrop.rs`) right after the listeners
   are bound: `setgroups(empty)` → `setgid` → `setuid` to `SUDO_UID`/`SUDO_GID`,
   any failure fatal, then verified irreversible (`setuid(0)` must fail). The
