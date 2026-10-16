@@ -208,6 +208,14 @@ enum Command {
         level: Option<String>,
     },
     /// Check required configuration and probe channels against reality over SSH.
+    ///
+    /// One line per channel: target, channel, @host, status, detail. A power,
+    /// hid, usb, or actions channel set with `--doctor` also runs its helper's
+    /// own read-only check (`<program> <transport options> doctor --json`,
+    /// 10 s limit) and lists each result under the channel as `ok`, `warn`, or
+    /// `FAIL`; a helper without that check shows `no-check`. Exits 1 when any
+    /// line is a problem (MISSING, unreachable, CONFLICT, MISMATCH, FAIL);
+    /// `warn` and `no-check` are not problems.
     Doctor {
         /// Target to check (default: all).
         target: Option<String>,
@@ -340,6 +348,33 @@ impl TargetArg {
     /// through it, so there is no per-verb merge to get wrong or forget.
     fn name(&self) -> Option<&str> {
         self.target_pos.as_deref().or(self.target.as_deref())
+    }
+}
+
+/// `--doctor` / `--no-doctor` on the `set` verbs of the channels whose hooks
+/// name a helper (power, hid, usb, action): opt the channel in to, or out
+/// of, the helper's own read-only `doctor --json` check (#304).
+#[derive(clap::Args, Debug, Clone, Default)]
+struct DoctorFlag {
+    /// Have `paniolo doctor` also run the helper's own read-only health
+    /// check, `<program> <transport options> doctor --json`. Only for a
+    /// helper that implements it (docs/dev/adding-power-helpers.md).
+    #[arg(long, conflicts_with = "no_doctor")]
+    doctor: bool,
+    /// Stop running the helper's doctor check (the default).
+    #[arg(long)]
+    no_doctor: bool,
+}
+
+impl DoctorFlag {
+    /// `Some(true)`/`Some(false)` when either flag was given, else `None`
+    /// (leave the lab file's setting alone).
+    fn value(&self) -> Option<bool> {
+        match (self.doctor, self.no_doctor) {
+            (true, _) => Some(true),
+            (_, true) => Some(false),
+            _ => None,
+        }
     }
 }
 
@@ -834,7 +869,8 @@ enum PowerCmd {
     ///
     /// With --level NAME the hook flags set that level's hooks instead of the
     /// default ones; the level is created on first use and needs at least one
-    /// hook. --serial-interface and --host belong to the whole channel.
+    /// hook. --serial-interface and --host belong to the whole channel, and
+    /// so does --doctor, which covers the default hooks and every level's.
     Set {
         #[arg(long, short)]
         target: String,
@@ -861,6 +897,8 @@ enum PowerCmd {
         /// Control host the power channel (every level) runs on. Not with --level.
         #[arg(long)]
         host: Option<String>,
+        #[command(flatten)]
+        doctor: DoctorFlag,
     },
     /// Remove the target's power channel, or with --level only that power level.
     Rm {
@@ -912,7 +950,8 @@ enum ActionCmd {
         #[arg(long, hide = true)]
         power_checked: bool,
     },
-    /// Create or update a named action.
+    /// Create or update a named action. `--host` and `--doctor`/`--no-doctor`
+    /// apply to all of the target's actions.
     Set {
         #[arg(long, short)]
         target: String,
@@ -931,6 +970,10 @@ enum ActionCmd {
         /// Control host for all of this target's actions.
         #[arg(long)]
         host: Option<String>,
+        // `--doctor`/`--no-doctor` apply to all of this target's actions,
+        // like `--host`: each action program's doctor check runs once.
+        #[command(flatten)]
+        doctor: DoctorFlag,
     },
     /// Remove a named action (the channel goes with the last one).
     Rm {
@@ -956,6 +999,8 @@ enum HidCmd {
         /// it (OS-assigned). Takes effect when the daemon next starts.
         #[arg(long)]
         port: Option<u16>,
+        #[command(flatten)]
+        doctor: DoctorFlag,
     },
     /// Remove the target's hid channel.
     Rm {
@@ -997,6 +1042,8 @@ enum UsbCmd {
         cmd: String,
         #[arg(long)]
         host: Option<String>,
+        #[command(flatten)]
+        doctor: DoctorFlag,
     },
     /// Remove the target's usb channel.
     Rm {
@@ -2207,6 +2254,20 @@ fn load_for_read(lab_flag: Option<&str>) -> Result<Lab> {
 
 /// Open the lab for editing (creating it if absent), apply `mutate`, save.
 /// Config writes are always local and pure — they never touch a target or SSH.
+/// Apply a `set` verb's `--doctor`/`--no-doctor` to channel `kind`, if
+/// either was given.
+fn set_doctor_flag(
+    lf: &mut LabFile,
+    target: &str,
+    kind: &str,
+    flag: &DoctorFlag,
+) -> Result<(), model::LabError> {
+    match flag.value() {
+        Some(on) => lf.set_doctor(target, kind, on),
+        None => Ok(()),
+    }
+}
+
 fn edit_lab<F>(lab_flag: Option<&str>, mutate: F) -> Result<()>
 where
     F: FnOnce(&mut LabFile) -> Result<(), model::LabError>,
@@ -5053,6 +5114,7 @@ fn power_cmd(lab_flag: Option<&str>, cmd: PowerCmd) -> Result<()> {
             on_cmd,
             off_cmd,
             state_cmd,
+            doctor,
             ..
         } => {
             edit_lab(lab_flag, |lf| {
@@ -5063,7 +5125,10 @@ fn power_cmd(lab_flag: Option<&str>, cmd: PowerCmd) -> Result<()> {
                     on_cmd.as_deref(),
                     off_cmd.as_deref(),
                     state_cmd.as_deref(),
-                )
+                )?;
+                // Whole channel, like --host, but harmless beside --level:
+                // the flag already covers every level's hooks.
+                set_doctor_flag(lf, &target, "power", &doctor)
             })?;
             println!("power level '{level}' set for '{target}'.");
             Ok(())
@@ -5077,6 +5142,7 @@ fn power_cmd(lab_flag: Option<&str>, cmd: PowerCmd) -> Result<()> {
             state_cmd,
             serial_interface,
             host,
+            doctor,
         } => {
             edit_lab(lab_flag, |lf| {
                 lf.set_power(
@@ -5087,7 +5153,8 @@ fn power_cmd(lab_flag: Option<&str>, cmd: PowerCmd) -> Result<()> {
                     state_cmd.as_deref(),
                     serial_interface.as_deref(),
                     host.as_deref(),
-                )
+                )?;
+                set_doctor_flag(lf, &target, "power", &doctor)
             })?;
             println!("power channel set for '{target}'.");
             Ok(())
@@ -5120,9 +5187,11 @@ fn hid_cmd(lab_flag: Option<&str>, cmd: HidCmd) -> Result<()> {
             cmd,
             host,
             port,
+            doctor,
         } => {
             edit_lab(lab_flag, |lf| {
-                lf.set_hid(&target, Some(&cmd), host.as_deref(), port)
+                lf.set_hid(&target, Some(&cmd), host.as_deref(), port)?;
+                set_doctor_flag(lf, &target, "hid", &doctor)
             })?;
             println!("hid channel set for '{target}'.");
             Ok(())
@@ -5156,6 +5225,7 @@ fn action_cmd(lab_flag: Option<&str>, cmd: ActionCmd) -> Result<()> {
             description,
             requires_power,
             host,
+            doctor,
         } => {
             edit_lab(lab_flag, |lf| {
                 lf.set_action(
@@ -5165,7 +5235,8 @@ fn action_cmd(lab_flag: Option<&str>, cmd: ActionCmd) -> Result<()> {
                     description.as_deref(),
                     requires_power.as_deref(),
                     host.as_deref(),
-                )
+                )?;
+                set_doctor_flag(lf, &target, "actions", &doctor)
             })?;
             println!("action '{name}' set for '{target}'.");
             Ok(())
@@ -5346,9 +5417,15 @@ fn parse_power_state_line(stdout: &str) -> Option<bool> {
 
 fn usb_cmd(lab_flag: Option<&str>, cmd: UsbCmd) -> Result<()> {
     match cmd {
-        UsbCmd::Set { target, cmd, host } => {
+        UsbCmd::Set {
+            target,
+            cmd,
+            host,
+            doctor,
+        } => {
             edit_lab(lab_flag, |lf| {
-                lf.set_usb(&target, Some(&cmd), host.as_deref())
+                lf.set_usb(&target, Some(&cmd), host.as_deref())?;
+                set_doctor_flag(lf, &target, "usb", &doctor)
             })?;
             println!("usb channel set for '{target}'.");
             Ok(())

@@ -256,6 +256,16 @@ channel to a remote control host (see the lab section below).
   exist, netboot interfaces hold the address they are configured for, over SSH
   for remote hosts); `doctor [target]` checks one target,
   `doctor --host <name>` only channels on that host.
+- A power, hid, usb, or actions channel set with `--doctor` (`power set -t
+  <name> --doctor`, likewise `hid set`, `usb set`, `action set`; `--no-doctor`
+  turns it off) also has `doctor` run the helper's own read-only check,
+  `<program> <transport options> doctor --json`. Its results appear under the
+  channel as `power doctor: <check>` lines (on a power channel it covers every
+  named level too; with more than one run each line says which, e.g.
+  `power doctor (level hard): <check>`): `FAIL` is a problem (exit 1),
+  `warn` and `no-check` (the helper has no doctor check) are not. Of the
+  bundled helpers only `shellyplug` implements it. A doctor `FAIL` on a channel
+  that still works is still a hint, not ground truth (see the gotchas).
 
 ## Netboot (DHCP + TFTP + HTTP)
 

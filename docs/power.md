@@ -339,6 +339,48 @@ listed after the default hooks (`cycle_cmd,state_cmd; level hard:
 cycle_cmd,state_cmd`); a missing program is reported with its level, as
 `level 'hard': …`.
 
+### Helper health checks (`--doctor`)
+
+That probe proves the helper is installed, not that the plug or hub answers.
+A helper with a `doctor` subcommand can check the hardware too, read-only.
+Opt the channel in:
+
+```bash
+paniolo power set -t target-machine --doctor      # --no-doctor turns it off
+```
+
+`paniolo doctor` then runs the hook's program with the hook's own transport
+options and ` doctor --json` in place of the verb. For
+`shellyplug -d 192.0.2.10 cycle 0` that is
+`shellyplug -d 192.0.2.10 doctor --json`. The check runs once per distinct
+command, has 10 s to finish, and each result is listed under the channel:
+
+```
+target-machine  power doctor: reachable  @bench1  ok    SNPL-00112EU …, gen 2, firmware 1.4.4
+target-machine  power doctor: auth       @bench1  ok    authentication disabled
+target-machine  power doctor: switch     @bench1  ok    switch:0 present
+```
+
+A `fail` (or a check that times out) is a problem and makes `doctor` exit 1;
+a `warn` is shown but is not. A helper without a `doctor` subcommand shows
+once as `no-check … helper has no doctor check` and is not a problem. Of the
+bundled power helpers, `shellyplug` implements it. Only opt in a hook whose
+program implements the check: a script that ignores its arguments would run
+its normal action. The derivation rule and the JSON contract are in
+[Adding power helpers](dev/adding-power-helpers.md#doctor-check-optional-recommended).
+The same `--doctor` flag exists on `hid set`, `usb set`, and `action set`.
+
+The flag belongs to the whole power channel, like `--host`, and also covers
+every named power level: a level's hooks are asked the same way, once per
+distinct command, so a level on the same transport as another hook folds into
+that run. When there is more than one run, each line names the hooks it came
+from; here a `hard` level on another helper gets its own:
+
+```
+target-machine  power doctor (default): reachable  @bench1  ok        SNPL-00112EU …
+target-machine  power doctor (level hard)          @bench1  no-check  helper has no doctor check (relayctl)
+```
+
 ### Example: Home Assistant script (cycle_cmd)
 
 ```bash
@@ -588,10 +630,18 @@ shellyplug -d <host> on     [id]          # switch on, confirm by read-back
 shellyplug -d <host> off    [id]          # switch off, confirm by read-back
 shellyplug -d <host> cycle  [id] [--delay-ms 3000]
                                           # off → confirm → delay → on → confirm
+shellyplug -d <host> doctor [id] [--json] # read-only health check (paniolo doctor)
 ```
 
 `state` reads `Switch.GetStatus` live on every call and fails if the device is
 unreachable.
+
+`doctor` never switches the relay. It reports three checks: `reachable`
+(`Shelly.GetDeviceInfo` answers; model and firmware), `auth` (fails when the
+device has authentication enabled, which shellyplug does not support yet), and
+`switch` (the switches `Shelly.GetStatus` lists, or the one `[id]` names). A
+failed check ends the list. `--json` prints the report `paniolo doctor` reads
+and exits 0; without it, one line per check and exit 1 if any failed.
 
 ### Wiring into paniolo power hooks
 
@@ -600,8 +650,12 @@ paniolo power set -t target-machine \
     --cycle-cmd "shellyplug -d 10.0.0.5 cycle 0" \
     --on-cmd    "shellyplug -d 10.0.0.5 on 0" \
     --off-cmd   "shellyplug -d 10.0.0.5 off 0" \
-    --state-cmd "shellyplug -d 10.0.0.5 state 0"
+    --state-cmd "shellyplug -d 10.0.0.5 state 0" \
+    --doctor
 ```
+
+`--doctor` makes `paniolo doctor` run `shellyplug -d 10.0.0.5 doctor --json`
+(see [Helper health checks](#helper-health-checks-doctor)).
 
 ### Gotcha: macOS Local Network privacy
 
@@ -904,10 +958,18 @@ shellyplug -d <host> on     [id]          # switch on, confirm by read-back
 shellyplug -d <host> off    [id]          # switch off, confirm by read-back
 shellyplug -d <host> cycle  [id] [--delay-ms 3000]
                                           # off → confirm → delay → on → confirm
+shellyplug -d <host> doctor [id] [--json] # read-only health check (paniolo doctor)
 ```
 
 `state` reads `Switch.GetStatus` live on every call and fails if the device is
 unreachable.
+
+`doctor` never switches the relay. It reports three checks: `reachable`
+(`Shelly.GetDeviceInfo` answers; model and firmware), `auth` (fails when the
+device has authentication enabled, which shellyplug does not support yet), and
+`switch` (the switches `Shelly.GetStatus` lists, or the one `[id]` names). A
+failed check ends the list. `--json` prints the report `paniolo doctor` reads
+and exits 0; without it, one line per check and exit 1 if any failed.
 
 ### Wiring into paniolo power hooks
 
@@ -916,8 +978,12 @@ paniolo power set -t target-machine \
     --cycle-cmd "shellyplug -d 10.0.0.5 cycle 0" \
     --on-cmd    "shellyplug -d 10.0.0.5 on 0" \
     --off-cmd   "shellyplug -d 10.0.0.5 off 0" \
-    --state-cmd "shellyplug -d 10.0.0.5 state 0"
+    --state-cmd "shellyplug -d 10.0.0.5 state 0" \
+    --doctor
 ```
+
+`--doctor` makes `paniolo doctor` run `shellyplug -d 10.0.0.5 doctor --json`
+(see [Helper health checks](#helper-health-checks-doctor)).
 
 ### Gotcha: macOS Local Network privacy
 

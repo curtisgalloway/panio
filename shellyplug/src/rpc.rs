@@ -156,6 +156,13 @@ impl Client {
         serde_json::from_value(v).with_context(|| format!("parsing Switch.GetStatus id={id}"))
     }
 
+    /// `Shelly.GetStatus` — every component's status, keyed `<type>:<id>`
+    /// (`switch:0`, `sys`, `wifi`, …). Read-only; `doctor` uses the keys to
+    /// list the switches a device actually has.
+    pub fn all_status(&self) -> Result<serde_json::Value> {
+        self.call("Shelly.GetStatus", &[])
+    }
+
     /// `Switch.Set` — command the relay on or off. The caller confirms by
     /// re-reading [`Client::switch_status`] (the contract wants read-back).
     pub fn switch_set(&self, id: u32, on: bool) -> Result<()> {

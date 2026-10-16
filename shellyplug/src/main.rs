@@ -20,6 +20,7 @@
 //!   state <id>    prints exactly `on` or `off`
 //!   on/off <id>   switch + read-back confirm
 //!   cycle <id>    off → confirm → delay → on → confirm
+//!   doctor --json read-only health report for `paniolo doctor`
 
 mod rpc;
 
@@ -60,6 +61,7 @@ TYPICAL USE
   shellyplug -d 10.0.0.5 state         prints exactly `on` or `off`
   shellyplug -d 10.0.0.5 on|off [id]
   shellyplug -d 10.0.0.5 cycle [id] [--delay-ms 3000]
+  shellyplug -d 10.0.0.5 doctor [id] [--json]   read-only health check
 
 Only devices with authentication disabled are supported for now; an
 auth-enabled device answers HTTP 401 with a clear message."
@@ -109,10 +111,33 @@ enum Cmd {
         #[arg(default_value_t = 0)]
         id: u32,
     },
+    /// Read-only health check (paniolo doctor): is the device reachable, does
+    /// it demand authentication, and does it have the switch. Never switches
+    /// the relay.
+    ///
+    /// Without an id it lists every switch the device has; with one it checks
+    /// that switch. `--json` prints paniolo's doctor report
+    /// (`{"checks": [{"name", "status": "ok|warn|fail", "detail"}]}`) and
+    /// exits 0 whatever the checks found; without it, one line per check and
+    /// exit 1 if any failed.
+    Doctor {
+        /// Switch component id to check (default: list them all).
+        id: Option<u32>,
+        /// Print the JSON report paniolo doctor reads.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    if let Cmd::Doctor { id, json } = cli.cmd {
+        let checks = match cli.device.as_deref() {
+            Some(d) => doctor_checks(&Client::new(d), id),
+            None => vec![Check::fail("device", "no --device (-d) given")],
+        };
+        return report_doctor(&checks, json);
+    }
     let device = cli
         .device
         .as_deref()
@@ -124,7 +149,127 @@ fn main() -> Result<()> {
         Cmd::Off { id } => cmd_switch(&client, id, false),
         Cmd::Cycle { id, delay_ms } => cmd_cycle(&client, id, delay_ms),
         Cmd::Status { id } => cmd_status(&client, id),
+        Cmd::Doctor { .. } => unreachable!("handled above"),
     }
+}
+
+/// One entry of the doctor report (docs/dev/adding-power-helpers.md,
+/// "Doctor check").
+#[derive(Debug, PartialEq, Eq)]
+struct Check {
+    name: &'static str,
+    status: &'static str,
+    detail: String,
+}
+
+impl Check {
+    fn ok(name: &'static str, detail: impl Into<String>) -> Self {
+        Check {
+            name,
+            status: "ok",
+            detail: detail.into(),
+        }
+    }
+
+    fn fail(name: &'static str, detail: impl Into<String>) -> Self {
+        Check {
+            name,
+            status: "fail",
+            detail: detail.into(),
+        }
+    }
+}
+
+/// The read-only health checks, in order; each later check needs the one
+/// before it to have passed, so a failure ends the list. Only
+/// `Shelly.GetDeviceInfo`, `Shelly.GetStatus` and `Switch.GetStatus` are
+/// called — never `Switch.Set`.
+fn doctor_checks(client: &Client, id: Option<u32>) -> Vec<Check> {
+    let info = match client.device_info() {
+        Ok(info) => info,
+        Err(e) => return vec![Check::fail("reachable", format!("{e:#}"))],
+    };
+    let mut checks = vec![Check::ok(
+        "reachable",
+        format!(
+            "{} {}, gen {}, firmware {}",
+            info.model,
+            info.id,
+            info.generation,
+            info.ver.as_deref().unwrap_or("?")
+        ),
+    )];
+    if info.auth_en {
+        checks.push(Check::fail(
+            "auth",
+            "the device requires authentication; shellyplug does not support \
+             password-protected devices yet, so every hook will fail",
+        ));
+        return checks;
+    }
+    checks.push(Check::ok("auth", "authentication disabled"));
+    checks.push(match id {
+        Some(id) => match client.switch_status(id) {
+            Ok(st) => Check::ok(
+                "switch",
+                format!("switch:{id} present (currently {})", onoff(st.output)),
+            ),
+            Err(e) => Check::fail("switch", format!("switch:{id}: {e:#}")),
+        },
+        None => match client.all_status() {
+            Ok(status) => {
+                let switches = switch_components(&status);
+                if switches.is_empty() {
+                    Check::fail("switch", "the device has no switch component")
+                } else {
+                    Check::ok("switch", format!("{} present", switches.join(", ")))
+                }
+            }
+            Err(e) => Check::fail("switch", format!("{e:#}")),
+        },
+    });
+    checks
+}
+
+/// The `switch:<id>` component keys of a `Shelly.GetStatus` result, in id
+/// order.
+fn switch_components(status: &serde_json::Value) -> Vec<String> {
+    let mut ids: Vec<u32> = status
+        .as_object()
+        .map(|o| {
+            o.keys()
+                .filter_map(|k| k.strip_prefix("switch:")?.parse().ok())
+                .collect()
+        })
+        .unwrap_or_default();
+    ids.sort_unstable();
+    ids.into_iter().map(|i| format!("switch:{i}")).collect()
+}
+
+/// Print the doctor report. With `--json` it is the contract's JSON and the
+/// exit is 0 whatever the checks found; otherwise one line per check, and a
+/// failed check fails the command.
+fn report_doctor(checks: &[Check], json: bool) -> Result<()> {
+    if json {
+        println!("{}", doctor_json(checks));
+        return Ok(());
+    }
+    for c in checks {
+        println!("{:<5} {:<10} {}", c.status, c.name, c.detail);
+    }
+    if checks.iter().any(|c| c.status == "fail") {
+        bail!("doctor found a problem");
+    }
+    Ok(())
+}
+
+fn doctor_json(checks: &[Check]) -> serde_json::Value {
+    serde_json::json!({
+        "checks": checks
+            .iter()
+            .map(|c| serde_json::json!({"name": c.name, "status": c.status, "detail": c.detail}))
+            .collect::<Vec<_>>()
+    })
 }
 
 fn onoff(on: bool) -> &'static str {
@@ -321,5 +466,176 @@ mod tests {
         };
         let err = cmd_switch(&stuck, 1, true).unwrap_err();
         assert!(err.to_string().contains("device reports off"), "{err}");
+    }
+
+    // ── doctor, against a stub of the device's HTTP RPC API ─────────────
+
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::{Arc, Mutex};
+
+    /// A loopback HTTP server answering `GET /rpc/<Method>` from `routes`
+    /// (method, HTTP status, JSON body; anything else is 404), recording
+    /// every method it was asked for. It drives the real [`Client`], so the
+    /// doctor checks run over the same HTTP path a plug would see.
+    fn stub(routes: &[(&'static str, u16, &'static str)]) -> (String, Arc<Mutex<Vec<String>>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let log = Arc::clone(&seen);
+        let routes = routes.to_vec();
+        thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut s) = stream else { continue };
+                let mut req = Vec::new();
+                let mut buf = [0u8; 1024];
+                while !req.windows(4).any(|w| w == b"\r\n\r\n") {
+                    match s.read(&mut buf) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => req.extend_from_slice(&buf[..n]),
+                    }
+                }
+                let line = String::from_utf8_lossy(&req)
+                    .lines()
+                    .next()
+                    .unwrap_or("")
+                    .to_string();
+                let path = line.split(' ').nth(1).unwrap_or("");
+                let method = path
+                    .strip_prefix("/rpc/")
+                    .unwrap_or(path)
+                    .split('?')
+                    .next()
+                    .unwrap_or("")
+                    .to_string();
+                log.lock().unwrap().push(method.clone());
+                let (code, body) = routes
+                    .iter()
+                    .find(|(m, _, _)| *m == method)
+                    .map(|(_, c, b)| (*c, *b))
+                    .unwrap_or((404, "{\"code\":404,\"message\":\"No handler\"}"));
+                let _ = write!(
+                    s,
+                    "HTTP/1.1 {code} X\r\nContent-Type: application/json\r\n\
+                     Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+            }
+        });
+        (addr.to_string(), seen)
+    }
+
+    const INFO: &str = r#"{"name":null,"id":"shellyplusplugs-aa00bb11cc22","model":"SNPL-00112EU","gen":2,"ver":"1.4.4","auth_en":false}"#;
+    const INFO_AUTH: &str = r#"{"id":"shellyplusplugs-aa00bb11cc22","model":"SNPL-00112EU","gen":2,"ver":"1.4.4","auth_en":true}"#;
+    const ALL: &str =
+        r#"{"sys":{},"wifi":{},"switch:1":{"output":true},"switch:0":{"output":false}}"#;
+
+    fn statuses(checks: &[Check]) -> Vec<(&str, &str)> {
+        checks.iter().map(|c| (c.name, c.status)).collect()
+    }
+
+    /// Never `Switch.Set`: the contract says a doctor check changes nothing.
+    fn assert_read_only(seen: &Arc<Mutex<Vec<String>>>) {
+        let seen = seen.lock().unwrap();
+        assert!(!seen.iter().any(|m| m == "Switch.Set"), "{seen:?}");
+    }
+
+    #[test]
+    fn doctor_reports_a_healthy_plug_and_lists_its_switches() {
+        let (addr, seen) = stub(&[
+            ("Shelly.GetDeviceInfo", 200, INFO),
+            ("Shelly.GetStatus", 200, ALL),
+        ]);
+        let checks = doctor_checks(&Client::new(&addr), None);
+        assert_eq!(
+            statuses(&checks),
+            [("reachable", "ok"), ("auth", "ok"), ("switch", "ok")]
+        );
+        assert!(checks[0].detail.contains("SNPL-00112EU"), "{checks:?}");
+        assert_eq!(checks[2].detail, "switch:0, switch:1 present");
+        assert_read_only(&seen);
+
+        // The JSON is exactly the contract paniolo parses.
+        let v = doctor_json(&checks);
+        assert_eq!(v["checks"][2]["name"], "switch");
+        assert_eq!(v["checks"][2]["status"], "ok");
+        assert!(v["checks"][2]["detail"].is_string());
+    }
+
+    #[test]
+    fn doctor_checks_one_named_switch() {
+        let (addr, seen) = stub(&[
+            ("Shelly.GetDeviceInfo", 200, INFO),
+            ("Switch.GetStatus", 200, r#"{"id":0,"output":true}"#),
+        ]);
+        let checks = doctor_checks(&Client::new(&addr), Some(0));
+        assert_eq!(
+            checks[2],
+            Check::ok("switch", "switch:0 present (currently on)")
+        );
+        assert_read_only(&seen);
+
+        let (addr, _) = stub(&[
+            ("Shelly.GetDeviceInfo", 200, INFO),
+            (
+                "Switch.GetStatus",
+                404,
+                r#"{"code":-105,"message":"Argument 'id', value 3 not found!"}"#,
+            ),
+        ]);
+        let checks = doctor_checks(&Client::new(&addr), Some(3));
+        assert_eq!(checks[2].status, "fail");
+        assert!(checks[2].detail.contains("not found"), "{checks:?}");
+    }
+
+    #[test]
+    fn doctor_fails_a_device_with_no_switch() {
+        let (addr, _) = stub(&[
+            ("Shelly.GetDeviceInfo", 200, INFO),
+            ("Shelly.GetStatus", 200, r#"{"sys":{},"cover:0":{}}"#),
+        ]);
+        let checks = doctor_checks(&Client::new(&addr), None);
+        assert_eq!(
+            checks[2],
+            Check::fail("switch", "the device has no switch component")
+        );
+    }
+
+    #[test]
+    fn doctor_stops_at_an_auth_enabled_device() {
+        let (addr, seen) = stub(&[("Shelly.GetDeviceInfo", 200, INFO_AUTH)]);
+        let checks = doctor_checks(&Client::new(&addr), None);
+        assert_eq!(statuses(&checks), [("reachable", "ok"), ("auth", "fail")]);
+        assert!(checks[1].detail.contains("requires authentication"));
+        // It does not go on to call methods that would only answer 401.
+        assert_eq!(*seen.lock().unwrap(), ["Shelly.GetDeviceInfo"]);
+    }
+
+    #[test]
+    fn doctor_reports_an_unreachable_device_as_one_failure() {
+        // A port nothing listens on: bind one, learn its number, drop it.
+        let addr = TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .to_string();
+        let checks = doctor_checks(&Client::new(&addr), None);
+        assert_eq!(statuses(&checks), [("reachable", "fail")]);
+        assert!(
+            checks[0].detail.contains("cannot reach Shelly"),
+            "{checks:?}"
+        );
+        // A Gen1 device (no /rpc) answers 404: reachable, but not a Gen2+ API.
+        let (addr, _) = stub(&[]);
+        let checks = doctor_checks(&Client::new(&addr), None);
+        assert_eq!(statuses(&checks), [("reachable", "fail")]);
+    }
+
+    #[test]
+    fn switch_components_are_listed_in_id_order() {
+        let v: serde_json::Value =
+            serde_json::from_str(r#"{"switch:10":{},"switch:2":{},"switch:x":{},"input:0":{}}"#)
+                .unwrap();
+        assert_eq!(switch_components(&v), ["switch:2", "switch:10"]);
     }
 }

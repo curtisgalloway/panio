@@ -391,7 +391,7 @@ pub(crate) fn sanitize_component(s: &str) -> String {
 /// (`VAR=value`) rather than a program name — the shape a hook or helper
 /// `cmd` can legitimately be prefixed with, e.g.
 /// `AMT_PASSWORD=... amt-tool cycle` (docs/power.md "Credentials").
-fn is_env_assignment(tok: &str) -> bool {
+pub(crate) fn is_env_assignment(tok: &str) -> bool {
     let Some((var, _)) = tok.split_once('=') else {
         return false;
     };

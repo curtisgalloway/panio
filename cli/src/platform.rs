@@ -449,6 +449,39 @@ pub fn detach(cmd: &mut Command) {
     cmd.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
 }
 
+/// Start `cmd` as the leader of its own process group, so
+/// [`kill_process_tree`] can take down everything it spawned — the shell a
+/// hook runs under *and* the helper the shell started — rather than only the
+/// shell. Windows has no Unix process groups and needs nothing here: the
+/// caller falls back to killing the one process it holds.
+#[cfg(unix)]
+pub fn own_process_group(cmd: &mut Command) {
+    std::os::unix::process::CommandExt::process_group(cmd, 0);
+}
+
+#[cfg(windows)]
+pub fn own_process_group(_cmd: &mut Command) {}
+
+/// SIGKILL the process group led by `pid` (one started with
+/// [`own_process_group`]). Best-effort, like [`signal_pid`]; a non-positive
+/// pid is refused, since `kill(-0)` and `kill(-(-1))` would reach far more
+/// than one group. On Windows this is [`signal_pid`] on the one process.
+#[cfg(unix)]
+pub fn kill_process_tree(pid: i32) {
+    if !is_real_pid(pid) {
+        return;
+    }
+    // Safe: kill() on a negative pid signals that group; failure is fine.
+    unsafe {
+        libc::kill(-pid, libc::SIGKILL);
+    }
+}
+
+#[cfg(windows)]
+pub fn kill_process_tree(pid: i32) {
+    signal_pid(pid, Signal::Kill);
+}
+
 /// Hand this process over to `cmd`, never returning on success.
 ///
 /// Unix `exec`s, so the child inherits the pid and the terminal outright —

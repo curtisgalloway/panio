@@ -272,6 +272,11 @@ pub struct PowerChannel {
     pub state_cmd: Option<String>,
     pub serial_interface: Option<String>,
     pub host: Option<String>,
+    /// Opt-in (#304): `paniolo doctor` also runs the hook program's own
+    /// read-only `doctor --json` check (docs/dev/adding-power-helpers.md),
+    /// for the default hooks and every named level's.
+    #[serde(default)]
+    pub doctor: bool,
     /// Named power levels (#302) beside the default hook set above, for a
     /// target with more than one independent power layer: a `soft` PMIC or
     /// board-MCU switch and a `hard` mains/DC cut, say. Every level runs on
@@ -396,6 +401,9 @@ pub struct HidChannel {
     /// Fixed port for the hid daemon (`<cmd> serve --port N`). Unset or 0 =
     /// OS-assigned.
     pub port: Option<u16>,
+    /// Opt-in (#304): `paniolo doctor` also runs `<cmd> doctor --json`.
+    #[serde(default)]
+    pub doctor: bool,
 }
 
 /// adb transport to an Android target (DUT). The device is named by its
@@ -412,6 +420,9 @@ pub struct HidChannel {
 pub struct UsbChannel {
     pub cmd: Option<String>,
     pub host: Option<String>,
+    /// Opt-in (#304): `paniolo doctor` also runs `<cmd> doctor --json`.
+    #[serde(default)]
+    pub doctor: bool,
 }
 
 /// One named target action (#299): an opaque hook command for a control
@@ -431,6 +442,11 @@ pub struct Action {
 #[derive(Debug, Default, Clone, Deserialize)]
 pub struct ActionsChannel {
     pub host: Option<String>,
+    /// Opt-in (#304): `paniolo doctor` also runs each action program's own
+    /// read-only `doctor --json` check. A table-level key like `host`, so
+    /// `doctor` cannot name an action ([`ACTIONS_TABLE_KEYS`]).
+    #[serde(default)]
+    pub doctor: bool,
     #[serde(flatten)]
     pub actions: BTreeMap<String, Action>,
 }
@@ -644,6 +660,7 @@ impl Lab {
                 let names: Vec<&str> = p.levels.keys().map(String::as_str).collect();
                 f.push(("levels", names.join(", ")));
             }
+            push_doctor(&mut f, p.doctor);
             channels.push(ResolvedChannel {
                 kind: ChannelKind::Power,
                 name: "power".into(),
@@ -672,6 +689,7 @@ impl Lab {
             let mut f = Vec::new();
             push_opt(&mut f, "cmd", &h.cmd);
             push_opt(&mut f, "port", &h.port.map(|n| n.to_string()));
+            push_doctor(&mut f, h.doctor);
             channels.push(ResolvedChannel {
                 kind: ChannelKind::Hid,
                 name: "hid".into(),
@@ -682,6 +700,7 @@ impl Lab {
         if let Some(u) = &t.usb {
             let mut f = Vec::new();
             push_opt(&mut f, "cmd", &u.cmd);
+            push_doctor(&mut f, u.doctor);
             channels.push(ResolvedChannel {
                 kind: ChannelKind::Usb,
                 name: "usb".into(),
@@ -706,7 +725,11 @@ impl Lab {
                 kind: ChannelKind::Actions,
                 name: "actions".into(),
                 host: host_of(&acts.host),
-                fields: vec![("names", names.join(", "))],
+                fields: {
+                    let mut f = vec![("names", names.join(", "))];
+                    push_doctor(&mut f, acts.doctor);
+                    f
+                },
             });
         }
         Some(ResolvedTarget {
@@ -732,6 +755,17 @@ impl Lab {
         out
     }
 }
+
+/// Show `doctor = true` in the resolved view; the default (off) is not shown.
+fn push_doctor(fields: &mut Vec<(&'static str, String)>, on: bool) {
+    if on {
+        fields.push(("doctor", "true".to_string()));
+    }
+}
+
+/// Keys of a target's `actions` table that configure the table itself rather
+/// than name an action.
+pub const ACTIONS_TABLE_KEYS: &[&str] = &["host", "doctor"];
 
 fn push_opt(fields: &mut Vec<(&'static str, String)>, key: &'static str, v: &Option<String>) {
     if let Some(val) = v {

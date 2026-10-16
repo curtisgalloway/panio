@@ -96,6 +96,87 @@ Mirror the existing helpers:
 - `cycle` defaults to a 3000 ms off-hold, enough for PSU capacitors to drain.
 - Extra lifecycle commands are fine (`zigplug form` / `permit` / `list` /
   `remove`); keep them out of the hook strings.
+- Global options that come before the verb should take a value (`-d <device>`,
+  `-u <user>`, `--password-file <path>`). The doctor check below finds the
+  verb by that rule.
+
+### Doctor check (optional, recommended)
+
+`paniolo doctor` only checks that a hook's program exists. It cannot tell
+whether the hardware behind it answers. A helper can report that itself with a
+`doctor` subcommand, and a channel opts in to running it with `doctor = true`
+(`paniolo power set -t <target> --doctor`; also on `hid set`, `usb set`, and
+`action set`). The reference implementation is `shellyplug doctor`.
+
+**The contract:**
+
+- `<helper> <transport options> doctor --json` exits **0** and prints one JSON
+  object on stdout:
+
+  ```json
+  {"checks": [{"name": "reachable", "status": "ok", "detail": "SNPL-00112EU, gen 2"},
+              {"name": "auth", "status": "fail", "detail": "the device requires authentication"}]}
+  ```
+
+  `status` is exactly `ok`, `warn`, or `fail`. `name` is required and
+  non-empty; `detail` is optional. Extra keys are ignored. A helper exits 0
+  whatever its checks found: the report carries the verdict.
+- **Read-only.** It must not change hardware state: no relay switching, no
+  pairing, no writes to the device. Reading the current relay state is fine.
+- **Bounded.** paniolo kills the check after **10 s** and reports `FAIL
+  … doctor timed out`, so keep your own transport timeouts shorter than that.
+- **No `doctor` subcommand is fine.** A non-zero exit with no valid report is
+  shown once as `no-check … helper has no doctor check (<program>)` and is not
+  a problem. Exit 0 *without* a valid report, or a report that breaks the
+  shape above, is a `FAIL` ("broke the doctor contract").
+
+**What paniolo runs.** The check runs on the channel's control host the way the
+hooks run (helper dirs first on PATH), natively when the host is local and as a
+POSIX script over SSH otherwise. A Windows control host cannot be probed
+remotely, the same limit as every other `doctor` probe. Which part of the
+configured command is reused:
+
+- **A full hook** (`cycle_cmd`, `on_cmd`, `off_cmd`, `state_cmd`, an action's
+  `cmd`): the hook up to its verb. paniolo reads the hook as shell words and
+  keeps any leading `VAR=value` assignments, the program, and every option word
+  (one starting with `-`) together with its value. A `--name=value` word or a
+  short option with its value attached (`-dHOST`) stands alone; any other
+  option takes the next word as its value. The first word that is not an
+  option is the verb, and it and everything after it are dropped, as is a `--`
+  marker. Then ` doctor --json` is appended. So
+  `AMT_PASSWORD=x amt -d 192.0.2.10 -u admin cycle --delay-ms 500` runs
+  `AMT_PASSWORD=x amt -d 192.0.2.10 -u admin doctor --json`.
+- **A prefix** (the `hid` and `usb` `cmd`, which paniolo already appends verbs
+  to): the whole `cmd`, then ` doctor --json`.
+
+The kept text is copied verbatim, quoting included. The words before the verb
+must form one simple command: an unquoted `;`, `|`, `&`, `<`, `>`, `(`, `)`
+or newline there is reported as `FAIL … cannot derive a doctor command`. A
+channel whose hooks all share a transport (four power hooks on one plug) runs
+the check once. On a power channel, `doctor = true` covers the default hooks
+and every named power level's hooks (`[…power.levels.<name>]`), so a `hard`
+level on a plug and a `soft` level on a board controller are each asked. Arguments after the verb, such as an outlet id, are not
+passed. A helper that drives several outlets checks the device as a whole, or
+takes an optional id of its own (`shellyplug doctor [id]`).
+
+**Only opt in a helper that implements the contract.** A hook program that
+ignores its arguments (a script that always power-cycles) would run its normal
+action when asked for `doctor --json`.
+
+**Output.** Each check becomes one line under its channel:
+
+```
+target-machine  power                    @bench1  ok    cycle_cmd,state_cmd
+target-machine  power doctor: reachable  @bench1  ok    SNPL-00112EU shellyplusplugs-aa00bb11cc22, gen 2, firmware 1.4.4
+target-machine  power doctor: auth       @bench1  ok    authentication disabled
+target-machine  power doctor: switch     @bench1  ok    switch:0 present
+```
+
+A `fail` counts toward `doctor`'s problem count and exit status 1. A `warn` is
+shown but is not a problem. When a channel runs more than one check (two
+power levels on different helpers, two actions on different programs), each
+line says which hooks it came from: `power doctor (default): …`,
+`power doctor (level hard): …`, `actions doctor (action reset): …`.
 
 ## 3. Implementation skeleton
 
@@ -160,7 +241,8 @@ Climb in order; each rung isolates one layer and the destructive test is last.
 4. **`paniolo power on/off <target>`**: switching through the full stack.
 5. **`paniolo power-cycle <target>`**: last, because it reboots the target.
 6. `paniolo doctor`: confirms which hooks are configured and that each hook's
-   program exists.
+   program exists. With `--doctor` set on the channel, it also runs the
+   helper's `doctor --json` check (§2).
 
 ## 5. Wiring into a target
 
@@ -170,7 +252,8 @@ paniolo power set -t <target> \
     --on-cmd    "<helper> -d <device> on <id>" \
     --off-cmd   "<helper> -d <device> off <id>" \
     --state-cmd "<helper> -d <device> state <id>" \
-    [--host <labhost>]        # the control host that owns the hardware
+    [--host <labhost>] \      # the control host that owns the hardware
+    [--doctor]                # run `<helper> -d <device> doctor --json` in `paniolo doctor`
 ```
 
 All four hooks are optional; wire what the hardware supports. Take secrets
@@ -199,6 +282,8 @@ Assistant example in [power.md](../power.md)).
       `Makefile`, release `HELPERS`, or `HELPER_CRATES` lists omit the crate.
 - [ ] `docs/README.md` — the Power row in the subsystem guide table
 - [ ] Apache 2.0 headers on all new source files
+- [ ] Optional: a read-only `doctor --json` subcommand (§2, "Doctor check"),
+      with tests that need no hardware
 
 ## 7. Field notes (earned the hard way)
 

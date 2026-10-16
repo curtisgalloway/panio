@@ -61,10 +61,16 @@ shellyplug -d <host> status [id]          device info + switch state and power m
 shellyplug -d <host> state  [id]          print exactly "on" or "off"
 shellyplug -d <host> on|off [id]          switch + read-back confirm
 shellyplug -d <host> cycle  [id]          off → confirm → delay → on → confirm  [--delay-ms 3000]
+shellyplug -d <host> doctor [id] [--json] read-only health check: reachable, auth, switch
 ```
 
 `on`/`off`/`cycle` read `Switch.GetStatus` back and exit non-zero on a
 mismatch. A relay that ignores the off command aborts `cycle` before the hold.
+
+`doctor` never switches the relay. `--json` prints the report `paniolo doctor`
+reads when the power channel is set with `--doctor`, and exits 0 whatever the
+checks found; without `--json` it prints one line per check and exits 1 if any
+failed.
 
 ## macOS Local Network permission
 
