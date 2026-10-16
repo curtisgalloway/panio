@@ -165,7 +165,7 @@ feeds needs re-reading before `--update` re-pins it.
 
 | path | blob | feeds |
 |---|---|---|
-| `.github/workflows/release.yml` | b42747c4c34c | Channels (every arm's build and staging), Publish |
+| `.github/workflows/release.yml` | c080621e8a03 | Channels (every arm's build and staging), Publish |
 | `.github/workflows/docs.yml` | 9f66618afceb | Publish: re-verify apt |
 | `packaging/nfpm.yaml` | b348d64432f4 | Channels: deb |
 | `packaging/scripts/build-apt-repo.sh` | fb2205eeab8e | Channels: deb, install like a user |
@@ -176,4 +176,4 @@ feeds needs re-reading before `--update` re-pins it.
 | `scripts/ci-coverage-check.sh` | 84a938b2dbf0 | Project: helpers |
 | `scripts/sync-brik.sh` | b8b5a15775a9 | Channels: windows |
 | `README.md` | 5deaa6ca6e4b | Channels: source; Publish: re-verify apt |
-| `AGENTS.md` | 74902bbb0214 | Project: bump rules, tag format; Publish |
+| `AGENTS.md` | 3287bdf508c6 | Project: bump rules, tag format; Publish |
