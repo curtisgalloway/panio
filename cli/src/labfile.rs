@@ -100,6 +100,7 @@ impl LabFile {
         identity: Option<&str>,
         control_path: Option<&str>,
         paniolo_cmd: Option<&str>,
+        plugin_path: Option<&str>,
     ) -> Result<(), LabError> {
         model::validate_name("host", name)?;
         let hosts = super_table(&mut self.doc, "hosts")?;
@@ -113,6 +114,7 @@ impl LabFile {
         set_opt(&mut t, "identity", identity);
         set_opt(&mut t, "control_path", control_path);
         set_opt(&mut t, "paniolo_cmd", paniolo_cmd);
+        set_opt(&mut t, "plugin_path", plugin_path);
         hosts.insert(name, Item::Table(t));
         Ok(())
     }
@@ -127,6 +129,7 @@ impl LabFile {
         identity: Option<&str>,
         control_path: Option<&str>,
         paniolo_cmd: Option<&str>,
+        plugin_path: Option<&str>,
     ) -> Result<(), LabError> {
         model::validate_name("host", name)?;
         let t = self
@@ -142,6 +145,14 @@ impl LabFile {
         set_opt(t, "identity", identity);
         set_opt(t, "control_path", control_path);
         set_opt(t, "paniolo_cmd", paniolo_cmd);
+        // An empty value clears the field, handing the host's plugin roots
+        // back to its own environment.
+        match plugin_path {
+            Some("") => {
+                t.remove("plugin_path");
+            }
+            other => set_opt(t, "plugin_path", other),
+        }
         Ok(())
     }
 
@@ -963,6 +974,7 @@ mod tests {
             Some("~/.ssh/id"),
             None,
             None,
+            None,
         )
         .unwrap();
         lf.add_target("fortune", Some("bench1"), Some("a pi"))
@@ -1018,6 +1030,49 @@ mod tests {
         assert_eq!(t.serial[1].baud, 9600);
     }
 
+    /// `plugin_path` survives add → save → load, `host set` replaces it, and
+    /// an empty value removes the key rather than storing "".
+    #[test]
+    fn host_plugin_path_round_trips_and_clears() {
+        let (_d, path) = tmp();
+        let mut lf = LabFile::create(&path);
+        lf.add_host(
+            "bench1",
+            "u@bench1",
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some("/opt/lab-plugins"),
+        )
+        .unwrap();
+        lf.save().unwrap();
+        let lab = model::load(&path).unwrap();
+        assert_eq!(
+            lab.hosts["bench1"].plugin_path.as_deref(),
+            Some("/opt/lab-plugins")
+        );
+
+        let mut lf = LabFile::load(&path).unwrap();
+        let both = "/opt/lab-plugins:/srv/more";
+        lf.update_host("bench1", None, None, None, None, None, None, Some(both))
+            .unwrap();
+        lf.save().unwrap();
+        let lab = model::load(&path).unwrap();
+        assert_eq!(lab.hosts["bench1"].plugin_path.as_deref(), Some(both));
+
+        let mut lf = LabFile::load(&path).unwrap();
+        lf.update_host("bench1", None, None, None, None, None, None, Some(""))
+            .unwrap();
+        lf.save().unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(!text.contains("plugin_path"), "{text}");
+        assert!(model::load(&path).unwrap().hosts["bench1"]
+            .plugin_path
+            .is_none());
+    }
+
     #[test]
     fn comments_preserved_across_edit() {
         let (_d, path) = tmp();
@@ -1027,8 +1082,17 @@ mod tests {
         )
         .unwrap();
         let mut lf = LabFile::load(&path).unwrap();
-        lf.update_host("bench1", None, None, None, Some("~/.ssh/id"), None, None)
-            .unwrap();
+        lf.update_host(
+            "bench1",
+            None,
+            None,
+            None,
+            Some("~/.ssh/id"),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
         lf.save().unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("# hand-written"), "{text}");
@@ -1081,7 +1145,7 @@ mod tests {
     fn remove_host_blocked_while_referenced() {
         let (_d, path) = tmp();
         let mut lf = LabFile::create(&path);
-        lf.add_host("bench1", "u@b1", None, None, None, None, None)
+        lf.add_host("bench1", "u@b1", None, None, None, None, None, None)
             .unwrap();
         lf.add_target("fortune", Some("bench1"), None).unwrap();
         let e = lf.remove_host("bench1").unwrap_err();
@@ -1320,7 +1384,7 @@ mod tests {
         std::fs::write(&path, "hosts = { b1 = { ssh = \"u@b1\" } }\n").unwrap();
         let mut lf = LabFile::load(&path).unwrap();
         let e = lf
-            .add_host("b2", "u@b2", None, None, None, None, None)
+            .add_host("b2", "u@b2", None, None, None, None, None, None)
             .unwrap_err();
         assert!(e.0.contains("`hosts` is not a standard table"), "{}", e.0);
         assert!(e.0.contains("[hosts]"), "{}", e.0);
@@ -1362,7 +1426,7 @@ mod tests {
         let mut lf = LabFile::create(&path);
         for bad in ["", ".", "..", "-x", "a b", "a/b"] {
             let e = lf
-                .add_host(bad, "u@b", None, None, None, None, None)
+                .add_host(bad, "u@b", None, None, None, None, None, None)
                 .unwrap_err();
             assert!(e.0.starts_with("invalid host name"), "{bad:?}: {}", e.0);
             let e = lf.add_target(bad, None, None).unwrap_err();
@@ -1416,7 +1480,7 @@ mod tests {
     fn set_netboot_refuses_a_second_link_in_the_first_links_slash_24() {
         let (_d, path) = tmp();
         let mut lf = LabFile::create(&path);
-        lf.add_host("bench1", "u@bench1", None, None, None, None, None)
+        lf.add_host("bench1", "u@bench1", None, None, None, None, None, None)
             .unwrap();
         for t in ["a", "b", "c"] {
             lf.add_target(t, Some("bench1"), None).unwrap();

@@ -27,8 +27,11 @@
 //! immediately), then the per-user data dir
 //! (`~/.local/share/paniolo/skills`), then dirs relative to the running CLI
 //! (Homebrew keg / prefix install), then the system package dir
-//! (`/usr/share/paniolo/skills`). The command mirrors `paniolo helper`: no NAME
-//! lists every skill, a NAME prints that skill's `SKILL.md`.
+//! (`/usr/share/paniolo/skills`), and last the plugin roots'
+//! `<root>/share/paniolo/skills` (`PANIOLO_PLUGIN_PATH`, GitHub #303), which
+//! can add skills but never shadow a bundled one. The command mirrors
+//! `paniolo helper`: no NAME lists every skill, a NAME prints that skill's
+//! `SKILL.md`.
 
 use std::path::{Path, PathBuf};
 
@@ -99,26 +102,59 @@ pub fn skills_dirs() -> Vec<PathBuf> {
     dirs
 }
 
+/// A plugin root's skills dir: `<root>/share/paniolo/skills`.
+fn plugin_skills_dir(root: &Path) -> PathBuf {
+    root.join("share/paniolo/skills")
+}
+
+/// One directory on the skill search path, and the plugin root it belongs to
+/// (`None` for the bundled dirs of [`skills_dirs`]).
+struct SearchDir {
+    dir: PathBuf,
+    plugin_root: Option<PathBuf>,
+}
+
+/// The full skill search path: every bundled dir first, then each plugin
+/// root's skills dir, in `PANIOLO_PLUGIN_PATH` order. Pure, so the order
+/// (plugins last, so they cannot shadow a bundled skill) is testable.
+fn search_path(bundled: Vec<PathBuf>, plugin_roots: &[PathBuf]) -> Vec<SearchDir> {
+    let mut path: Vec<SearchDir> = bundled
+        .into_iter()
+        .map(|dir| SearchDir {
+            dir,
+            plugin_root: None,
+        })
+        .collect();
+    path.extend(plugin_roots.iter().map(|root| SearchDir {
+        dir: plugin_skills_dir(root),
+        plugin_root: Some(root.clone()),
+    }));
+    path
+}
+
 /// One discovered skill: its name (the directory name), the `SKILL.md` path,
-/// and the one-line description pulled from the frontmatter.
+/// the one-line description pulled from the frontmatter, and the plugin root
+/// it came from, if any.
 struct Skill {
     name: String,
     path: PathBuf,
     description: String,
+    plugin_root: Option<PathBuf>,
 }
 
-/// Every skill found across [`skills_dirs`], deduped by name (first dir wins),
-/// sorted by name. A "skill" is any `<dir>/<name>/SKILL.md`.
+/// Every skill found across the search path ([`skills_dirs`], then the plugin
+/// roots), deduped by name (first dir wins), sorted by name. A "skill" is any
+/// `<dir>/<name>/SKILL.md`.
 fn discover() -> Vec<Skill> {
-    discover_in(&skills_dirs())
+    discover_in(&search_path(skills_dirs(), &crate::daemons::plugin_roots()))
 }
 
 /// [`discover`] over an explicit search path, so a test can point it at a
 /// layout it built rather than at wherever the test binary happens to live.
-fn discover_in(dirs: &[PathBuf]) -> Vec<Skill> {
+fn discover_in(dirs: &[SearchDir]) -> Vec<Skill> {
     let mut found: Vec<Skill> = Vec::new();
     let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    for dir in dirs {
+    for SearchDir { dir, plugin_root } in dirs {
         let Ok(entries) = std::fs::read_dir(dir) else {
             continue;
         };
@@ -138,6 +174,7 @@ fn discover_in(dirs: &[PathBuf]) -> Vec<Skill> {
                 name,
                 path: manifest,
                 description,
+                plugin_root: plugin_root.clone(),
             });
         }
     }
@@ -204,9 +241,9 @@ pub fn run(name: Option<&str>, path: bool) -> Result<()> {
 fn list() -> Result<()> {
     let skills = discover();
     if skills.is_empty() {
-        let searched = skills_dirs()
+        let searched = search_path(skills_dirs(), &crate::daemons::plugin_roots())
             .iter()
-            .map(|d| d.display().to_string())
+            .map(|d| d.dir.display().to_string())
             .collect::<Vec<_>>()
             .join(", ");
         println!(
@@ -216,7 +253,7 @@ fn list() -> Result<()> {
         return Ok(());
     }
     for s in &skills {
-        println!("{}", s.name);
+        println!("{}", list_heading(s));
         if !s.description.is_empty() {
             println!("    {}", s.description);
         }
@@ -224,6 +261,16 @@ fn list() -> Result<()> {
     }
     println!("Read one with `paniolo skill <name>` (or --path for its file path).");
     Ok(())
+}
+
+/// A skill's heading line in the list: its bare name when bundled, or the
+/// name, a tab, and `plugin: <root>` when it came from a plugin root, the same
+/// annotation `paniolo helper` uses. The name stays the first field.
+fn list_heading(s: &Skill) -> String {
+    match &s.plugin_root {
+        None => s.name.clone(),
+        Some(root) => format!("{}\tplugin: {}", s.name, root.display()),
+    }
 }
 
 /// Print a single skill: its `SKILL.md` contents, or (with `path`) just the
@@ -305,7 +352,7 @@ mod tests {
             "share/paniolo/skills",
             "prefixed",
         );
-        let found = discover_in(&skills_dirs_for_exe(&exe));
+        let found = discover_in(&search_path(skills_dirs_for_exe(&exe), &[]));
         assert_eq!(
             found.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(),
             ["prefixed"]
@@ -328,7 +375,7 @@ mod tests {
             "paniolo/share/paniolo/skills",
             "zipped",
         );
-        let names: Vec<String> = discover_in(&skills_dirs_for_exe(&exe))
+        let names: Vec<String> = discover_in(&search_path(skills_dirs_for_exe(&exe), &[]))
             .into_iter()
             .map(|s| s.name)
             .collect();
@@ -357,8 +404,73 @@ mod tests {
             )
             .unwrap();
         }
-        let found = discover_in(&[first, second]);
+        let found = discover_in(&search_path(vec![first, second], &[]));
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].description, "from first");
+    }
+
+    /// Plugin roots' skills dirs come after every bundled dir, in list order.
+    #[test]
+    fn plugin_skills_dirs_follow_the_bundled_ones() {
+        let bundled = vec![PathBuf::from("/a/skills"), PathBuf::from("/b/skills")];
+        let roots = [PathBuf::from("/opt/lab-plugins"), PathBuf::from("/srv/p")];
+        let path = search_path(bundled.clone(), &roots);
+        let dirs: Vec<PathBuf> = path.iter().map(|d| d.dir.clone()).collect();
+        assert_eq!(
+            dirs,
+            vec![
+                bundled[0].clone(),
+                bundled[1].clone(),
+                roots[0].join("share/paniolo/skills"),
+                roots[1].join("share/paniolo/skills"),
+            ]
+        );
+        assert!(path[..2].iter().all(|d| d.plugin_root.is_none()));
+        assert_eq!(path[2].plugin_root.as_deref(), Some(roots[0].as_path()));
+    }
+
+    /// A plugin skill lists with its root; one named like a bundled skill
+    /// loses to the bundled copy.
+    #[test]
+    fn a_plugin_adds_skills_but_cannot_shadow_a_bundled_one() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bundled = tmp.path().join("bundled");
+        let root = tmp.path().join("plugins");
+        let write = |dir: &Path, name: &str, desc: &str| {
+            let d = dir.join(name);
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(
+                d.join("SKILL.md"),
+                format!("---\nname: {name}\ndescription: {desc}\n---\n"),
+            )
+            .unwrap();
+        };
+        write(&bundled, "paniolo", "bundled");
+        write(&plugin_skills_dir(&root), "paniolo", "plugin copy");
+        write(&plugin_skills_dir(&root), "lab-targets", "our lab");
+
+        let found = discover_in(&search_path(vec![bundled], std::slice::from_ref(&root)));
+        let got: Vec<(&str, &str, Option<&Path>)> = found
+            .iter()
+            .map(|s| {
+                (
+                    s.name.as_str(),
+                    s.description.as_str(),
+                    s.plugin_root.as_deref(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("lab-targets", "our lab", Some(root.as_path())),
+                ("paniolo", "bundled", None),
+            ]
+        );
+        assert_eq!(
+            list_heading(&found[0]),
+            format!("lab-targets\tplugin: {}", root.display())
+        );
+        assert_eq!(list_heading(&found[1]), "paniolo");
     }
 }

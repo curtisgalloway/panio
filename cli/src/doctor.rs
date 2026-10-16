@@ -93,14 +93,18 @@ enum Probe {
 
 impl Probe {
     /// Render as a POSIX-sh script, for probing a remote Unix control host.
-    fn to_posix(&self) -> String {
+    /// `plugin_path` is the host's lab `plugin_path`, which a dispatch there
+    /// would pass on; `None` leaves the host's own `PANIOLO_PLUGIN_PATH` in
+    /// charge (see [`hook_path_prefix`]).
+    fn to_posix(&self, plugin_path: Option<&str>) -> String {
         match self {
             Probe::Exists(p) => format!("test -e {}", ssh::shell_quote(p)),
             Probe::OnHookPath(prog) => format!(
-                "{HOOK_PATH_PREFIX} command -v {} >/dev/null",
+                "{} command -v {} >/dev/null",
+                hook_path_prefix(plugin_path),
                 ssh::shell_quote(prog)
             ),
-            Probe::Video(dev) => video_probe_script(dev),
+            Probe::Video(dev) => video_probe_script(dev, plugin_path),
             Probe::NetInterface(iface) => {
                 let q = ssh::shell_quote(iface);
                 format!("test -e /sys/class/net/{q} || ifconfig {q} >/dev/null 2>&1")
@@ -245,7 +249,7 @@ fn net_interface_holds_script(iface: &str, host_ip: &str) -> String {
         // non-interactive SSH shell often has neither on PATH. Without this
         // both legs exit 127, the address list comes back empty, and a
         // drifted link reads as fine — the one direction this check must not
-        // fail in. Same reason `HOOK_PATH_PREFIX` exists.
+        // fail in. Same reason `hook_path_prefix` exists.
         "PATH=\"$PATH:/usr/sbin:/sbin\"; \
          out=$({{ ip -4 -o addr show dev {q_iface} || ifconfig {q_iface}; }} 2>/dev/null); \
          test -n \"$out\" || exit 3; \
@@ -279,7 +283,7 @@ fn probe_netboot_ip_drift(
     };
     let out = ssh::run(
         &host,
-        &["sh".to_string(), "-c".to_string(), p.to_posix()],
+        &["sh".to_string(), "-c".to_string(), p.to_posix(None)],
         None,
         &[],
     )
@@ -347,7 +351,11 @@ fn probe(lab: &Lab, host_name: &str, p: &Probe) -> Option<i32> {
     }
     match ssh::run(
         &host,
-        &["sh".to_string(), "-c".to_string(), p.to_posix()],
+        &[
+            "sh".to_string(),
+            "-c".to_string(),
+            p.to_posix(host.plugin_path.as_deref()),
+        ],
         None,
         &[],
     ) {
@@ -371,30 +379,51 @@ fn field<'a>(ch: &'a ResolvedChannel, key: &str) -> Option<&'a str> {
         .map(|(_, v)| v.as_str())
 }
 
-/// Shell statement giving hook commands the same resolution the hooks get at
+/// Shell statements giving hook commands the same resolution the hooks get at
 /// runtime (`daemons::hook_path()`): the per-user libexec dir, then the system
-/// package dir, then PATH. The literal paths must match
-/// `daemons::libexec_dir()` / `daemons::system_libexec_dir()`; `$HOME` is
-/// expanded by the probed host's own shell so that host's home applies. A
-/// standalone assignment (not a `VAR=… cmd` prefix) so the `command -v`
-/// lookup that follows honors it in every /bin/sh, dash included. Exe-relative
-/// helper dirs (a Homebrew keg) can't be derived for a remote host, so a
-/// keg-only install on a *remote* control host may still probe MISSING.
-const HOOK_PATH_PREFIX: &str =
-    "PATH=\"$HOME/.local/libexec/paniolo/bin:/usr/libexec/paniolo/bin:$PATH\";";
+/// package dir, then each plugin root's `libexec/paniolo/bin`, then PATH. The
+/// literal paths must match `daemons::libexec_dir()` /
+/// `daemons::system_libexec_dir()` / `daemons::plugin_helper_dir()`; `$HOME`
+/// is expanded by the probed host's own shell so that host's home applies.
+///
+/// The plugin roots are the host's lab `plugin_path` when it has one (what a
+/// dispatch there passes as `--plugin-path`), else the `PANIOLO_PLUGIN_PATH`
+/// the host's own non-interactive SSH environment carries, which is what the
+/// remote paniolo would read. Split on `:` in a subshell, so the caller's IFS
+/// and globbing are untouched, with relative entries skipped as
+/// `daemons::parse_plugin_path` skips them.
+///
+/// Ends in a standalone assignment (not a `VAR=… cmd` prefix) so the
+/// `command -v` lookup that follows honors it in every /bin/sh, dash
+/// included. Exe-relative helper dirs (a Homebrew keg) can't be derived for a
+/// remote host, so a keg-only install on a *remote* control host may still
+/// probe MISSING.
+fn hook_path_prefix(plugin_path: Option<&str>) -> String {
+    let roots = match plugin_path {
+        Some(p) => ssh::shell_quote(p),
+        None => "\"${PANIOLO_PLUGIN_PATH:-}\"".to_string(),
+    };
+    format!(
+        "pp={roots}; \
+         pd=$(IFS=:; set -f; for r in $pp; do case $r in /*) \
+         printf '%s/libexec/paniolo/bin:' \"$r\";; esac; done); \
+         PATH=\"$HOME/.local/libexec/paniolo/bin:/usr/libexec/paniolo/bin:$pd$PATH\";"
+    )
+}
 
 /// Probe script for a video channel. The device is usually a capture-device
 /// NAME (e.g. "USB Video" on macOS), not a path, so `test -e` alone is wrong:
 /// ask `hdmicap devices` on the channel host whether it enumerates. Path-style
 /// devices (`/dev/video0`) still short-circuit via `test -e`. hdmicap resolves
-/// like `daemons::find_binary()`: the helper dirs (via [`HOOK_PATH_PREFIX`]),
+/// like `daemons::find_binary()`: the helper dirs (via [`hook_path_prefix`]),
 /// then PATH, then the legacy ~/.cargo/bin. Exit 3 = hdmicap itself is
 /// missing, a distinct failure from a missing device.
-fn video_probe_script(device: &str) -> String {
+fn video_probe_script(device: &str, plugin_path: Option<&str>) -> String {
     let q = ssh::shell_quote(device);
+    let prefix = hook_path_prefix(plugin_path);
     format!(
         "test -e {q} && exit 0; \
-         {HOOK_PATH_PREFIX} PATH=\"$PATH:$HOME/.cargo/bin\"; \
+         {prefix} PATH=\"$PATH:$HOME/.cargo/bin\"; \
          command -v hdmicap >/dev/null || exit 3; \
          hdmicap devices 2>/dev/null | grep -F -q -- {q}"
     )
@@ -595,6 +624,127 @@ fn check_channel(lab: &Lab, ch: &ResolvedChannel, rt: &ResolvedTarget) -> (Statu
     }
 }
 
+/// The hosts a doctor run looks at, for the plugin-root report: `local`
+/// (unless `--host` names another), plus every host a checked channel lives
+/// on, filtered like the channels are.
+fn doctor_hosts(lab: &Lab, targets: &[String], host_filter: Option<&str>) -> Vec<String> {
+    let mut hosts = std::collections::BTreeSet::new();
+    if host_filter.is_none_or(|h| h == crate::model::LOCAL) {
+        hosts.insert(crate::model::LOCAL.to_string());
+    }
+    for t in targets {
+        if let Some(rt) = lab.resolved_target(t) {
+            for ch in &rt.channels {
+                if host_filter.is_none_or(|h| ch.host == h) {
+                    hosts.insert(ch.host.clone());
+                }
+            }
+        }
+    }
+    hosts.into_iter().collect()
+}
+
+/// One plugin root's verdict on this machine: missing, present, or present
+/// but holding neither a helper nor a skills dir. Names the plugin helpers a
+/// bundled helper of the same name shadows, since those never run.
+fn local_root_status(
+    root: &std::path::Path,
+    shadowed: &[(String, std::path::PathBuf)],
+) -> (Status, String) {
+    if !root.is_dir() {
+        return (Status::Missing, "no such directory".to_string());
+    }
+    let helpers = daemons::plugin_helper_dir(root);
+    let skills = root.join("share/paniolo/skills");
+    if !helpers.is_dir() && !skills.is_dir() {
+        return (
+            Status::Incomplete,
+            "has neither libexec/paniolo/bin nor share/paniolo/skills".to_string(),
+        );
+    }
+    let lost: Vec<&str> = shadowed
+        .iter()
+        .filter(|(_, r)| r == root)
+        .map(|(n, _)| n.as_str())
+        .collect();
+    if lost.is_empty() {
+        (Status::Ok, "present".to_string())
+    } else {
+        (
+            Status::Ok,
+            format!("present; shadowed by a bundled helper: {}", lost.join(", ")),
+        )
+    }
+}
+
+/// Report the plugin roots (`PANIOLO_PLUGIN_PATH`, GitHub #303) of each host
+/// in `hosts`, one line per root, and return how many are missing. This
+/// machine reports its own environment. A remote host reports its lab
+/// `plugin_path`, the roots a dispatch there passes on; one without the field
+/// is not reported, since its roots live in an environment this side does not
+/// read. Prints nothing when no host has a root.
+fn report_plugin_roots(lab: &Lab, hosts: &[String]) -> i32 {
+    let mut problems = 0;
+    let mut local_done = false;
+    for host_name in hosts {
+        let host = lab.host(host_name);
+        let mut rows: Vec<(String, Status, String)> = Vec::new();
+        if host.is_local(host_name) {
+            if local_done {
+                continue;
+            }
+            local_done = true;
+            let raw = std::env::var_os(daemons::PLUGIN_PATH_ENV).unwrap_or_default();
+            let (roots, ignored) = daemons::parse_plugin_path(&raw);
+            let (_, shadowed) = daemons::helper_entries();
+            for root in roots {
+                let (status, detail) = local_root_status(&root, &shadowed);
+                rows.push((root.display().to_string(), status, detail));
+            }
+            for rel in ignored {
+                rows.push((
+                    rel.display().to_string(),
+                    Status::Incomplete,
+                    "not an absolute path; ignored".to_string(),
+                ));
+            }
+        } else if let Some(pp) = &host.plugin_path {
+            // The host's own separator is not knowable from here; doctor's
+            // remote probes assume a POSIX control host, so `:` it is.
+            for entry in pp.split(':').filter(|e| !e.is_empty()) {
+                if !entry.starts_with('/') {
+                    rows.push((
+                        entry.to_string(),
+                        Status::Incomplete,
+                        "not an absolute path; ignored".to_string(),
+                    ));
+                    continue;
+                }
+                let (status, detail) = interpret(
+                    probe(lab, host_name, &Probe::Exists(entry.to_string())),
+                    "present",
+                );
+                let detail = if status == Status::Missing {
+                    "no such directory".to_string()
+                } else {
+                    detail
+                };
+                rows.push((entry.to_string(), status, detail));
+            }
+        }
+        for (root, status, detail) in rows {
+            if status.is_problem() {
+                problems += 1;
+            }
+            println!(
+                "plugins\t{root}\t@{host_name}\t{}\t{detail}",
+                status.label()
+            );
+        }
+    }
+    problems
+}
+
 fn channel_name(ch: &ResolvedChannel) -> String {
     if ch.name == ch.kind.as_str() {
         ch.kind.as_str().to_string()
@@ -610,11 +760,11 @@ pub fn run(lab: &Lab, target: Option<&str>, host_filter: Option<&str>) -> i32 {
         Some(n) => vec![n.to_string()],
         None => lab.targets.keys().cloned().collect(),
     };
+    let mut problems = report_plugin_roots(lab, &doctor_hosts(lab, &names, host_filter));
     if names.is_empty() {
         println!("No targets configured.");
-        return 0;
+        return problems;
     }
-    let mut problems = 0;
     for tname in names {
         let Some(rt) = lab.resolved_target(&tname) else {
             eprintln!("Target '{tname}' not found in lab.");
@@ -655,11 +805,86 @@ mod tests {
         // The probe must search everywhere the hooks themselves resolve
         // helpers (daemons::helper_dirs()): a .deb install's helpers live only
         // in /usr/libexec/paniolo/bin, off PATH.
-        assert!(HOOK_PATH_PREFIX.contains("$HOME/.local/libexec/paniolo/bin"));
-        assert!(HOOK_PATH_PREFIX.contains("/usr/libexec/paniolo/bin"));
-        // A standalone statement, so a following `command -v` honors it in
-        // dash as well as bash.
-        assert!(HOOK_PATH_PREFIX.ends_with(';'));
+        for pp in [None, Some("/opt/lab-plugins")] {
+            let prefix = hook_path_prefix(pp);
+            assert!(prefix.contains("$HOME/.local/libexec/paniolo/bin"));
+            assert!(prefix.contains("/usr/libexec/paniolo/bin"));
+            // A standalone statement, so a following `command -v` honors it
+            // in dash as well as bash.
+            assert!(prefix.ends_with(';'));
+        }
+    }
+
+    /// Runs the remote hook-path prefix in a real `sh`, with `HOME` pointed at
+    /// a scratch dir: a plugin helper resolves (from the lab value, or from
+    /// the host's own `PANIOLO_PLUGIN_PATH` when the lab has none), a
+    /// relative entry is skipped, and a bundled helper of the same name wins.
+    #[cfg(unix)]
+    #[test]
+    fn hook_path_prefix_resolves_plugin_helpers_after_bundled_ones() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let bundled = home.join(".local/libexec/paniolo/bin");
+        let root = tmp.path().join("plugins");
+        let pdir = daemons::plugin_helper_dir(&root);
+        for (dir, name) in [(&bundled, "dup"), (&pdir, "dup"), (&pdir, "labctl")] {
+            std::fs::create_dir_all(dir).unwrap();
+            let f = dir.join(name);
+            std::fs::write(&f, b"#!/bin/sh\n").unwrap();
+            std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let run = |pp: Option<&str>, env_pp: Option<&str>, prog: &str| {
+            let mut cmd = Command::new("sh");
+            cmd.arg("-c")
+                .arg(format!("{} command -v {prog}", hook_path_prefix(pp)))
+                .env("HOME", &home)
+                .env("PATH", "/usr/bin:/bin")
+                .env_remove(daemons::PLUGIN_PATH_ENV);
+            if let Some(v) = env_pp {
+                cmd.env(daemons::PLUGIN_PATH_ENV, v);
+            }
+            let out = cmd.output().unwrap();
+            (
+                out.status.code(),
+                String::from_utf8_lossy(&out.stdout).trim().to_string(),
+            )
+        };
+        let root_s = root.to_str().unwrap();
+        let with_rel = format!("relative/dir:{root_s}");
+        assert_eq!(
+            run(Some(&with_rel), None, "labctl"),
+            (Some(0), pdir.join("labctl").display().to_string())
+        );
+        assert_eq!(
+            run(None, Some(root_s), "labctl"),
+            (Some(0), pdir.join("labctl").display().to_string()),
+            "without a lab value the host's own variable applies"
+        );
+        // Not found: dash says 127, bash 1. Either is a miss.
+        assert_ne!(run(None, None, "labctl").0, Some(0));
+        assert_eq!(
+            run(Some(root_s), None, "dup"),
+            (Some(0), bundled.join("dup").display().to_string()),
+            "a bundled helper wins a name clash"
+        );
+    }
+
+    #[test]
+    fn local_plugin_root_status_flags_missing_and_empty_roots() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (status, _) = local_root_status(&tmp.path().join("nope"), &[]);
+        assert!(status == Status::Missing);
+        let (status, _) = local_root_status(tmp.path(), &[]);
+        assert!(status == Status::Incomplete);
+        std::fs::create_dir_all(daemons::plugin_helper_dir(tmp.path())).unwrap();
+        let shadowed = vec![("hdmicap".to_string(), tmp.path().to_path_buf())];
+        let (status, detail) = local_root_status(tmp.path(), &shadowed);
+        assert!(status == Status::Ok);
+        assert!(
+            detail.contains("shadowed by a bundled helper: hdmicap"),
+            "{detail}"
+        );
     }
 
     // ── behavioural tests ───────────────────────────────────────────────
@@ -1034,13 +1259,13 @@ mod tests {
                 serial: Some("XYZ".to_string()),
             },
         ] {
-            assert!(!p.to_posix().is_empty());
+            assert!(!p.to_posix(None).is_empty());
         }
     }
 
     #[test]
     fn video_probe_searches_helper_dirs_then_path_then_cargo() {
-        let s = video_probe_script("/dev/video0");
+        let s = video_probe_script("/dev/video0", None);
         assert!(s.contains("/usr/libexec/paniolo/bin"), "{s}");
         assert!(s.contains("$HOME/.cargo/bin"), "{s}");
         assert!(s.contains("command -v hdmicap"), "{s}");

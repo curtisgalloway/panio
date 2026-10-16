@@ -79,6 +79,14 @@ struct Cli {
     // the remote paniolo, whether or not the user's argv already had it.
     #[arg(long, global = true, overrides_with = "json_errors")]
     json_errors: bool,
+    /// Plugin roots for out-of-tree helpers and skills, in PATH syntax
+    /// (`:`-separated; `;` on Windows). Replaces PANIOLO_PLUGIN_PATH for this
+    /// command and everything it starts. Dispatch passes a host's lab
+    /// `plugin_path` this way. Goes before the subcommand.
+    // Not `global`: `host add/set --plugin-path` is the lab field of the same
+    // name, and a global flag would collide with it.
+    #[arg(long, value_name = "LIST")]
+    plugin_path: Option<String>,
     #[command(subcommand)]
     command: Command,
 }
@@ -257,6 +265,9 @@ enum Command {
     /// paniolo helper -t pi5 --channel power -- cambrionix -d /dev/ttyUSB0 state
     /// runs on the host the lab binds pi5's power channel to. Put these
     /// flags before the helper name.
+    ///
+    /// Helpers from a PANIOLO_PLUGIN_PATH root are listed as
+    /// "<name><TAB>plugin: <root>" and never replace a bundled helper.
     Helper {
         /// Run on this lab host instead of locally.
         #[arg(long, conflicts_with = "target")]
@@ -284,7 +295,8 @@ enum Command {
     },
     /// List the agent skills bundled with paniolo, or print one's SKILL.md
     /// (the guides that teach an agent how to drive a target). Omit NAME to
-    /// list them.
+    /// list them. Skills from a PANIOLO_PLUGIN_PATH root are listed too,
+    /// marked "plugin: <root>".
     Skill {
         /// Skill to print (e.g. paniolo, kvm-puppeting).
         name: Option<String>,
@@ -402,6 +414,11 @@ enum HostCmd {
         control_path: Option<String>,
         #[arg(long)]
         paniolo_cmd: Option<String>,
+        /// Plugin roots on this host for out-of-tree helpers and skills (its
+        /// PANIOLO_PLUGIN_PATH syntax), passed to the remote paniolo on every
+        /// dispatch here.
+        #[arg(long, value_name = "LIST")]
+        plugin_path: Option<String>,
     },
     /// Update an existing host (only the options you pass change).
     Set {
@@ -420,6 +437,10 @@ enum HostCmd {
         control_path: Option<String>,
         #[arg(long)]
         paniolo_cmd: Option<String>,
+        /// Plugin roots on this host (its PANIOLO_PLUGIN_PATH syntax), passed
+        /// to the remote paniolo on every dispatch here. Empty clears it.
+        #[arg(long, value_name = "LIST")]
+        plugin_path: Option<String>,
     },
     /// Remove a host (refused if any target still binds to it).
     Rm { name: String },
@@ -1185,6 +1206,15 @@ fn main() {
     // and drop the variable, so no hook or helper inherits it (one JSON
     // object per failure). Dispatch passes `--json-errors` to a remote.
     error::take_json_request(cli.json_errors);
+    // Also single-threaded: `--plugin-path` becomes PANIOLO_PLUGIN_PATH, so
+    // the helper and skill search here, and every hook, helper and daemon
+    // this process starts, see the same roots (#303). An argument rather than
+    // a forwarded variable for the same reason as `--json-errors`: it crosses
+    // interactive dispatch and a non-POSIX control host too.
+    if let Some(p) = &cli.plugin_path {
+        // Safe: no other thread exists yet.
+        unsafe { std::env::set_var(daemons::PLUGIN_PATH_ENV, p) };
+    }
     if let Err(e) = run(cli) {
         // `report` prints the full `.context()` chain (`{e:#}`), not just the
         // outermost message — a bare `{e}` drops every cause a command added
@@ -1895,23 +1925,12 @@ fn cmd_helper(name: Option<&str>, args: &[String]) -> Result<()> {
         // Search every dir `find_binary` resolves helpers from — per-user
         // libexec, CLI-relative (Homebrew/prefix), and the system package's
         // /usr/libexec/paniolo/bin — not just the per-user dir, so a packaged
-        // (.deb/tarball) install with no per-user build still lists helpers.
-        let dirs = daemons::helper_dirs();
-        let mut names: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-        for dir in &dirs {
-            let Ok(entries) = std::fs::read_dir(dir) else {
-                continue;
-            };
-            for entry in entries.filter_map(|e| e.ok()) {
-                if entry.path().is_file() {
-                    if let Ok(n) = entry.file_name().into_string() {
-                        names.insert(n);
-                    }
-                }
-            }
-        }
-        if names.is_empty() {
-            let searched = dirs
+        // (.deb/tarball) install with no per-user build still lists helpers —
+        // and then the plugin roots (PANIOLO_PLUGIN_PATH, #303), whose
+        // entries carry a `plugin: <root>` column.
+        let (entries, _shadowed) = daemons::helper_entries();
+        if entries.is_empty() {
+            let searched = daemons::all_helper_dirs()
                 .iter()
                 .map(|d| d.display().to_string())
                 .collect::<Vec<_>>()
@@ -1922,8 +1941,8 @@ fn cmd_helper(name: Option<&str>, args: &[String]) -> Result<()> {
             );
             return Ok(());
         }
-        for n in names {
-            println!("{n}");
+        for e in &entries {
+            println!("{}", daemons::helper_list_line(e));
         }
         return Ok(());
     };
@@ -2084,16 +2103,9 @@ fn cmd_configure(lab_flag: Option<&str>, target: &str, host: &str) -> Result<()>
         discover::local_inventory()
     } else {
         eprintln!("Discovering hardware on {host} ({})…", resolved.ssh);
-        let out = ssh::run(
-            &resolved,
-            &[
-                resolved.paniolo(),
-                "discover".to_string(),
-                "--json".to_string(),
-            ],
-            None,
-            &[],
-        )?;
+        let mut argv = resolved.paniolo_argv();
+        argv.extend(["discover".to_string(), "--json".to_string()]);
+        let out = ssh::run(&resolved, &argv, None, &[])?;
         if out.status != 0 {
             bail!(
                 "discover failed on {host}: {}",
@@ -2124,7 +2136,8 @@ fn cmd_setup(lab_flag: Option<&str>, host: Option<&str>, rust_only: bool) -> Res
         let resolved = resolve_host(lab_flag, name)?;
         if !resolved.is_local(name) {
             eprintln!("Running paniolo setup on {name} ({})…", resolved.ssh);
-            let mut argv = vec![resolved.paniolo(), "setup".to_string()];
+            let mut argv = resolved.paniolo_argv();
+            argv.push("setup".to_string());
             if rust_only {
                 argv.push("--rust-only".to_string());
             }
@@ -2321,6 +2334,7 @@ fn host_cmd(lab_flag: Option<&str>, cmd: HostCmd) -> Result<()> {
             identity,
             control_path,
             paniolo_cmd,
+            plugin_path,
         } => {
             edit_lab(lab_flag, |lf| {
                 lf.add_host(
@@ -2331,6 +2345,7 @@ fn host_cmd(lab_flag: Option<&str>, cmd: HostCmd) -> Result<()> {
                     identity.as_deref(),
                     control_path.as_deref(),
                     paniolo_cmd.as_deref(),
+                    plugin_path.as_deref(),
                 )
             })?;
             println!("Host '{name}' added. ({ssh})");
@@ -2344,6 +2359,7 @@ fn host_cmd(lab_flag: Option<&str>, cmd: HostCmd) -> Result<()> {
             identity,
             control_path,
             paniolo_cmd,
+            plugin_path,
         } => {
             edit_lab(lab_flag, |lf| {
                 lf.update_host(
@@ -2354,6 +2370,7 @@ fn host_cmd(lab_flag: Option<&str>, cmd: HostCmd) -> Result<()> {
                     identity.as_deref(),
                     control_path.as_deref(),
                     paniolo_cmd.as_deref(),
+                    plugin_path.as_deref(),
                 )
             })?;
             println!("Host '{name}' updated.");
@@ -2422,6 +2439,9 @@ fn host_show(lab_flag: Option<&str>, name: &str) -> Result<()> {
             }
             if let Some(v) = &h.paniolo_cmd {
                 println!("  paniolo_cmd   {v}");
+            }
+            if let Some(v) = &h.plugin_path {
+                println!("  plugin_path   {v}");
             }
             if h.is_local(name) {
                 println!("  -> resolves as LOCAL on this machine");

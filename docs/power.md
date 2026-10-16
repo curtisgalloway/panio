@@ -161,6 +161,53 @@ works when all of the target's channels share one host; `--host H` names a
 lab host. It re-execs `paniolo helper` on that host over SSH, so the helper
 gets that host's own state and runtime dirs, as a hook would.
 
+### Out-of-tree helpers and skills (plugin roots)
+
+A helper or skill paniolo does not ship (a lab's own board-control tool, a
+power script, a skill describing one lab's targets) can live in its own
+checkout instead of being copied into `~/.local`. Point
+`PANIOLO_PLUGIN_PATH` at one or more **plugin roots**: install prefixes laid
+out like paniolo's own.
+
+```text
+/opt/lab-plugins/
+  libexec/paniolo/bin/labctl                 # a helper
+  share/paniolo/skills/lab-targets/SKILL.md  # a skill
+```
+
+```bash
+export PANIOLO_PLUGIN_PATH=/opt/lab-plugins:/srv/more-plugins   # ';' on Windows
+paniolo helper                 # labctl<TAB>plugin: /opt/lab-plugins
+paniolo helper labctl status
+paniolo skill lab-targets
+paniolo --plugin-path /opt/lab-plugins helper   # one command, without the variable
+```
+
+- **Plugins add; they never shadow.** paniolo searches its own helper dirs
+  first and the plugin roots after them, in list order, then `PATH`. A plugin
+  helper or skill with the same name as a bundled one is never used, so a
+  daemon always runs the binary paniolo installed. There is no setting to
+  change that; give the plugin a different name.
+- **Hooks name plugin helpers bare.** Hook commands (`*_cmd`, the hid and usb
+  `cmd`, actions) run with the plugin helper dirs on `PATH` after the bundled
+  ones, so `--cycle-cmd "labctl cycle"` works.
+- **Listing shows the source.** `paniolo helper` and `paniolo skill` print a
+  bundled entry as its bare name and a plugin entry as the name, a tab, and
+  `plugin: <root>`. The name is always the first field.
+- **Empty entries are skipped; relative ones are ignored** with a warning on
+  stderr, since they would resolve against whatever directory paniolo started
+  in.
+- **`paniolo doctor`** prints one `plugins` line per root on this machine: `ok`,
+  `MISSING` (counted as a problem), or `incomplete` (no `libexec/paniolo/bin`
+  or `share/paniolo/skills` inside, or a relative entry). It also names a
+  plugin helper that a bundled helper shadows.
+- **The variable is read on the host that runs the command.** For a remote
+  control host, set the host's `plugin_path` in the lab file (`paniolo host set
+  bench1 --plugin-path /opt/lab-plugins`); see
+  [Distributed control](distributed-control.md#plugin-roots-on-a-control-host).
+- `paniolo daemons` does not treat a process running out of a plugin root as
+  a stray, so `daemons stop --all` leaves it alone.
+
 The `hidrig` control board can also switch a DUT power relay
 (`hidrig power off|on|cycle`) behind these hooks (see
 [`hidrig/README.md`](https://github.com/curtisgalloway/paniolo/blob/main/hidrig/README.md)).
@@ -281,7 +328,10 @@ absolute path, `command -v` for a bare name, in the runtime lookup order:
 
 1. the per-user libexec dir (`~/.local/libexec/paniolo/bin`);
 2. the system package dir (`/usr/libexec/paniolo/bin`);
-3. `PATH`.
+3. each plugin root's `libexec/paniolo/bin` (for a remote host, its lab
+   `plugin_path`, else its own `PANIOLO_PLUGIN_PATH`; see
+   [plugin roots](#out-of-tree-helpers-and-skills-plugin-roots));
+4. `PATH`.
 
 It lists configured hooks by name, e.g. `cycle_cmd,on_cmd,off_cmd,state_cmd`.
 Each [power level](#power-levels-soft-and-hard) is probed the same way and

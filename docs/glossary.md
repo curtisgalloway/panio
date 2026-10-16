@@ -28,6 +28,7 @@ each term briefly on first use; this page is the longer reference.
 | **lab file** | The single config file that describes your hosts, targets and their channels. Managed through the CLI; `paniolo config edit` opens it in your editor. |
 | **channel** | One connection to a target: `serial`, `video`, `hid`, `power`, `netboot`, `usb` and so on. |
 | **helper** | A separate program paniolo runs to drive one kind of hardware (`hdmicap`, `serialcap`, `amt`, `shellyplug`, `ch9329`, ...). |
+| **plugin root** | An install prefix outside paniolo's own install that holds extra helpers (`<root>/libexec/paniolo/bin`) and skills (`<root>/share/paniolo/skills`). Listed in the `PANIOLO_PLUGIN_PATH` environment variable, or a lab host's `plugin_path`. Plugins can add helpers and skills but never replace bundled ones. See [plugin roots](power.md#out-of-tree-helpers-and-skills-plugin-roots). |
 | **hook** | A shell command in the lab file that paniolo runs for an action, such as `on_cmd`, `off_cmd` and `state_cmd` for power. |
 | **daemon** | A helper that keeps running in the background and holds a device open. `hdmicap` (video) and `serialcap` (serial) are the main ones. |
 | **discovery file** | The small file a daemon writes in the runtime directory with its address, PID and token. paniolo's only record that the daemon is running. |

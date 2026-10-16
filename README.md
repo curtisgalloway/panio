@@ -152,6 +152,10 @@ make install           # paniolo CLI + daemons + OCR helper, in one step
 - **Bundled agent skills** go in `~/.local/share/paniolo/skills` (the
   `.deb`/tarball ship them under `/usr/share/paniolo/skills`).
   `paniolo skill [NAME]` lists or prints them.
+- **Out-of-tree helpers and skills** can stay in their own checkout: list its
+  prefix in `PANIOLO_PLUGIN_PATH` (a lab host's `plugin_path` for a control
+  host). Plugins add helpers and skills but never shadow bundled ones; see
+  [plugin roots](https://curtisgalloway.github.io/paniolo/power/#out-of-tree-helpers-and-skills-plugin-roots).
 - **On macOS**, `setup` also installs `netbootd-bpf-helper` setuid-root (one
   sudo) for `netbootd`.
 - **Configuration** is one CLI-managed lab file
