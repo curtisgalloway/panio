@@ -571,6 +571,8 @@ cli/src/
                 and total-output caps to serialcap without opening devices;
                 MCP serial_wait maps the same read-only surface.
                 serialcap orchestration + tio exec + /input + device listing
+                + `serial transact` (POST /transact, MCP serial_transact, a
+                write tool; -t only, the positional is the text)
                 + read-only health_snapshot (`serial status`, MCP serial_status)
                  + offline read_evidence (`serial evidence`, MCP serial_evidence)
   video.rs      hdmicap orchestration (daemon start/stop, client passthrough)
@@ -879,6 +881,19 @@ serialcap/       Rust crate: serial console daemon (parallels hdmicap)
                  chunks, literal patterns, explicit incomplete outcomes, NDJSON
                  completed rows and optional final pending. Output budget includes
                  every follow event and final JSON; no input/reset/restart.
+    transact.rs  POST /transact (#301): take the interface's transaction lock
+                 (SerialHandle::transaction, a fair tokio RwLock held for write),
+                 read the receive boundary (epoch + last_rx_seq) BEFORE writing,
+                 write, then run wait::run in-process (journal reader + in-process
+                 health) with the remaining deadline; result = the wait JSON +
+                 sent_bytes. Runs as a spawned task so a client hang-up cannot
+                 release the lock before the reply window closes. timeout_ms
+                 bounds queue + write + wait; queued past it = 409, nothing sent.
+                 Plain input takes the lock shared with try_input(): /input
+                 answers 409 and a /stream keystroke is dropped with an in-band
+                 "input refused" marker to that client, whenever a transaction
+                 holds or is queued for the interface (refused, never queued —
+                 the maintainer's call, so input can't land in the next reply)
     capture.rs   line assembler: splits bytes into timestamped, sequence-numbered
                  lines; appends them to a rotating on-disk JSONL log under
                  capture/<name>/ (survives restarts; resumes the seq counter);
@@ -899,7 +914,8 @@ serialcap/       Rust crate: serial console daemon (parallels hdmicap)
     server.rs    axum: GET /stream (bidirectional WebSocket, 64 KiB messages),
                  /status, /interfaces, /devices; POST /button (DTR pulse),
                  /input (write bytes to port, 64 KiB body cap; ?pace_ms=N drips
-                 one byte per N ms for a slow polled console, capped at 10 000).
+                 one byte per N ms for a slow polled console, capped at 10 000;
+                 409 during a transaction), /transact (transact.rs).
                  Per-interface endpoints take ?interface=NAME, defaulting to the
                  first configured interface. A `/stream` client that falls behind
                  the broadcast channel (RecvError::Lagged) gets an in-band marker

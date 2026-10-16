@@ -31,6 +31,7 @@ mod evidence;
 mod platform;
 mod serial_io;
 mod server;
+mod transact;
 mod wait;
 
 use anyhow::{Context, Result};

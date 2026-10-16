@@ -444,6 +444,8 @@ paniolo serial watch [target]                  # run the daemon for ALL interfac
                                                #   they appear in the dashboard pane
 paniolo serial send [target] "text"            # send one line of input through
                                                #   the running daemon (see below)
+paniolo serial transact -t <target> [-i name] --until 'OK' -- "cmd"
+                                               # send + wait for the reply, locked
 paniolo serial log [target] [-i name] [options] # print captured output (timestamped)
 paniolo serial evidence [target] [-i name] [--epoch E] [--since N] [--max-bytes N]
 paniolo serial show [target]                   # list interfaces + daemon status
@@ -457,8 +459,9 @@ paniolo serial reset [target] [-i name]        # soft reset via brief DTR pulse
 optional positional (omit it when the lab has one target); channel-config
 commands (`add`/`set`/`rm`) take `-t`. `serial send`/`serial log` accept
 `-t` too — `serial send` reads two positionals as `<target> <text>`, one as
-just the text. The `-t`-only runtime commands are `hid send`, `adb run`, and
-`adb input`, whose positional tails belong to the helper / to `adb`.
+just the text. The `-t`-only runtime commands are `hid send`, `adb run`,
+`adb input` and `serial transact`, whose positional tails belong to the
+helper / to `adb` / are the text to send.
 
 The interface name is a required positional on `add`/`set`/`rm` (`console` is
 just the conventional name for the main one). With
@@ -528,6 +531,30 @@ paniolo serial send --pace-ms 8 "long command"       # per-byte pacing for slow
 
 Note the input only reaches the target if its console actually reads the UART
 (a kernel with a broken serial driver logs output but ignores input).
+
+### Command and reply in one call (`serial transact`)
+
+For a request/response console (U-Boot prompt, debug monitor, AT port, EC
+console), `serial transact` (MCP: `serial_transact`) sends one command and
+waits for its reply under the interface's transaction lock:
+
+```
+paniolo serial transact -t <target> -i console --until '=> ' -- "printenv bootcmd"
+paniolo serial transact -t <target> --until 'OK' --timeout-ms 5000 -- "AT"
+```
+
+- It records the receive boundary **before** sending, so the reply holds only
+  bytes received after the send; a stale prompt cannot match.
+- Output is the `serial wait` result JSON (`status`, `records`, `pending`, …)
+  plus `sent_bytes`; exit 0 for any status. Read `status`: `matched` means the
+  `--until` bytes arrived, not that the command succeeded. `timeout`/`cap`
+  keep what arrived. Nothing is retried; never re-send blindly.
+- `--timeout-ms` (default 30000) covers queueing behind another transaction
+  too; a transaction that never gets the lock fails *interface busy* and sends
+  nothing. A CR is appended unless `--no-newline`; `--pace-ms` as for `send`.
+- While a transaction runs, `serial send` fails (409, nothing sent) and
+  dashboard keystrokes are dropped with an `input refused` marker. Retry the
+  send after the transaction ends; don't loop on it.
 
 ## adb (Android targets)
 
@@ -954,6 +981,8 @@ the device is free just because a daemon is gone from the tracked list.
 - `doctor` flags a channel that still works? Believe the working channel and
   report the discrepancy — never rewrite the lab config to silence `doctor`.
 - Serial port is exclusive: one of `connect` / `watch` / external `tio`/`screen`.
+- `serial send` failing with *interface busy* (409) means a `serial transact`
+  holds the console; nothing was sent. Wait for it, then send again.
 - A JetKVM's screen arrives as `--device rfb+hid:` on the video channel; the
   `jetkvm` daemon decodes it with `ffmpeg` (must be installed). Video and `hid`
   share the daemon's one session, so they do not evict each other, but a

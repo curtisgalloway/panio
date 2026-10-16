@@ -623,6 +623,41 @@ enum SerialCmd {
         #[arg(long)]
         follow: bool,
     },
+    /// Send input and wait for its reply as one locked exchange.
+    ///
+    /// Prints the `serial wait` result JSON (status, records, pending, …) plus
+    /// sent_bytes. Only bytes received after the send count. Other
+    /// transactions on the interface queue behind this one; `serial send`
+    /// and dashboard keystrokes are refused while it runs. A match is
+    /// observation, not proof the target executed the command; nothing is
+    /// retried. Needs a running daemon (`paniolo serial watch`).
+    Transact {
+        /// Target to act on (optional when the lab has exactly one).
+        #[arg(long, short)]
+        target: Option<String>,
+        /// Interface name (optional when only one is configured).
+        #[arg(long, short)]
+        interface: Option<String>,
+        /// Stop when this literal UTF-8 string appears in the reply.
+        #[arg(long, value_parser = clap::builder::NonEmptyStringValueParser::new())]
+        until: String,
+        /// Deadline in ms for the whole call: queueing behind other
+        /// transactions, sending and waiting (1..=3600000).
+        #[arg(long, default_value_t = 30000, value_parser = clap::value_parser!(u64).range(1..=3600000))]
+        timeout_ms: u64,
+        /// Raw reply byte cap (1..=1048576).
+        #[arg(long, default_value_t = 65536, value_parser = clap::value_parser!(u64).range(1..=1048576))]
+        max_bytes: u64,
+        /// Per-byte pacing in ms for slow polled consoles (0 = full rate).
+        #[arg(long, default_value_t = 0, value_parser = clap::value_parser!(u32).range(0..=10000))]
+        pace_ms: u32,
+        /// Don't append a carriage return after the text.
+        #[arg(long)]
+        no_newline: bool,
+        /// Text to send (put it after `--` if it starts with `-`).
+        #[arg(value_name = "TEXT")]
+        text: String,
+    },
     /// List available serial devices on this machine.
     Devices,
     /// Read serial health as JSON without starting or changing the daemon.
@@ -2669,6 +2704,28 @@ fn serial_cmd(lab_flag: Option<&str>, cmd: SerialCmd) -> Result<()> {
                 },
             )
         }
+        SerialCmd::Transact {
+            target,
+            interface,
+            until,
+            timeout_ms,
+            max_bytes,
+            pace_ms,
+            no_newline,
+            text,
+        } => cmd_serial_transact(
+            lab_flag,
+            target.as_deref(),
+            interface.as_deref(),
+            &text,
+            !no_newline,
+            &serial::TransactOptions {
+                until: &until,
+                timeout_ms,
+                max_bytes,
+                pace_ms,
+            },
+        ),
         SerialCmd::Devices => {
             let devices = serial::list_devices();
             if devices.is_empty() {
@@ -3884,6 +3941,33 @@ fn cmd_serial_send(
     serial::send_input(&daemon, &ch.name, &payload, pace_ms)
         .map_err(|e| error::with_target(e, &target))?;
     println!("Sent.");
+    Ok(())
+}
+
+fn cmd_serial_transact(
+    lab_flag: Option<&str>,
+    target: Option<&str>,
+    interface: Option<&str>,
+    text: &str,
+    newline: bool,
+    options: &serial::TransactOptions<'_>,
+) -> Result<()> {
+    let (target, serials) = serial_runtime(lab_flag, target, interface, dispatch::Mode::Reexec)?;
+    let ch = pick_serial(&target, &serials, interface)?;
+    let daemon = serial::daemon(&target).ok_or_else(|| {
+        error::daemon_down(
+            serial::DAEMON,
+            "serialcap daemon not running — start it with `paniolo serial watch`",
+        )
+        .target(&target)
+    })?;
+    let mut payload = text.as_bytes().to_vec();
+    if newline {
+        payload.push(b'\r');
+    }
+    let result = serial::transact(&daemon, &ch.name, &payload, options)
+        .map_err(|e| error::with_target(e, &target))?;
+    println!("{result}");
     Ok(())
 }
 
