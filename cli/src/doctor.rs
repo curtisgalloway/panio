@@ -539,11 +539,34 @@ fn check_channel(lab: &Lab, ch: &ResolvedChannel, rt: &ResolvedTarget) -> (Statu
                     }
                 }
             }
-            if configured.is_empty() {
-                (Status::Ok, "configured".to_string())
+            // Each named level (#302) the same way; a missing program names
+            // the level it belongs to.
+            let mut detail = if configured.is_empty() {
+                "configured".to_string()
             } else {
-                (Status::Ok, configured.join(","))
+                configured.join(",")
+            };
+            let levels = lab
+                .targets
+                .get(&rt.name)
+                .and_then(|t| t.power.as_ref())
+                .map(|p| p.levels.clone())
+                .unwrap_or_default();
+            for (name, level) in &levels {
+                let mut keys: Vec<&str> = Vec::new();
+                for (key, cmd) in level.hooks() {
+                    let Some(cmd) = cmd else { continue };
+                    keys.push(key);
+                    let prog = daemons::first_program_token(cmd).unwrap_or("");
+                    let rc = probe(lab, &ch.host, &hook_probe(prog));
+                    if rc != Some(0) {
+                        let (status, d) = interpret(rc, prog);
+                        return (status, format!("level '{name}': {d}"));
+                    }
+                }
+                detail.push_str(&format!("; level {name}: {}", keys.join(",")));
             }
+            (Status::Ok, detail)
         }
         ChannelKind::Hid | ChannelKind::Usb => match field(ch, "cmd") {
             None => (Status::Incomplete, "no cmd set".to_string()),
@@ -900,6 +923,47 @@ mod tests {
         let prog = daemons::first_program_token(cmd).unwrap_or("");
         assert_eq!(prog, "/opt/bin/amt-tool");
         assert!(matches!(hook_probe(prog), Probe::Exists(p) if p == "/opt/bin/amt-tool"));
+    }
+
+    /// Power levels (#302): every level's hook programs are probed like the
+    /// default hooks; a missing one is reported with the level's name, and
+    /// an all-present channel lists each level's hooks. Unix only: the
+    /// present program is `/bin/sh`.
+    #[cfg(unix)]
+    #[test]
+    fn power_levels_are_probed_per_level() {
+        let lab = crate::model::parse(
+            "[targets.t.power]\ncycle_cmd = \"/bin/sh -c true\"\n\
+             [targets.t.power.levels.hard]\ncycle_cmd = \"/bin/sh -c true\"\n\
+             state_cmd = \"/bin/sh -c true\"\n",
+        )
+        .unwrap();
+        let rt = lab.resolved_target("t").unwrap();
+        let ch = rt
+            .channels
+            .iter()
+            .find(|c| c.kind == ChannelKind::Power)
+            .unwrap();
+        let (status, detail) = check_channel(&lab, ch, &rt);
+        assert!(matches!(status, Status::Ok), "{detail}");
+        assert_eq!(detail, "cycle_cmd; level hard: cycle_cmd,state_cmd");
+
+        let lab = crate::model::parse(
+            "[targets.t.power]\ncycle_cmd = \"/bin/sh -c true\"\n\
+             [targets.t.power.levels.hard]\n\
+             cycle_cmd = \"AMT_PASSWORD=x /paniolo-no-such-helper-xyzzy cycle\"\n",
+        )
+        .unwrap();
+        let rt = lab.resolved_target("t").unwrap();
+        let ch = rt
+            .channels
+            .iter()
+            .find(|c| c.kind == ChannelKind::Power)
+            .unwrap();
+        let (status, detail) = check_channel(&lab, ch, &rt);
+        assert!(status.is_problem(), "{detail}");
+        assert!(detail.starts_with("level 'hard': "), "{detail}");
+        assert!(detail.contains("/paniolo-no-such-helper-xyzzy"), "{detail}");
     }
 
     #[test]

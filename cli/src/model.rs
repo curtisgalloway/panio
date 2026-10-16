@@ -253,6 +253,83 @@ pub struct PowerChannel {
     pub state_cmd: Option<String>,
     pub serial_interface: Option<String>,
     pub host: Option<String>,
+    /// Named power levels (#302) beside the default hook set above, for a
+    /// target with more than one independent power layer: a `soft` PMIC or
+    /// board-MCU switch and a `hard` mains/DC cut, say. Every level runs on
+    /// the power channel's host. `--level NAME` selects one; without it the
+    /// default hooks above apply, so a lab without levels is unchanged.
+    #[serde(default)]
+    pub levels: BTreeMap<String, PowerLevel>,
+}
+
+/// One named power level's hooks: the same four as the default level, each
+/// optional. A level never falls back to the default level's hook: a verb
+/// whose hook the level lacks is refused, naming the level.
+#[derive(Debug, Default, Clone, PartialEq, Deserialize)]
+pub struct PowerLevel {
+    pub cycle_cmd: Option<String>,
+    pub on_cmd: Option<String>,
+    pub off_cmd: Option<String>,
+    pub state_cmd: Option<String>,
+}
+
+impl PowerLevel {
+    /// The level's hooks as `(key, cmd)` pairs, in the order doctor and the
+    /// editor use: cycle, on, off, state.
+    pub fn hooks(&self) -> [(&'static str, Option<&str>); 4] {
+        [
+            ("cycle_cmd", self.cycle_cmd.as_deref()),
+            ("on_cmd", self.on_cmd.as_deref()),
+            ("off_cmd", self.off_cmd.as_deref()),
+            ("state_cmd", self.state_cmd.as_deref()),
+        ]
+    }
+}
+
+/// The name the default power level is reported under, and so the one name a
+/// named level may not take.
+pub const DEFAULT_POWER_LEVEL: &str = "default";
+
+impl PowerChannel {
+    /// The hooks of `level`: the default hook set for `None`, a named level's
+    /// for `Some`, or `None` when no level of that name exists.
+    pub fn level(&self, level: Option<&str>) -> Option<PowerLevel> {
+        match level {
+            None => Some(PowerLevel {
+                cycle_cmd: self.cycle_cmd.clone(),
+                on_cmd: self.on_cmd.clone(),
+                off_cmd: self.off_cmd.clone(),
+                state_cmd: self.state_cmd.clone(),
+            }),
+            Some(name) => self.levels.get(name).cloned(),
+        }
+    }
+}
+
+/// Check one named power level: a valid, non-reserved name, at least one
+/// hook, and no empty hook command. `what` prefixes the message. Unlike the
+/// older names, a level name is checked on load too: levels are new, so no
+/// existing lab can hold an odd one.
+pub fn validate_power_level(what: &str, name: &str, l: &PowerLevel) -> Result<(), LabError> {
+    validate_name("power level", name).map_err(|e| LabError(format!("{what}: {}", e.0)))?;
+    if name == DEFAULT_POWER_LEVEL {
+        return lab_err(format!(
+            "{what}: '{DEFAULT_POWER_LEVEL}' names the hooks set without --level; \
+             pick another level name"
+        ));
+    }
+    let hooks = l.hooks();
+    if hooks.iter().all(|(_, c)| c.is_none()) {
+        return lab_err(format!(
+            "{what}: power level '{name}' sets no hook (cycle_cmd, on_cmd, off_cmd or state_cmd)"
+        ));
+    }
+    for (key, cmd) in hooks {
+        if cmd.is_some_and(|c| c.trim().is_empty()) {
+            return lab_err(format!("{what}: power level '{name}': empty {key}"));
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Default, Clone, Deserialize)]
@@ -544,6 +621,10 @@ impl Lab {
             push_opt(&mut f, "off_cmd", &p.off_cmd);
             push_opt(&mut f, "state_cmd", &p.state_cmd);
             push_opt(&mut f, "serial_interface", &p.serial_interface);
+            if !p.levels.is_empty() {
+                let names: Vec<&str> = p.levels.keys().map(String::as_str).collect();
+                f.push(("levels", names.join(", ")));
+            }
             channels.push(ResolvedChannel {
                 kind: ChannelKind::Power,
                 name: "power".into(),
@@ -795,6 +876,9 @@ pub fn validate(lab: &Lab) -> Result<(), LabError> {
         if let Some(p) = &t.power {
             let h = p.host.as_deref().unwrap_or(default_host);
             check_host_ref(h, &declared, &format!("target '{name}' power"))?;
+            for (ln, l) in &p.levels {
+                validate_power_level(&format!("target '{name}' power"), ln, l)?;
+            }
         }
         if let Some(v) = &t.video {
             let h = v.host.as_deref().unwrap_or(default_host);
@@ -1230,6 +1314,54 @@ mod tests {
         );
         // The device id is plumbed via channel_host like any singleton kind.
         assert_eq!(channel_host(&rt, ChannelKind::Adb, None).unwrap(), "bench1");
+    }
+
+    /// Power levels (#302): valid names, not the reserved `default`, at
+    /// least one hook, no empty hook; the resolved view lists the names; and
+    /// `level()` never mixes the default hooks into a named level.
+    #[test]
+    fn power_levels_validate_and_resolve() {
+        let ok = parse(
+            "[targets.t.power]\ncycle_cmd = \"soft\"\nstate_cmd = \"st\"\n\
+             [targets.t.power.levels.hard]\ncycle_cmd = \"hard\"\n\
+             [targets.t.power.levels.pmic]\non_cmd = \"pon\"\n",
+        )
+        .unwrap();
+        let p = ok.targets["t"].power.as_ref().unwrap();
+        assert_eq!(p.level(None).unwrap().cycle_cmd.as_deref(), Some("soft"));
+        let hard = p.level(Some("hard")).unwrap();
+        assert_eq!(hard.cycle_cmd.as_deref(), Some("hard"));
+        assert_eq!(hard.state_cmd, None, "no fallback to the default state_cmd");
+        assert!(p.level(Some("nope")).is_none());
+        let rt = ok.resolved_target("t").unwrap();
+        let ch = rt
+            .channels
+            .iter()
+            .find(|c| c.kind == ChannelKind::Power)
+            .unwrap();
+        assert!(ch.fields.contains(&("levels", "hard, pmic".to_string())));
+
+        for (toml, want) in [
+            (
+                "[targets.t.power.levels.\"-x\"]\ncycle_cmd = \"x\"\n",
+                "invalid power level name '-x'",
+            ),
+            (
+                "[targets.t.power.levels.default]\ncycle_cmd = \"x\"\n",
+                "'default' names the hooks set without --level",
+            ),
+            (
+                "[targets.t.power.levels.hard]\n",
+                "power level 'hard' sets no hook",
+            ),
+            (
+                "[targets.t.power.levels.hard]\ncycle_cmd = \" \"\n",
+                "power level 'hard': empty cycle_cmd",
+            ),
+        ] {
+            let e = parse(toml).unwrap_err();
+            assert!(e.0.contains(want), "{toml}: {}", e.0);
+        }
     }
 
     /// Actions (#299): a known host, a non-empty cmd, and requires_power one
