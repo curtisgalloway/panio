@@ -1023,7 +1023,7 @@ enum HidCmd {
         #[command(flatten)]
         target: TargetArg,
     },
-    /// Stop the running injection daemon.
+    /// Stop the running injection daemon and wait for it to exit.
     Stop {
         #[command(flatten)]
         target: TargetArg,
@@ -1760,7 +1760,19 @@ fn stop_capture_daemon_and_wait(name: &str, target: &str) -> Result<Option<i32>>
     let Some(pid) = old_pid else {
         return Ok(None);
     };
-    let pending = || state::is_named_process_pending(pid, name);
+    wait_for_daemon_exit(name, target, pid)?;
+    Ok(Some(pid))
+}
+
+/// Wait until a stopped daemon releases its device, then clean up its discovery
+/// file. HID uses a shared runtime name but several possible helper binaries.
+fn wait_for_daemon_exit(name: &str, target: &str, pid: i32) -> Result<()> {
+    let needles = daemon_process_needles(name);
+    let pending = || {
+        needles
+            .iter()
+            .any(|needle| state::is_named_process_pending(pid, needle))
+    };
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     while pending() && std::time::Instant::now() < deadline {
         std::thread::sleep(std::time::Duration::from_millis(100));
@@ -1768,7 +1780,7 @@ fn stop_capture_daemon_and_wait(name: &str, target: &str) -> Result<Option<i32>>
     if pending() {
         // Only signal a pid that is still identifiably the daemon; a pid in
         // teardown is already dying and one that was recycled is not ours.
-        if state::is_named_child_alive(pid, name) {
+        if pid_runs_one_of(pid, &needles) {
             eprintln!("old {name} daemon (pid {pid}) ignored stop; killing it");
             platform::try_signal_pid(pid, platform::Signal::Kill)
                 .map_err(|e| anyhow!("could not SIGKILL the old {name} daemon (pid {pid}): {e}"))?;
@@ -1786,7 +1798,7 @@ fn stop_capture_daemon_and_wait(name: &str, target: &str) -> Result<Option<i32>>
     }
     // A daemon that did not exit gracefully leaves its discovery file behind.
     daemons::remove_discovery_for_pid(name, Some(target), pid);
-    Ok(Some(pid))
+    Ok(())
 }
 
 /// TERM (then KILL) an untracked daemon and wait for the process to go.
@@ -5687,6 +5699,7 @@ fn cmd_hid_stop(lab_flag: Option<&str>, target: Option<&str>) -> Result<()> {
             format!("target '{target}' has no hid channel"),
         )
     })?;
+    let old_pid = daemons::daemon_pid(HID_DAEMON, Some(&target));
     // The helper owns its own stop (e.g. `hidrig stop`); strip any trailing
     // device args isn't needed — `<cmd> stop` ignores extra args it doesn't use.
     let status = platform::shell_command(&format!("{cmd} stop"))
@@ -5704,6 +5717,9 @@ fn cmd_hid_stop(lab_flag: Option<&str>, target: Option<&str>) -> Result<()> {
         .target(&target)
         .channel("hid")
         .into());
+    }
+    if let Some(pid) = old_pid {
+        wait_for_daemon_exit(HID_DAEMON, &target, pid)?;
     }
     Ok(())
 }

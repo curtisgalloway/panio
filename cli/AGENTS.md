@@ -160,6 +160,10 @@ migration the daemons started. Design: [`notes/config-redesign.md`](../notes/con
        by pid) once the process is gone. Without both, a failed restart reports
        success and quotes the dead daemon's port.
 
+    `hid stop` also uses the shared `wait_for_daemon_exit` gate after its helper
+    accepts shutdown, matching HID helper names rather than the runtime name
+    `hid` (#296). Helper stop failures still propagate as `hook_failed`.
+
 ```
 cli/src/
   main.rs       clap CLI — all command groups + runtime handler bodies
