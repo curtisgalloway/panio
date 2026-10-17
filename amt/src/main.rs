@@ -14,8 +14,9 @@
 
 //! amt — power control for Intel AMT (vPro) machines over WS-Management.
 //!
-//! A one-shot paniolo power helper: each invocation speaks SOAP-over-HTTP to
-//! the machine's Management Engine and exits. The ME answers whether the host
+//! A one-shot paniolo power helper: each invocation speaks SOAP over
+//! verified HTTPS by default (plain HTTP only with `--allow-insecure-http`)
+//! to the machine's Management Engine and exits. The ME answers whether the host
 //! is on, off, or has no OS installed at all, which is what makes AMT both a
 //! power switch and — unlike a smart plug driven blind — a power *sensor*.
 //! Hook-facing subcommands follow the paniolo helper conventions
