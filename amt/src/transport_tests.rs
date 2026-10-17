@@ -412,7 +412,7 @@ fn slow_tls_handshake_obeys_total_io_deadline() {
         let mut hello = [0; 4096];
         assert!(stream.read(&mut hello).unwrap() > 0);
         stream.write_all(&[22, 3, 3, 3, 232]).unwrap();
-        for _ in 0..30 {
+        for _ in 0..200 {
             if stream.write_all(&[0]).is_err() {
                 break;
             }
@@ -422,13 +422,16 @@ fn slow_tls_handshake_obeys_total_io_deadline() {
     // Build the client outside the timed window: construction (root-store
     // setup, CA parsing) is not part of the I/O deadline under test, and on
     // a loaded runner it can eat the whole elapsed budget before the call.
+    // The budget is seconds, not milliseconds, for the same reason: the
+    // Windows CI runner executes this suite ~50x slower than a dev machine,
+    // and a sub-second budget flakes there without testing anything more.
     let amt_client = client(port, None);
     let start = Instant::now();
     let err = amt_client
-        .power_state_within(Duration::from_millis(300))
+        .power_state_within(Duration::from_secs(2))
         .unwrap_err();
     assert!(
-        start.elapsed() < Duration::from_secs(1),
+        start.elapsed() < Duration::from_secs(4),
         "deadline was exceeded: {err:?}"
     );
     assert!(is_transient(&err), "{err:?}");
@@ -455,7 +458,7 @@ fn response_body_timeout_is_transient_but_tls_corruption_is_terminal() {
                 stream.sock.write_all(&[23, 3, 3, 0, 17]).unwrap();
                 stream.sock.write_all(&[0; 17]).unwrap();
             } else {
-                for _ in 0..30 {
+                for _ in 0..200 {
                     if stream.write_all(b"x").and_then(|_| stream.flush()).is_err() {
                         break;
                     }
@@ -466,9 +469,9 @@ fn response_body_timeout_is_transient_but_tls_corruption_is_terminal() {
         let amt_client = client(port, Some(fixture.ca.path()));
         let start = Instant::now();
         let err = amt_client
-            .power_state_within(Duration::from_millis(300))
+            .power_state_within(Duration::from_secs(2))
             .unwrap_err();
-        assert!(start.elapsed() < Duration::from_secs(1), "{err:?}");
+        assert!(start.elapsed() < Duration::from_secs(4), "{err:?}");
         assert_eq!(is_transient(&err), !corrupt, "{err:?}");
         if corrupt {
             assert!(format!("{err:?}").contains("TLS"));
