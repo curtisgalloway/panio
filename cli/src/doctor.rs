@@ -40,7 +40,8 @@ enum Status {
     Conflict,
     /// Present, but not running as configured: a netboot interface holding
     /// an IPv4 address that is not the channel's effective host IP
-    /// ([`netboot_ip_drift`]).
+    /// ([`netboot_ip_drift`]). The remote script exits 3 if neither address
+    /// tool succeeds; no IPv4 in off/ffx modes is a successful check.
     Mismatch,
     /// A helper doctor check (#304) said `warn`: shown, not a problem.
     Warn,
@@ -256,7 +257,7 @@ fn local_interface_exists(iface: &str) -> Option<i32> {
 /// The address a netboot interface holds that is not its effective host IP,
 /// if it holds any address at all. `held` is what `netif::iface_addresses`
 /// listed: bare on macOS, `A.B.C.D/NN` on Linux, so a prefix is stripped
-/// before comparing. No IPv4 address at all (`netif mode off`) is not drift;
+/// before comparing. No IPv4 address (`netif mode off` or `ffx`) is not drift;
 /// neither is holding `host_ip` alongside others, since that is the address
 /// netbootd serves at. Pure, so the decision is unit-testable.
 fn netboot_ip_drift(held: &[String], host_ip: &str) -> Option<String> {
@@ -279,7 +280,8 @@ fn local_netboot_ip_drift(iface: &str, host_ip: &str) -> Option<String> {
 /// IPv4 addresses (`ip -4 -o addr show` on Linux, `ifconfig` on macOS —
 /// both put the address right after an `inet` token, Linux with a `/NN`
 /// prefix), exit 0 when there are none or `host_ip` is among them, else
-/// print the first other address and exit 1.
+/// print the first other address and exit 1. Exit 3 only when both address
+/// commands fail; a successful empty listing is valid in off/ffx modes.
 fn net_interface_holds_script(iface: &str, host_ip: &str) -> String {
     let q_iface = ssh::shell_quote(iface);
     let q_ip = ssh::shell_quote(host_ip);
@@ -290,8 +292,7 @@ fn net_interface_holds_script(iface: &str, host_ip: &str) -> String {
         // drifted link reads as fine — the one direction this check must not
         // fail in. Same reason `hook_path_prefix` exists.
         "PATH=\"$PATH:/usr/sbin:/sbin\"; \
-         out=$({{ ip -4 -o addr show dev {q_iface} || ifconfig {q_iface}; }} 2>/dev/null); \
-         test -n \"$out\" || exit 3; \
+         out=$({{ ip -4 -o addr show dev {q_iface} || ifconfig {q_iface}; }} 2>/dev/null) || exit 3; \
          addrs=$(printf '%s\\n' \"$out\" | \
          awk '{{ for (i = 1; i < NF; i++) if ($i == \"inet\") {{ \
          sub(/^addr:/, \"\", $(i + 1)); split($(i + 1), a, \"/\"); print a[1] }} }}'); \
@@ -337,7 +338,7 @@ fn probe_netboot_ip_drift(
 /// state that a reader will act on.
 ///
 /// 255 is ssh's own failure and 3 is the script's "neither `ip` nor `ifconfig`
-/// told me anything". Both mean the question was not answered, which must not
+/// succeeded". Both mean the question was not answered, which must not
 /// be rendered as a hardware-state claim. Nor must a non-zero exit with
 /// nothing on stdout — that is a probe that died (a signal, a non-POSIX login
 /// shell), not a link that moved, and reporting `MISMATCH` there would be a
@@ -1593,9 +1594,8 @@ mod tests {
 
     #[test]
     fn an_interface_holding_no_address_has_not_drifted() {
-        // `netif mode off` releases the address. That is a link that is down,
-        // not a link running at the wrong place, and doctor already reports
-        // the channel's state elsewhere.
+        // `netif mode off` or IPv6-only `ffx` leaves no IPv4 address. Neither
+        // is a link running at the wrong address.
         assert_eq!(netboot_ip_drift(&[], "192.168.99.1"), None);
     }
 
@@ -1650,8 +1650,8 @@ mod tests {
         // reads as fine, which is the one direction this must not fail in.
         assert!(script.contains("/usr/sbin"), "{script}");
         assert!(script.contains("/sbin"), "{script}");
-        // "no output at all" is a probe that could not answer (exit 3), not a
-        // link holding nothing.
+        // Both tools failing is unknown (exit 3); successful empty output
+        // means the interface holds no IPv4 address (#251).
         assert!(script.contains("exit 3"), "{script}");
         // Legacy net-tools and BusyBox print `inet addr:A.B.C.D`.
         assert!(script.contains("sub(/^addr:/"), "{script}");
@@ -1664,6 +1664,114 @@ mod tests {
             nasty.contains("'eth4; rm -rf /'"),
             "a name with a metacharacter must be quoted: {nasty}"
         );
+    }
+
+    /// Execute the remote script with controlled tool results, without touching
+    /// an interface. In particular, empty stdout is not command failure (#251).
+    #[cfg(unix)]
+    #[test]
+    fn remote_holds_probe_distinguishes_empty_addresses_from_failed_tools() {
+        let cases = [
+            ("empty ip", 0, "", 0, "inet 192.0.2.10", 0, ""),
+            (
+                "matching ip",
+                0,
+                "2: eth4 inet 192.168.99.1/24 scope global eth4",
+                99,
+                "",
+                0,
+                "",
+            ),
+            (
+                "matching secondary ip",
+                0,
+                "2: eth4 inet 192.0.2.10/24\n2: eth4 inet 192.168.99.1/24",
+                99,
+                "",
+                0,
+                "",
+            ),
+            (
+                "multiple different ips",
+                0,
+                "2: eth4 inet 192.0.2.10/24\n2: eth4 inet 198.51.100.1/24",
+                99,
+                "",
+                1,
+                "192.0.2.10\n",
+            ),
+            (
+                "different ip",
+                0,
+                "2: eth4 inet 192.0.2.10/24 scope global eth4",
+                99,
+                "",
+                1,
+                "192.0.2.10\n",
+            ),
+            ("empty fallback", 127, "", 0, "", 0, ""),
+            (
+                "IPv6-only fallback",
+                1,
+                "",
+                0,
+                "eth4: flags=UP\n    inet6 fe80::1 prefixlen 64",
+                0,
+                "",
+            ),
+            (
+                "matching fallback",
+                127,
+                "",
+                0,
+                "    inet 192.168.99.1 netmask 0xffffff00",
+                0,
+                "",
+            ),
+            (
+                "legacy fallback drift",
+                1,
+                "",
+                0,
+                "    inet addr:192.0.2.10 Mask:255.255.255.0",
+                1,
+                "192.0.2.10\n",
+            ),
+            ("missing tools", 127, "", 127, "", 3, ""),
+            ("failed tools", 1, "", 1, "", 3, ""),
+            (
+                "failed tools with partial output",
+                1,
+                "inet 192.168.99.1/24",
+                1,
+                "inet 192.0.2.10",
+                3,
+                "",
+            ),
+        ];
+        for (name, ip_status, ip_out, ifconfig_status, ifconfig_out, status, stdout) in cases {
+            let script = format!(
+                "ip() {{ printf '%s' {}; return {ip_status}; }}\n\
+                 ifconfig() {{ printf '%s' {}; return {ifconfig_status}; }}\n{}",
+                ssh::shell_quote(ip_out),
+                ssh::shell_quote(ifconfig_out),
+                net_interface_holds_script("eth4", "192.168.99.1"),
+            );
+            let output = std::process::Command::new("sh")
+                .args(["-c", &script])
+                .output()
+                .unwrap();
+            assert_eq!(output.status.code(), Some(status), "{name}");
+            let actual_stdout = String::from_utf8(output.stdout).unwrap();
+            assert_eq!(actual_stdout, stdout, "{name}");
+            let expected = match status {
+                0 => Some(None),
+                1 => Some(Some("192.0.2.10".to_string())),
+                3 => None,
+                _ => unreachable!(),
+            };
+            assert_eq!(drift_from_probe(status, &actual_stdout), expected, "{name}");
+        }
     }
 
     /// The probe RUNS, rather than only rendering — on both Unix platforms,

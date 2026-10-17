@@ -192,7 +192,9 @@ cli/src/
                 serialcap /button (+ direct-serial fallback), power_on sense
   state.rs      netboot state files (JSON-compatible with the Python's)
   doctor.rs     config-vs-reality probing (local + over SSH), incl. netboot
-                tftp_root and whether an interface holds its host_ip. Opt-in helper
+                tftp_root and whether an interface holds its host_ip. The remote
+                address probe accepts successful empty output (off/ffx); only
+                failure of both `ip` and `ifconfig` yields unknown (#251). Opt-in helper
                 check (#304): a power/hid/usb/actions channel with `doctor = true`
                 (`--doctor` on `set`) runs `<program> <transport options> doctor
                 --json` as `Probe::HelperDoctor` (doctor_command_for_hook /

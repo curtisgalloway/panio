@@ -238,7 +238,8 @@ channel to a remote control host (see the lab section below).
   daemon runs, so a stopped link drifts silently. Fix it with
   `paniolo netif mode link <target>` (or `netboot start`), which assigns the
   configured address and drops the others — not by editing the lab file to
-  match what drifted. An interface holding nothing is `mode off`, not drift.
+  match what drifted. An interface holding no IPv4 address (as in `mode off`
+  or IPv6-only `mode ffx`) is not drift, locally or over SSH.
   Check with `paniolo target show <name>`: the host IP is always
   printed, marked `(default)` when unset. Never record the intended subnet in a
   lab-file comment alone; the field is what runs.
