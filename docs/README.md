@@ -53,6 +53,7 @@ running, 101 hook failed, …); `--json-errors` adds a one-line JSON object. See
 | [Video](video.md) | `paniolo video` | `hdmicap` HDMI capture, or a network RFB source (JetKVM); on-device OCR. |
 | [Dashboard](dashboard.md) | `paniolo console` | Combined video + serial web UI. |
 | [Switchable USB media](usb.md) | `paniolo usb` | Switch a KVM-Go's microSD card between control host and target, as boot media. |
+| [RAM-only USB fastboot staging](fastboot.md) | External guarded runner + `paniolo serial` | Integration contract for fresh per-artifact service entry, bounded USB readiness, one transfer and retained verification evidence; no bundled fastboot channel. |
 | [HID injection](hid.md) | `paniolo hid` | USB keyboard/mouse injection via `hidrig` (KB2040) or `ch9329` (Openterface Mini-KVM / KVM-Go, Sipeed NanoKVM-USB). |
 | [adb (Android targets)](adb.md) | `paniolo adb` | Console (`adb shell`/`run`), screen (`screencap`), and input (`adb input`) over one USB cable. |
 | [MCP server (experimental)](mcp.md) | `paniolo mcp` | Runtime commands as MCP tools over stdio, for agent harnesses: screen (image and OCR), serial health/evidence/wait/log/input/transact, HID input, power. |

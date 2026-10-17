@@ -7,7 +7,7 @@
 > Design: [`docs/dev/ci-integration/`](ci-integration/gap-analysis.md); per-feature docs under
 > [`docs/`](../README.md). **Update the Status column as work lands.**
 >
-> Last updated: 2026-09-25.
+> Last updated: 2026-10-17.
 
 ## Status legend
 
@@ -51,6 +51,7 @@ owner's own need).
 | NET-2 | `netboot start/stop/status`, `tftp-root`, `logs` (filterable, followable) | M | ☑ | `cli/src/netboot.rs` |
 | NET-3 | Bare-link up/down/status for interface testing | M | ☑ | `netif mode link`/`off` + `netif status` (carrier); `netif down-hard` forces a real carrier drop (WoL off + admin-down). Replaced `netboot link-up/down/status` |
 | NET-4 | TFTP root configurable per target (`--tftp-root`) | M | ☑ | required for `netboot start` |
+| DEPLOY-USB-RAM | Document guarded RAM-only USB fastboot staging with fresh per-artifact entry, separate bounded USB readiness, exclusive ownership and retained evidence | S | ☑ | [Workflow and external runner contract](../fastboot.md) (#285); documentation shipped, no bundled fastboot channel or staging runner |
 | NET-5 | `netif mode netboot\|link\|ffx\|off` — atomic, idempotent link-mode switch; `link` = bare host IP (no daemon) for link testing; stops netboot before SD boot, sets up host `fe80::1`/64 for ffx; `netif status` probes the active mode + carrier | S | ☑ | `cli/src/netif.rs`; from rpi5 ffx bring-up |
 
 ## 3. Serial console

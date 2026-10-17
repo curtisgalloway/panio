@@ -78,6 +78,7 @@ nav:
       - Dashboard: dashboard.md
       - HID injection: hid.md
       - Switchable USB media: usb.md
+      - RAM-only USB fastboot staging: fastboot.md
       - adb (Android targets): adb.md
   - Distributed control: distributed-control.md
   - MCP server (experimental): mcp.md

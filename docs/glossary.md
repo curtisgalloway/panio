@@ -37,6 +37,10 @@ each term briefly on first use; this page is the longer reference.
 | **passthrough command** | A command that hands back another program's exit status unchanged, such as `paniolo helper <name>` or `paniolo adb run`. See [Exit status and errors](errors.md#passthrough-commands). |
 | **credential source** | Where a helper reads a secret such as the AMT password: an environment variable, a file (`--password-file`) or a command whose output is the secret (`--password-command`). The first one set wins. |
 | **link mode** | The host side of the direct USB-Ethernet link to a target. `paniolo netif` puts it in one of four modes: netboot, link, ffx or off. |
+| **ownership reservation** | An external lab coordinator's exclusive assignment of a target and its shared controls to one operator or runner for an entire operation. Paniolo's shorter transaction and hook locks do not provide this reservation. |
+| **guarded staging runner** | A board-specific program that checks fresh firmware and USB readiness before each artifact's single RAM transfer, enforces deadlines and ownership, and saves evidence. This is an integration contract, not a bundled paniolo helper. See [USB fastboot staging](fastboot.md). |
+| **service-entry witness** | A complete, newly received firmware response proving entry into the download service for the current artifact and startup. A previous prompt or successful host send is insufficient. |
+| **staging receipt** | A retained record of one artifact's input identity, readiness observations, transfer result, termination and target verification, including failed or partial steps. |
 
 ## Hardware
 
@@ -82,6 +86,7 @@ each term briefly on first use; this page is the longer reference.
 | **tty / termios** | A Unix terminal or serial device / the settings that control it, including raw input and automatic echo. |
 | **VID/PID** | USB vendor and product identifiers. Shared identifiers do not uniquely identify a board or firmware build. |
 | **HID** | Human Interface Device: the USB class for keyboards and mice. |
+| **fastboot / RAM staging** | Fastboot is a bootloader communication protocol. Its download operation places bytes in a temporary RAM buffer; flashing writes persistent storage, and booting executes an image. These are separate operations. |
 | **H.264** | A lossy video codec. A JetKVM streams its screen as H.264; the `jetkvm` daemon decodes it with `ffmpeg`. |
 | **HTTP Boot** | UEFI's network boot over HTTP, an alternative to PXE. |
 | **IHDR** | The header chunk of a PNG file, which holds its dimensions. |

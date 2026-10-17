@@ -112,3 +112,5 @@ serial = "33271JEGR02033"   # adb -s id; omit for the sole attached device
 
 adb sees only running Android, not the bootloader or firmware. To watch those
 too, give the target both an `adb` channel and the wired channels.
+For firmware that accepts USB fastboot downloads into RAM, use the
+[guarded staging workflow](fastboot.md) with an external client and runner.
