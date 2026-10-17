@@ -583,6 +583,35 @@ paniolo serial transact -t <target> --until 'OK' --timeout-ms 5000 -- "AT"
   dashboard keystrokes are dropped with an `input refused` marker. Retry the
   send after the transaction ends; don't loop on it.
 
+## RAM-only USB fastboot staging
+
+Use the contract in `docs/fastboot.md` for an existing device-scoped,
+download-only client. Paniolo has no fastboot channel or bundled guarded
+runner; `paniolo usb` switches media and `adb` is a different protocol.
+A board-specific runner must make these guards inseparable from each send:
+
+- Hold one external ownership reservation over serial input, power/reset and
+  USB for the whole run. Paniolo's transaction and action locks cover shorter
+  operations; they do not reserve the entire target workflow.
+- Before **each artifact**, enter the firmware service and validate its
+  complete fresh response through `serial transact` and raw evidence. Exit 0,
+  a matched echo, a stale prompt or the previous artifact's receipt is not
+  service-entry proof. Reconnect/startup changes invalidate readiness.
+- Observe the exact USB device separately. Successful empty discovery is
+  pending only within a fixed readiness deadline; retain every observation.
+  Errors, wrong/ambiguous devices or expiration stop the operation. Bind the
+  observed identity at open; never select another device or silently resend.
+- Send once with finite supervision on the USB host, able to terminate the
+  sender's entire process tree in its privilege domain. SSH timeout alone is
+  insufficient. Keep partial receipts; unknown termination keeps hardware
+  reserved or quarantined. No automatic reset or retry.
+- Require a fresh RAM-preserving return to the serial loader and verify the
+  exact RAM range against the artifact checksum before the next artifact.
+  Flash/erase/update/unlock, persistent changes and image execution are outside
+  staging. Use only necessary firmware queries, not broad partition/A-B scans.
+
+Do not improvise raw sender calls when the guarded runner is unavailable.
+
 ## adb (Android targets)
 
 When the target is an Android device, the `adb` channel gives you console,
@@ -1044,6 +1073,10 @@ the device is free just because a daemon is gone from the tracked list.
 
 ## Quick reference — gotchas
 
+- **USB fastboot RAM staging needs an external guarded runner.** Require fresh
+  service entry for every artifact, separate bounded USB readiness, USB-host
+  supervision with termination authority, and verified RAM contents. See
+  `docs/fastboot.md`; `paniolo usb` is a media mux, not a fastboot channel.
 - **Drive through paniolo, not around it.** Don't reconfigure or open a
   paniolo-managed device by hand (`ifconfig`/`ip`/`ethtool` on the netboot
   interface, `screen`/`tio` on a serial port, `kill` on a daemon) — it desyncs

@@ -8,6 +8,10 @@ It drives a USB mux (switch) inside some KVMs through a per-target
 **usb channel**. The mux routes one device to the control host or the
 target, **never both at once**.
 
+For downloading bytes into a target's RAM over USB, see
+[Guarded RAM-only USB fastboot staging](fastboot.md). That workflow uses an
+external fastboot client; the media-switching commands below do not stage RAM.
+
 ---
 
 ## Supported hardware

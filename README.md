@@ -59,6 +59,11 @@ A **target** (DUT, device under test) is the machine being developed on; a
 For Openterface devices using USB virtual serial ports on Linux, see the
 [startup compatibility warning and workaround](https://curtisgalloway.github.io/paniolo/hid/#openterface-cdc-on-linux).
 
+For RAM delivery through an existing USB fastboot client, see the
+[guarded staging workflow](https://curtisgalloway.github.io/paniolo/fastboot/).
+It defines an external runner's ownership, readiness and verification contract;
+paniolo does not bundle a fastboot channel.
+
 ---
 
 ## Installation
