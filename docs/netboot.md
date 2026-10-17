@@ -128,8 +128,10 @@ paniolo enforces this:
 - **`paniolo doctor` reports `MISMATCH`** when the interface holds IPv4
   addresses but not the effective host IP (a stale `netif mode link`, a
   hand-set address, an edit made while the daemon was down). Not a mismatch:
-  no IPv4 at all (`netif mode off`), or the configured address alongside
-  another. Fix with `paniolo netif mode link <target>` or
+  no IPv4 at all (`netif mode off` or IPv6-only `mode ffx`), or the configured
+  address alongside another. This applies to both local and remote checks;
+  a successful empty address listing is not an unreachable host.
+  Fix with `paniolo netif mode link <target>` or
   `netboot start <target>`.
 - **`target show` and `netboot status` print the host IP**, marked `(default)`
   when unset.
