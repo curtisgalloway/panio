@@ -284,8 +284,13 @@ and `paniolo console` passes it in the `?hidws=` URL. A daemon from an older
 paniolo has no token; `paniolo daemons restart --stale` replaces it.
 
 **Stopping.** `hid stop` (and `ch9329 stop` / `hidrig stop` / `jetkvm stop`) uses the
-authenticated `POST /stop` and never signals the discovery-file PID. Stop a
-daemon too old for the endpoint with `paniolo daemons stop hid`.
+authenticated `POST /stop`. `paniolo hid stop` then waits for the daemon to exit
+and removes any leftover discovery file for that PID, so an immediate `console`
+or `video watch` starts a fresh daemon. After a five-second grace period it
+force-stops the process only if its identity still matches a HID helper; failure
+to exit is reported as an error. The helpers' own `stop` commands return when
+shutdown is accepted. Stop a daemon too old for the endpoint with
+`paniolo daemons stop hid`.
 
 **Limits.**
 

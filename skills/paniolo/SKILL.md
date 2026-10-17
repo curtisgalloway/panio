@@ -861,6 +861,8 @@ with what you type in the browser. Manual daemon control: `paniolo hid
 serve [target]` / `paniolo hid stop [target]` (positional target — only
 `hid send` and `hid set/rm` use `-t`). When the target also has a `power` channel, the overlay
 adds an on/off toggle switch + a separate cycle button (each confirms first).
+`hid stop` waits for the daemon to exit before returning successfully, so it is
+safe to follow immediately with `console` or `video watch`.
 
 For *operating a GUI* through the `video` + `hid` channels — clicking, typing,
 and navigating a desktop/app/installer/BIOS you can only see over the capture
