@@ -619,13 +619,15 @@ mod tests {
     }
 
     #[test]
-    fn a_refused_daemon_request_is_daemon_down() {
-        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = l.local_addr().unwrap().port();
-        drop(l);
-        let e = ureq::get(&format!("http://127.0.0.1:{port}/x"))
+    fn a_failed_daemon_connection_is_daemon_down() {
+        // Port zero cannot host a listener: binding it asks the OS to choose
+        // a nonzero port. Unlike a freed ephemeral port, it cannot be reused
+        // by a parallel test between choosing the address and connecting.
+        let e = ureq::get("http://127.0.0.1:0/x")
+            .timeout(std::time::Duration::from_secs(5))
             .call()
             .unwrap_err();
+        assert_eq!(e.kind(), ureq::ErrorKind::ConnectionFailed);
         let pe = daemon_request_failed("serialcap", "serialcap /input", e);
         assert_eq!(pe.kind, Kind::DaemonDown, "{}", pe.message);
         assert_eq!(pe.channel.as_deref(), Some("serial"));
