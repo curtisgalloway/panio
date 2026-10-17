@@ -17,7 +17,7 @@ name = "amt"
 version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
-description = "Power control for Intel AMT (vPro) machines over WS-Management (SOAP over HTTP, Digest auth)"
+description = "Power control for Intel AMT (vPro) machines over WS-Management (verified HTTPS, Digest auth)"
 repository = "https://github.com/curtisgalloway/paniolo"
 readme = "README.md"
 keywords = ["amt", "vpro", "wsman", "power", "intel"]
@@ -28,14 +28,21 @@ name = "amt"
 path = "src/main.rs"
 
 [dependencies]
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env"] }
 anyhow = "1"
 ureq = "2"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-pemfile = "2"
+webpki-roots = "1"
 # AMT's HTTP Digest is MD5-only (RFC 2617); md-5 is the RustCrypto
 # implementation, pulled in solely for that handshake.
 md-5 = "0.10"
 # Password from AMT_PASSWORD, --password-file, or --password-command (#249).
 secret = { path = "../secret" }
+
+[dev-dependencies]
+rcgen = "0.13"
+tempfile = "3"
 
 [profile.release]
 opt-level = 3

@@ -596,12 +596,11 @@ fn skip_subst(b: &[u8], mut i: usize) -> Result<usize, String> {
 
 /// Does option word `w` take the next word as its value? `--name=value` and
 /// a short option with its value attached (`-dHOST`) do not; a bare `--name`
-/// or `-d` does. Every bundled helper's global options take a value, so a
-/// boolean global switch must be written in the `--name=value` form for the
-/// derivation to see past it.
+/// or `-d` does, except for AMT's boolean `--allow-insecure-http`. Other
+/// boolean global switches must use `--name=value` for this derivation.
 fn option_takes_value(w: &str) -> bool {
     if let Some(long) = w.strip_prefix("--") {
-        !long.contains('=')
+        long != "allow-insecure-http" && !long.contains('=')
     } else {
         w.len() == 2
     }
@@ -1932,6 +1931,30 @@ mod tests {
             d("cambrionix -d /dev/ttyUSB2 cycle 3 && echo done"),
             "cambrionix -d /dev/ttyUSB2 doctor --json"
         );
+    }
+
+    #[test]
+    fn amt_insecure_http_switch_does_not_consume_the_verb_or_adjacent_options() {
+        for (hook, expected) in [
+            (
+                "amt --allow-insecure-http state",
+                "amt --allow-insecure-http doctor --json",
+            ),
+            (
+                "amt -d bench1 --allow-insecure-http cycle --delay-ms 500",
+                "amt -d bench1 --allow-insecure-http doctor --json",
+            ),
+            (
+                "amt --allow-insecure-http -d bench1 --tls-ca-file /etc/amt/ca.pem state",
+                "amt --allow-insecure-http -d bench1 --tls-ca-file /etc/amt/ca.pem doctor --json",
+            ),
+            (
+                "amt --password-file --allow-insecure-http state",
+                "amt --password-file --allow-insecure-http doctor --json",
+            ),
+        ] {
+            assert_eq!(doctor_command_for_hook(hook).unwrap(), expected);
+        }
     }
 
     #[test]

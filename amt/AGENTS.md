@@ -11,13 +11,13 @@ This file holds the internals of amt/, moved out of the root AGENTS.md to keep i
 
 ```
 amt/             Rust crate: standalone helper for Intel AMT (vPro) machine
-                 power over WS-Management (SOAP over HTTP, port 16992; ureq).
+                 power over WS-Management (SOAP over verified HTTPS, port 16993; ureq).
                  One-shot, stateless — the switch is the machine's own
                  Management Engine, so `state` is a true sensor (ME answers
                  with the host on, off, or bare-metal). HTTP Digest (MD5,
                  RFC 2617) implemented in-crate — AMT 11+ is Digest-only.
                  Addressed by `-d <host|ipv4|[ipv6]>[:port]` (strictly parsed;
-                 anything else URL-shaped is rejected) and `-u <user>` (default
+                 https:// accepted; http:// requires --allow-insecure-http) and `-u <user>` (default
                  admin); password from AMT_PASSWORD, --password-file or
                  --password-command (first set wins; via the `secret` crate;
                  never the password itself in a flag or the lab file; a
@@ -29,9 +29,18 @@ amt/             Rust crate: standalone helper for Intel AMT (vPro) machine
                  already soft-off, so a sleeping/hibernating host cold-boots
                  rather than resumes). Requests and read-back retry transient
                  transport errors (connection/IO/DNS kinds only) within a ~20 s
-                 budget that also bounds each attempt — the AMT NIC drops link
-                 around host power transitions. TLS AMT (16993) is unsupported
-                 (clear error). Hardware-verified against a Dell OptiPlex 7060
-                 (AMT 12). See docs/power.md.
+                 socket-I/O budget — the AMT NIC drops link around host power
+                 transitions. src/tls.rs wraps ureq's standard rustls connector
+                 with an absolute socket deadline (including the handshake);
+                 platform DNS resolution can exceed it. TLS/certificate failures are terminal;
+                 redirects and HTTPS-to-HTTP fallback are forbidden. Trust uses
+                 built-in public roots plus --tls-ca-file (AMT_TLS_CA_FILE
+                 fallback, flag wins), read on the execution host; that env var
+                 is not forwarded. No custom verifier, pinning, or mutual TLS.
+                 Legacy HTTP/16992 requires --allow-insecure-http and warns on
+                 stderr, also forwarded by successful state hooks. Explicit
+                 HTTPS plus that flag, or HTTP plus a CA file, is rejected.
+                 TLS requires compatible firmware algorithms, not just TLS 1.2.
+                 See docs/power.md.
 
 ```

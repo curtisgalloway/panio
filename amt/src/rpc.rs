@@ -12,22 +12,19 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Intel AMT WS-Management client (SOAP over HTTP, HTTP Digest auth).
+//! Intel AMT WS-Management client: SOAP over verified HTTPS and HTTP Digest.
 //!
-//! Speaks just enough WS-Man for power control: a `transfer/Get` of
-//! `CIM_AssociatedPowerManagementService` (power-state readback) and the
-//! `CIM_PowerManagementService.RequestPowerStateChange` invoke, over plain
-//! HTTP on port 16992. AMT 11+ advertises Digest-only authentication
-//! (established on this bench: the supported-auth list is the single byte
-//! 0x04, and plaintext is rejected), so the RFC 2617 handshake is implemented
-//! here directly on top of ureq: POST unauthenticated, answer the 401
-//! challenge, retry once. The password never appears on the command line —
-//! it comes from the `AMT_PASSWORD` environment variable.
+//! Plain HTTP is available only by explicit opt-in. Every power and KVM
+//! management operation uses the same configured transport; no TLS failure
+//! can cause a downgrade to HTTP.
 
 use std::cell::RefCell;
 use std::fmt::Write as _;
+use std::io;
 use std::net::Ipv6Addr;
+use std::path::Path;
 use std::process;
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -35,7 +32,8 @@ use md5::{Digest as _, Md5};
 
 /// Per-request budget for a standalone call. The ME answers fast (it is
 /// firmware, not the OS); this mostly bounds how long a wrong/dead address
-/// stalls a hook. Retrying callers shorten it to what is left of their own
+/// stalls socket I/O. The platform DNS resolver can exceed this budget.
+/// Retrying callers shorten it to what is left of their own
 /// deadline (see `attempt_timeout` in main.rs).
 pub const CALL_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -43,8 +41,8 @@ pub const CALL_TIMEOUT: Duration = Duration::from_secs(10);
 /// still gets a real chance to answer instead of failing on a zero timeout.
 pub const MIN_CALL_TIMEOUT: Duration = Duration::from_secs(1);
 
-/// The WS-Man port of a non-TLS AMT.
-const DEFAULT_PORT: u16 = 16992;
+const HTTP_PORT: u16 = 16992;
+const HTTPS_PORT: u16 = 16993;
 
 const XMLNS_ENV: &str = "http://www.w3.org/2003/05/soap-envelope";
 const XMLNS_ADDR: &str = "http://schemas.xmlsoap.org/ws/2004/08/addressing";
@@ -168,9 +166,62 @@ pub fn transient_kind(kind: ureq::ErrorKind) -> bool {
     )
 }
 
-/// An AMT machine addressed over WS-Man on the plain (non-TLS) port.
+/// Validated endpoint and trust configuration, built before obtaining credentials.
+pub struct Connection {
+    url: String,
+    agent: ureq::Agent,
+    tls: Arc<crate::tls::DeadlineTls>,
+    pub insecure_http: bool,
+}
+
+impl Connection {
+    pub fn new(device: &str, allow_insecure_http: bool, ca_file: Option<&Path>) -> Result<Self> {
+        let (url, insecure_http) = parse_device(device, allow_insecure_http)?;
+        if insecure_http && ca_file.is_some() {
+            bail!("--tls-ca-file / AMT_TLS_CA_FILE cannot be used with unencrypted HTTP");
+        }
+        let mut roots = rustls::RootCertStore {
+            roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
+        };
+        if let Some(path) = ca_file {
+            let bytes = std::fs::read(path)
+                .with_context(|| format!("reading TLS CA file {}", path.display()))?;
+            let certs = rustls_pemfile::certs(&mut bytes.as_slice())
+                .collect::<io::Result<Vec<_>>>()
+                .with_context(|| format!("parsing TLS CA file {}", path.display()))?;
+            if certs.is_empty() {
+                bail!("TLS CA file {} contains no certificates", path.display());
+            }
+            for cert in certs {
+                roots.add(cert).with_context(|| {
+                    format!("invalid certificate in TLS CA file {}", path.display())
+                })?;
+            }
+        }
+        let tls = rustls::ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+        let tls = Arc::new(crate::tls::DeadlineTls::new(tls));
+        let agent = ureq::AgentBuilder::new()
+            .tls_connector(tls.clone())
+            .https_only(!insecure_http)
+            .redirects(0)
+            .try_proxy_from_env(false)
+            .build();
+        Ok(Self {
+            url,
+            agent,
+            tls,
+            insecure_http,
+        })
+    }
+}
+
+/// An AMT machine addressed over the explicitly configured WS-Man transport.
 pub struct Client {
     url: String,
+    agent: ureq::Agent,
+    tls: Arc<crate::tls::DeadlineTls>,
     /// The request path, as it appears in the Digest `uri` parameter.
     path: &'static str,
     user: String,
@@ -180,21 +231,23 @@ pub struct Client {
     server: RefCell<Option<String>>,
 }
 
-/// Parse a `-d` address into `(host, port)`, where `host` is a hostname, an
-/// IPv4 address, or a bracketed IPv6 literal kept bracketed for the URL.
-/// Accepts an optional `http://` prefix and an optional `:port`; rejects
-/// `https://` (TLS AMT is unsupported), unbracketed IPv6, and any character
-/// that would turn the address into a different URL (`@ / ? # < > & "` or
-/// whitespace) rather than let it into the request line.
-fn parse_device(device: &str) -> Result<(String, u16)> {
+/// Resolve a narrow host[:port] address; ports never select the transport.
+/// Credentials, paths (except a trailing slash), queries and fragments are rejected.
+fn parse_device(device: &str, allow_insecure_http: bool) -> Result<(String, bool)> {
     let d = device.trim().trim_end_matches('/');
-    if d.starts_with("https://") {
-        bail!(
-            "TLS (https / port 16993) is not supported — \
-             this helper speaks plain WS-Man on port 16992"
-        );
-    }
-    let d = d.strip_prefix("http://").unwrap_or(d);
+    let (d, insecure_http) = if let Some(host) = d.strip_prefix("https://") {
+        if allow_insecure_http {
+            bail!("HTTPS device address conflicts with --allow-insecure-http");
+        }
+        (host, false)
+    } else if let Some(host) = d.strip_prefix("http://") {
+        if !allow_insecure_http {
+            bail!("HTTP device address requires --allow-insecure-http; prefer verified HTTPS");
+        }
+        (host, true)
+    } else {
+        (d, allow_insecure_http)
+    };
     if d.is_empty() {
         bail!("empty device address");
     }
@@ -237,7 +290,13 @@ fn parse_device(device: &str) -> Result<(String, u16)> {
         bail!("invalid device address {device:?}: {host:?} is not a hostname or IPv4 address");
     }
     let port = match port_part {
-        "" => DEFAULT_PORT,
+        "" => {
+            if insecure_http {
+                HTTP_PORT
+            } else {
+                HTTPS_PORT
+            }
+        }
         p => match p.strip_prefix(':') {
             Some(n) => match n.parse::<u16>() {
                 Ok(0) | Err(_) => bail!(
@@ -251,23 +310,22 @@ fn parse_device(device: &str) -> Result<(String, u16)> {
             ),
         },
     };
-    Ok((host, port))
+    let scheme = if insecure_http { "http" } else { "https" };
+    Ok((format!("{scheme}://{host}:{port}/wsman"), insecure_http))
 }
 
 impl Client {
-    /// Build a client from a user-supplied address (see [`parse_device`]):
-    /// a hostname, IPv4 address, or bracketed IPv6 literal, optionally with
-    /// a port (default 16992). An `https://` address is rejected —
-    /// TLS-provisioned AMT (port 16993) is not supported by this helper.
-    pub fn new(device: &str, user: &str, password: &str) -> Result<Self> {
-        let (host, port) = parse_device(device)?;
-        Ok(Client {
-            url: format!("http://{host}:{port}/wsman"),
+    /// Attach credentials only after endpoint and trust validation have succeeded.
+    pub fn new(connection: Connection, user: &str, password: &str) -> Self {
+        Client {
+            url: connection.url,
+            agent: connection.agent,
+            tls: connection.tls,
             path: "/wsman",
             user: user.to_string(),
             password: password.to_string(),
             server: RefCell::new(None),
-        })
+        }
     }
 
     /// The AMT firmware identity from the HTTP `Server:` header, if a
@@ -440,8 +498,10 @@ impl Client {
     /// what the caller allotted. Returns the response body.
     fn post(&self, xml: &str, budget: Duration) -> Result<String> {
         let deadline = Instant::now() + budget;
+        self.tls.set_deadline(deadline);
         let req = || {
-            ureq::post(&self.url)
+            self.agent
+                .post(&self.url)
                 .set("Content-Type", "application/soap+xml;charset=UTF-8")
                 .timeout(
                     deadline
@@ -450,7 +510,7 @@ impl Client {
                 )
         };
         match req().send_string(xml) {
-            Ok(resp) => resp.into_string().context("reading WS-Man response"),
+            Ok(resp) => self.response_body(resp),
             Err(ureq::Error::Status(401, resp)) => {
                 *self.server.borrow_mut() = resp.header("Server").map(str::to_string);
                 let header = resp
@@ -459,33 +519,64 @@ impl Client {
                 let ch = parse_challenge(header)?;
                 let authz = self.authorization(&ch, "POST");
                 match req().set("Authorization", &authz).send_string(xml) {
-                    Ok(resp) => resp.into_string().context("reading WS-Man response"),
+                    Ok(resp) => self.response_body(resp),
                     Err(ureq::Error::Status(401, resp)) => {
                         Err(auth_failed(resp.header("WWW-Authenticate")))
                     }
                     Err(ureq::Error::Status(code, resp)) => Err(http_error(code, resp)),
-                    Err(ureq::Error::Transport(t)) => Err(self.transport_error(t, "")),
+                    Err(ureq::Error::Transport(t)) => Err(self.transport_error(t)),
                 }
             }
             Err(ureq::Error::Status(code, resp)) => Err(http_error(code, resp)),
-            Err(ureq::Error::Transport(t)) => Err(self.transport_error(
-                t,
-                " (a TLS-provisioned machine serves WS-Man only on port 16993, \
-                 which this helper does not support)",
-            )),
+            Err(ureq::Error::Transport(t)) => Err(self.transport_error(t)),
         }
     }
 
-    /// Wrap a ureq transport failure, marking it [`Transient`] only when its
-    /// kind is one that retrying can outwait (see [`transient_kind`]).
-    fn transport_error(&self, t: ureq::Transport, hint: &str) -> anyhow::Error {
-        let kind = t.kind();
-        let err = anyhow!("cannot reach AMT at {}: {t}{hint}", self.url);
-        if transient_kind(kind) {
+    fn transport_error(&self, t: ureq::Transport) -> anyhow::Error {
+        let transient =
+            transient_kind(t.kind()) && (t.kind() == ureq::ErrorKind::Dns || retryable_io(&t));
+        self.network_error(t, transient)
+    }
+
+    fn network_error<E: std::error::Error + Send + Sync + 'static>(
+        &self,
+        error: E,
+        transient: bool,
+    ) -> anyhow::Error {
+        if let Some(tls) = tls_error(&error) {
+            return anyhow!(
+                "TLS verification or negotiation failed at {}: {tls}. \
+                 Use the certified hostname and --tls-ca-file for a private issuer; \
+                 the firmware must support compatible TLS 1.2 or newer algorithms",
+                self.url
+            );
+        }
+        let hint = if self.url.starts_with("https:") {
+            "; HTTPS is required by default (16993). For intentionally unencrypted legacy HTTP, \
+             explicitly select --allow-insecure-http; a port alone does not select HTTP"
+        } else {
+            "; a TLS-only machine requires HTTPS: remove --allow-insecure-http"
+        };
+        let err = anyhow!("AMT transport failure at {}: {error}{hint}", self.url);
+        if transient {
             err.context(Transient)
         } else {
             err
         }
+    }
+
+    fn response_body(&self, resp: ureq::Response) -> Result<String> {
+        if (300..400).contains(&resp.status()) {
+            bail!(
+                "WS-Man redirect (HTTP {}) refused; configure the endpoint directly",
+                resp.status()
+            );
+        }
+        resp.into_string().map_err(|error| {
+            let transient = retryable_io(&error);
+            self.network_error(error, transient)
+                .context("reading WS-Man response")
+        })
     }
 
     /// Build the `Authorization:` header value answering a digest challenge.
@@ -517,6 +608,38 @@ impl Client {
         }
         h
     }
+}
+
+/// io::Error::source can skip its immediate inner error; inspect get_ref too.
+fn tls_error<'a>(err: &'a (dyn std::error::Error + 'static)) -> Option<&'a rustls::Error> {
+    if let Some(tls) = err.downcast_ref::<rustls::Error>() {
+        return Some(tls);
+    }
+    if let Some(inner) = err.downcast_ref::<io::Error>().and_then(io::Error::get_ref) {
+        if let Some(tls) = tls_error(inner) {
+            return Some(tls);
+        }
+    }
+    err.source().and_then(tls_error)
+}
+
+fn retryable_io(err: &(dyn std::error::Error + 'static)) -> bool {
+    if let Some(io) = err.downcast_ref::<io::Error>() {
+        return matches!(
+            io.kind(),
+            io::ErrorKind::ConnectionRefused
+                | io::ErrorKind::ConnectionReset
+                | io::ErrorKind::ConnectionAborted
+                | io::ErrorKind::TimedOut
+                | io::ErrorKind::WouldBlock
+                | io::ErrorKind::NotConnected
+                | io::ErrorKind::BrokenPipe
+                | io::ErrorKind::UnexpectedEof
+                | io::ErrorKind::HostUnreachable
+                | io::ErrorKind::NetworkUnreachable
+        ) || io.get_ref().is_some_and(|inner| retryable_io(inner));
+    }
+    err.source().is_some_and(retryable_io)
 }
 
 /// CIM `RequestPowerStateChange` ReturnValue names (DMTF value map subset).
@@ -877,44 +1000,44 @@ mod tests {
     use super::*;
 
     fn url(device: &str) -> String {
-        Client::new(device, "admin", "pw").unwrap().url
+        Connection::new(device, false, None).unwrap().url
     }
 
     #[test]
     fn address_normalization() {
-        assert_eq!(url("10.0.0.5"), "http://10.0.0.5:16992/wsman");
-        assert_eq!(url("amt-host:16993"), "http://amt-host:16993/wsman");
-        assert_eq!(url("http://10.0.0.5/"), "http://10.0.0.5:16992/wsman");
-        assert_eq!(url("  amt-host.lab  "), "http://amt-host.lab:16992/wsman");
-        assert_eq!(url("http://amt-host:1"), "http://amt-host:1/wsman");
-        assert!(Client::new("https://10.0.0.5", "admin", "pw").is_err());
-        assert!(Client::new("", "admin", "pw").is_err());
+        assert_eq!(url("192.0.2.10"), "https://192.0.2.10:16993/wsman");
+        assert_eq!(url("amt-host:16993"), "https://amt-host:16993/wsman");
+        assert_eq!(url("https://192.0.2.10/"), "https://192.0.2.10:16993/wsman");
+        assert_eq!(url("  amt-host.lab  "), "https://amt-host.lab:16993/wsman");
+        assert_eq!(url("https://amt-host:1"), "https://amt-host:1/wsman");
+        assert!(Connection::new("http://192.0.2.10", false, None).is_err());
+        assert!(Connection::new("", false, None).is_err());
     }
 
     #[test]
     fn ipv6_literals_stay_bracketed_and_default_the_port() {
-        assert_eq!(url("[fe80::1]"), "http://[fe80::1]:16992/wsman");
-        assert_eq!(url("[fe80::1]:16993"), "http://[fe80::1]:16993/wsman");
-        assert_eq!(url("http://[::1]/"), "http://[::1]:16992/wsman");
-        assert_eq!(url("[2001:db8::10]"), "http://[2001:db8::10]:16992/wsman");
+        assert_eq!(url("[fe80::1]"), "https://[fe80::1]:16993/wsman");
+        assert_eq!(url("[fe80::1]:16993"), "https://[fe80::1]:16993/wsman");
+        assert_eq!(url("https://[::1]/"), "https://[::1]:16993/wsman");
+        assert_eq!(url("[2001:db8::10]"), "https://[2001:db8::10]:16993/wsman");
     }
 
     #[test]
     fn address_rejects_anything_beyond_host_and_port() {
         let rejected = [
-            "user@10.0.0.5",    // userinfo
-            "10.0.0.5/wsman",   // path
-            "10.0.0.5?x=1",     // query
-            "10.0.0.5#frag",    // fragment
-            "<10.0.0.5>",       // angle brackets
-            "10.0.0.5&x",       // ampersand
-            "\"10.0.0.5\"",     // quotes
+            "user@192.0.2.10",  // userinfo
+            "192.0.2.10/wsman", // path
+            "192.0.2.10?x=1",   // query
+            "192.0.2.10#frag",  // fragment
+            "<192.0.2.10>",     // angle brackets
+            "192.0.2.10&x",     // ampersand
+            "\"192.0.2.10\"",   // quotes
             "10.0.0 5",         // whitespace inside
             "amt\thost",        // tab inside
-            "10.0.0.5:",        // empty port
-            "10.0.0.5:abc",     // non-numeric port
-            "10.0.0.5:70000",   // port out of range
-            "10.0.0.5:0",       // port zero
+            "192.0.2.10:",      // empty port
+            "192.0.2.10:abc",   // non-numeric port
+            "192.0.2.10:70000", // port out of range
+            "192.0.2.10:0",     // port zero
             "fe80::1",          // unbracketed IPv6
             "[fe80::1",         // unterminated bracket
             "[not-an-address]", // bracketed non-IPv6
@@ -925,7 +1048,7 @@ mod tests {
             ":16992",           // empty host
         ];
         for d in rejected {
-            let err = Client::new(d, "admin", "pw")
+            let err = Connection::new(d, false, None)
                 .err()
                 .unwrap_or_else(|| panic!("{d:?} must be rejected"));
             assert!(
@@ -1033,7 +1156,11 @@ mod tests {
         assert_eq!(quote_param("a\"b\\c"), "\"a\\\"b\\\\c\"");
 
         let user = "ad\"min\\x";
-        let client = Client::new("10.0.0.5", user, "pw").unwrap();
+        let client = Client::new(
+            Connection::new("amt-host.example", false, None).unwrap(),
+            user,
+            "pw",
+        );
         let ch = parse_challenge("Digest realm=\"r\", nonce=\"n\", qop=\"auth\"").unwrap();
         let h = client.authorization(&ch, "POST");
         assert!(
@@ -1247,14 +1374,14 @@ mod tests {
     #[test]
     fn envelope_shape() {
         let e = envelope(
-            "http://10.0.0.5:16992/wsman",
+            "http://192.0.2.10:16992/wsman",
             "http://schemas.xmlsoap.org/ws/2004/09/transfer/Get",
             "urn:resource",
             "",
             "<x/>",
         );
         assert!(e.contains("transfer/Get</a:Action>"));
-        assert!(e.contains("<a:To s:mustUnderstand=\"true\">http://10.0.0.5:16992/wsman"));
+        assert!(e.contains("<a:To s:mustUnderstand=\"true\">http://192.0.2.10:16992/wsman"));
         assert!(e.contains("<w:ResourceURI s:mustUnderstand=\"true\">urn:resource"));
         assert!(e.contains("<a:MessageID s:mustUnderstand=\"true\">uuid:"));
         assert!(e.contains("<s:Body><x/></s:Body>"));
@@ -1265,3 +1392,7 @@ mod tests {
         assert_ne!(message_id(), message_id());
     }
 }
+
+#[cfg(test)]
+#[path = "transport_tests.rs"]
+mod transport_tests;

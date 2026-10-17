@@ -64,6 +64,14 @@ each term briefly on first use; this page is the longer reference.
 
 | Term | Meaning |
 |---|---|
+| **TLS / HTTPS** | Transport Layer Security encrypts a connection and checks the server's identity. HTTPS carries HTTP inside TLS. AMT uses verified HTTPS by default. |
+| **CA / public root** | A certificate authority signs certificates. A trusted root certificate starts a chain of trust. AMT uses built-in public roots and can add private roots from a file; these are separate from the operating system's trust store. |
+| **PEM** | A text format containing encoded certificates between BEGIN/END markers. The AMT CA-file option reads certificates in this format. |
+| **SAN** | Subject Alternative Name: the names or IP addresses a server certificate is valid for. Trusting its issuer does not make it valid for a different name. |
+| **Digest authentication** | Password challenge/response authentication used by AMT. It does not encrypt commands or replies; HTTPS supplies that protection. |
+| **WS-Management / SOAP** | A management protocol and its XML message format. AMT uses these messages for power commands and KVM configuration. |
+| **mutual TLS** | TLS in which both client and server authenticate with certificates. The AMT helper supports server certificates, not client certificates. |
+| **cipher / signature algorithm** | Cryptographic methods peers must both support to establish and authenticate a TLS connection. A shared TLS version alone is not sufficient. |
 | **BPF** | Berkeley Packet Filter: the macOS kernel interface for sending and receiving raw network frames. |
 | **CDC-ACM / cdc_acm** | USB's standard virtual serial-port interface / the Linux driver that exposes it as a tty. |
 | **endpoint / bulk transfer** | An endpoint is a numbered USB data path. Bulk transfers carry reliable bytes; OUT goes from host to device, IN returns to the host. |

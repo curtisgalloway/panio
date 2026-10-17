@@ -3708,6 +3708,13 @@ fn run_power_hook(cmd: &str, label: &str, target: &str, level: Option<&str>) -> 
     }
 }
 
+/// Forward a successful state hook's stderr as diagnostics. Best-effort:
+/// a failed write (closed pipe, full device) must not turn a successful
+/// hook into a failure or hide its stdout verdict.
+fn forward_state_hook_stderr<W: std::io::Write>(out: &mut W, bytes: &[u8]) {
+    let _ = out.write_all(bytes);
+}
+
 /// Run a power channel's `state_cmd` and read its verdict: `true` for on,
 /// `false` for off, from the first whitespace-delimited token of its stdout
 /// (case-insensitive). A failing command is `hook_failed`; any other first
@@ -3735,6 +3742,9 @@ fn read_state_cmd(cmd: &str, target: &str) -> Result<bool> {
         .channel("power")
         .into());
     }
+    // Successful hooks can still warn (for example, about insecure AMT HTTP).
+    // Keep those diagnostics separate from the state verdict on stdout.
+    forward_state_hook_stderr(&mut std::io::stderr().lock(), &out.stderr);
     let text = String::from_utf8_lossy(&out.stdout);
     let token = text
         .split_whitespace()
@@ -6030,6 +6040,26 @@ mod tests {
         .unwrap();
         assert!(on);
         assert_eq!(calls, 3);
+    }
+
+    /// Forwarding a successful hook's stderr is best-effort: a failing
+    /// sink must not fail the state read (F1).
+    #[test]
+    fn forward_state_hook_stderr_ignores_write_errors() {
+        struct FailingWriter;
+        impl std::io::Write for FailingWriter {
+            fn write(&mut self, _buf: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::from(std::io::ErrorKind::BrokenPipe))
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        // Must not panic or propagate; reaching here is the assertion.
+        forward_state_hook_stderr(&mut FailingWriter, b"warning\n");
+        let mut ok: Vec<u8> = Vec::new();
+        forward_state_hook_stderr(&mut ok, b"warning\n");
+        assert_eq!(ok, b"warning\n");
     }
 
     #[test]
