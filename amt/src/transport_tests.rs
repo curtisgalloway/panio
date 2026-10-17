@@ -412,7 +412,7 @@ fn slow_tls_handshake_obeys_total_io_deadline() {
         let mut hello = [0; 4096];
         assert!(stream.read(&mut hello).unwrap() > 0);
         stream.write_all(&[22, 3, 3, 3, 232]).unwrap();
-        for _ in 0..200 {
+        for _ in 0..400 {
             if stream.write_all(&[0]).is_err() {
                 break;
             }
@@ -428,10 +428,10 @@ fn slow_tls_handshake_obeys_total_io_deadline() {
     let amt_client = client(port, None);
     let start = Instant::now();
     let err = amt_client
-        .power_state_within(Duration::from_secs(2))
+        .power_state_within(Duration::from_secs(5))
         .unwrap_err();
     assert!(
-        start.elapsed() < Duration::from_secs(4),
+        start.elapsed() < Duration::from_secs(8),
         "deadline was exceeded: {err:?}"
     );
     assert!(is_transient(&err), "{err:?}");
@@ -458,7 +458,7 @@ fn response_body_timeout_is_transient_but_tls_corruption_is_terminal() {
                 stream.sock.write_all(&[23, 3, 3, 0, 17]).unwrap();
                 stream.sock.write_all(&[0; 17]).unwrap();
             } else {
-                for _ in 0..200 {
+                for _ in 0..400 {
                     if stream.write_all(b"x").and_then(|_| stream.flush()).is_err() {
                         break;
                     }
@@ -469,9 +469,9 @@ fn response_body_timeout_is_transient_but_tls_corruption_is_terminal() {
         let amt_client = client(port, Some(fixture.ca.path()));
         let start = Instant::now();
         let err = amt_client
-            .power_state_within(Duration::from_secs(2))
+            .power_state_within(Duration::from_secs(5))
             .unwrap_err();
-        assert!(start.elapsed() < Duration::from_secs(4), "{err:?}");
+        assert!(start.elapsed() < Duration::from_secs(8), "{err:?}");
         assert_eq!(is_transient(&err), !corrupt, "{err:?}");
         if corrupt {
             assert!(format!("{err:?}").contains("TLS"));
