@@ -419,8 +419,12 @@ fn slow_tls_handshake_obeys_total_io_deadline() {
             thread::sleep(Duration::from_millis(50));
         }
     });
+    // Build the client outside the timed window: construction (root-store
+    // setup, CA parsing) is not part of the I/O deadline under test, and on
+    // a loaded runner it can eat the whole elapsed budget before the call.
+    let amt_client = client(port, None);
     let start = Instant::now();
-    let err = client(port, None)
+    let err = amt_client
         .power_state_within(Duration::from_millis(300))
         .unwrap_err();
     assert!(
@@ -459,8 +463,9 @@ fn response_body_timeout_is_transient_but_tls_corruption_is_terminal() {
                 }
             }
         });
+        let amt_client = client(port, Some(fixture.ca.path()));
         let start = Instant::now();
-        let err = client(port, Some(fixture.ca.path()))
+        let err = amt_client
             .power_state_within(Duration::from_millis(300))
             .unwrap_err();
         assert!(start.elapsed() < Duration::from_secs(1), "{err:?}");
