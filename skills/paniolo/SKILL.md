@@ -133,7 +133,10 @@ replaces a bundled helper or skill of the same name.
 
 Use `paniolo serial wait <target> [-i console] --epoch E --since N` (MCP:
 `serial_wait`) with `health.epoch` and `health.last_rx_seq` saved before input.
-These are RX chunk counters, not line-log sequence numbers. Optional
+These are RX chunk counters, not line-log sequence numbers. A healthy journal
+that lags the saved live cursor is allowed to catch up within the wait deadline;
+expiration is `timeout`, not `gap` (also for `serial transact`). Real journal
+faults and cursors beyond live RX remain explicit failures. Optional
 `--pattern TEXT` matches literal UTF-8 across fresh raw chunks. Omit it to
 collect until the deadline/cap; a match never establishes task success.
 

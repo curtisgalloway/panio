@@ -480,7 +480,11 @@ opens the serial port, resets hardware, restarts a daemon, or retries an action.
 MCP `serial_wait` exposes the same options and result.
 
 `--timeout-ms` defaults to 30000, is limited to one hour, and uses a monotonic
-clock; zero performs one immediate observation. Waiting and status requests
+clock; zero performs one immediate observation. If the saved live RX cursor
+is ahead of the journal, a healthy capture is allowed to catch up within this
+same deadline. Expiring while capture is pending returns `timeout`, including
+for `serial transact`; a cursor beyond live RX or a real journal fault still
+reports a gap or capture failure. Waiting and status requests
 are bounded by the remaining deadline; bounded journal reading, JSON processing
 and output add processing overhead. `--max-bytes` limits raw acquisition
 (1–1048576 bytes, default 65536). `--max-output-bytes` is an independent hard

@@ -672,7 +672,8 @@ enum SerialCmd {
         /// Exclusive RX chunk sequence boundary within that epoch.
         #[arg(long)]
         since: u64,
-        /// Finite acquisition deadline in ms (0 = one immediate observation; max 1 hour).
+        /// Finite acquisition deadline in ms, including journal catch-up
+        /// (0 = one immediate observation; max 1 hour).
         #[arg(long, default_value_t = 30000, value_parser = clap::value_parser!(u64).range(0..=3600000))]
         timeout_ms: u64,
         /// Raw evidence byte cap, including fault bytes (1..=1048576).

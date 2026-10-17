@@ -52,7 +52,10 @@ serialcap/       Rust crate: serial console daemon (parallels hdmicap)
                  chunks, literal patterns, explicit incomplete outcomes, NDJSON
                  completed rows, optional final pending. Output budget covers
                  every follow event and the final JSON. Never sends input,
-                 resets or restarts
+                 resets or restarts. Before its first journal read, health gates
+                 a live boundary ahead of the persisted watermark;
+                 catch-up timeout is timeout, and real journal faults remain
+                 explicit (#317)
     transact.rs  POST /transact (#301): take the interface's transaction lock
                  (SerialHandle::transaction, fair tokio RwLock held for write),
                  read the receive boundary (epoch + last_rx_seq) BEFORE writing,

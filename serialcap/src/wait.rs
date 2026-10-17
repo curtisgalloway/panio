@@ -194,6 +194,7 @@ pub fn run(
     let mut pending_diagnostics = Vec::<Value>::new();
     let mut generation = None;
     let mut should_read = true;
+    let mut first_read = true;
     let mut emitted_bytes = 0;
     let mut meta = ResultMeta {
         started_at_ms,
@@ -219,6 +220,48 @@ pub fn run(
     let mut next_record_bytes = None;
     let mut required_output_bytes = None;
     let status = 'acquire: loop {
+        // Status exposes the live RX counter before capture persists it. Do
+        // not ask the journal for that boundary until its watermark catches
+        // up: even the epoch checkpoint may not exist yet during startup.
+        let mut preflight = None;
+        if first_read {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let timeout = if request.timeout_ms == 0 {
+                Duration::from_millis(250)
+            } else {
+                if remaining.is_zero() {
+                    break "timeout";
+                }
+                remaining.min(Duration::from_millis(250))
+            };
+            let state = health(timeout);
+            // A slow or timed-out status request must not open the journal
+            // after the deadline and turn capture lag into a false gap.
+            if request.timeout_ms > 0 && Instant::now() >= deadline {
+                break "timeout";
+            }
+            let behind = state.as_ref().is_ok_and(|s| {
+                s["health"]["epoch"].as_str() == Some(request.epoch.as_str())
+                    && s["connected"] == true
+                    && s["health"]["capture_alive"] == true
+                    && s["health"]["evidence_error"].is_null()
+                    && s["health"]["last_rx_seq"]
+                        .as_u64()
+                        .is_some_and(|seq| seq >= request.since)
+                    && s["health"]["evidence_through_seq"]
+                        .as_u64()
+                        .is_some_and(|seq| seq < request.since)
+            });
+            if behind {
+                should_read = false;
+                pending_diagnostics = vec![json!({"kind":"capture_pending",
+                    "message":"received cursor is ahead of the persisted journal"})];
+                preflight = Some(state);
+            } else {
+                first_read = false;
+                should_read = true;
+            }
+        }
         let envelope = match if should_read {
             read(
                 acquired.cursor,
@@ -233,8 +276,10 @@ pub fn run(
                 break "read_error";
             }
         };
-        if let Some(notes) = envelope["diagnostics"].as_array() {
+        if should_read {
             pending_diagnostics.clear();
+        }
+        if let Some(notes) = envelope["diagnostics"].as_array() {
             for note in notes {
                 if matches!(
                     note["kind"].as_str(),
@@ -332,7 +377,7 @@ pub fn run(
         } else {
             remaining.min(Duration::from_millis(250))
         };
-        let state = match health(health_timeout) {
+        let state = match preflight.unwrap_or_else(|| health(health_timeout)) {
             Ok(value) => value,
             Err(e) => {
                 let timed_out = e.chain().any(|cause| {
@@ -594,6 +639,200 @@ mod tests {
         }
     }
 
+    fn ahead() -> Value {
+        json!({"records":[],"gap":true,"diagnostics":[
+            {"kind":"cursor_ahead","message":"cursor ahead"},
+            {"kind":"gap","message":"receive history gap"},
+            {"kind":"capture_pending","message":"append pending"}
+        ]})
+    }
+
+    fn lagging() -> Value {
+        let mut state = healthy();
+        state["health"]["last_rx_seq"] = json!(10);
+        state["health"]["evidence_through_seq"] = json!(9);
+        state
+    }
+
+    #[test]
+    fn live_boundary_waits_for_journal_and_reads_when_it_reaches_the_boundary() {
+        let mut req = request(Some("done"), 64);
+        req.timeout_ms = 1000;
+        let mut reads = 0;
+        let mut probes = 0;
+        let probes_seen = std::cell::Cell::new(0);
+        let output = run(
+            &req,
+            |since, _| {
+                assert_eq!(since, 10);
+                reads += 1;
+                assert!(probes_seen.get() >= 3, "journal read before catch-up");
+                Ok(json!({"records":[record(11, b"done")]}))
+            },
+            |_| {
+                probes += 1;
+                probes_seen.set(probes);
+                let mut state = lagging();
+                if probes >= 3 {
+                    state["health"]["evidence_through_seq"] = json!(10);
+                }
+                Ok(state)
+            },
+            |_| Ok(()),
+        )
+        .unwrap();
+        assert_eq!(output["status"], "matched", "{output}");
+        assert_eq!(output["through_rx_seq"], 11);
+        assert_eq!(reads, 1, "do not read while capture is behind");
+        assert!(output["diagnostics"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn boundary_catch_up_deadline_is_timeout_not_gap() {
+        for timeout_ms in [0, 60] {
+            let mut req = request(Some("done"), 64);
+            req.timeout_ms = timeout_ms;
+            let mut reads = 0;
+            let output = run(
+                &req,
+                |_, _| {
+                    reads += 1;
+                    Ok(ahead())
+                },
+                |_| Ok(lagging()),
+                |_| Ok(()),
+            )
+            .unwrap();
+            assert_eq!(output["status"], "timeout", "{output}");
+            assert_eq!(output["through_rx_seq"], 10);
+            assert_eq!(reads, 0);
+            assert_eq!(output["diagnostics"][0]["kind"], "capture_pending");
+        }
+    }
+
+    #[test]
+    fn preflight_deadline_never_reads_a_still_lagging_journal() {
+        for initial_lag in [false, true] {
+            let mut req = request(None, 64);
+            req.timeout_ms = 80;
+            let mut probes = 0;
+            let output = run(
+                &req,
+                |_, _| panic!("journal must not be read after preflight exhausts deadline"),
+                |remaining| {
+                    probes += 1;
+                    if initial_lag && probes == 1 {
+                        return Ok(lagging());
+                    }
+                    std::thread::sleep(remaining + Duration::from_millis(5));
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "health probe exhausted deadline",
+                    )
+                    .into())
+                },
+                |_| Ok(()),
+            )
+            .unwrap();
+            assert_eq!(output["status"], "timeout", "{output}");
+            if initial_lag {
+                assert_eq!(output["diagnostics"][0]["kind"], "capture_pending");
+            }
+        }
+    }
+
+    #[test]
+    fn catch_up_does_not_hide_real_faults_or_invalid_boundaries() {
+        for (state, envelope, expected) in [
+            (
+                {
+                    let mut s = lagging();
+                    s["health"]["last_rx_seq"] = json!(9);
+                    s
+                },
+                ahead(),
+                "gap",
+            ),
+            (
+                {
+                    let mut s = lagging();
+                    s["health"]["epoch"] = json!("other");
+                    s
+                },
+                json!({"records":[]}),
+                "epoch_changed",
+            ),
+            (
+                {
+                    let mut s = lagging();
+                    s["health"]["capture_alive"] = json!(false);
+                    s
+                },
+                json!({"records":[]}),
+                "capture_error",
+            ),
+            (
+                {
+                    let mut s = lagging();
+                    s["health"]["evidence_error"] = json!("write failed");
+                    s
+                },
+                json!({"records":[]}),
+                "capture_error",
+            ),
+            (
+                {
+                    let mut s = lagging();
+                    s["connected"] = json!(false);
+                    s
+                },
+                json!({"records":[]}),
+                "disconnected",
+            ),
+            (
+                {
+                    let mut s = lagging();
+                    s["health"]["evidence_error"] = json!("write failed");
+                    s
+                },
+                {
+                    let mut e = ahead();
+                    e["diagnostics"]
+                        .as_array_mut()
+                        .unwrap()
+                        .push(json!({"kind":"write_error"}));
+                    e
+                },
+                "gap",
+            ),
+            (
+                {
+                    let mut s = lagging();
+                    s["health"]["evidence_error"] = json!("write failed");
+                    s
+                },
+                {
+                    let mut e = ahead();
+                    e["diagnostics"]
+                        .as_array_mut()
+                        .unwrap()
+                        .push(json!({"kind":"failed_receive","raw_bytes":[255]}));
+                    e
+                },
+                "gap",
+            ),
+        ] {
+            let output = run(
+                &request(None, 64),
+                |_, _| Ok(envelope.clone()),
+                |_| Ok(state.clone()),
+                |_| Ok(()),
+            )
+            .unwrap();
+            assert_eq!(output["status"], expected, "{output}");
+        }
+    }
+
     #[test]
     fn reconnect_during_a_quiet_wait_retains_received_evidence() {
         let mut req = request(None, 64);
@@ -629,10 +868,15 @@ mod tests {
     fn status_request_expiring_at_deadline_reports_timeout_and_keeps_bytes() {
         let mut req = request(None, 64);
         req.timeout_ms = 50;
+        let mut probes = 0;
         let output = run(
             &req,
             |_, _| Ok(json!({"records":[record(11, b"before deadline")]})),
             |remaining| {
+                probes += 1;
+                if probes == 1 {
+                    return Ok(healthy());
+                }
                 std::thread::sleep(remaining + Duration::from_millis(5));
                 Err(std::io::Error::new(
                     std::io::ErrorKind::TimedOut,

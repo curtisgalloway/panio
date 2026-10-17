@@ -111,10 +111,9 @@ async fn transact(handle: SerialHandle, body: Bytes, params: Params) -> Result<V
         .await
         .map_err(|e| Refusal::Unavailable(format!("{e:#}")))?;
 
-    journal_catch_up(&handle, &epoch, since, deadline).await;
-
-    // Whatever the queue, the write and the catch-up left of the deadline. At least 1 ms:
-    // 0 means "unbounded" to `wait::run`, and an expired deadline must still
+    // Whatever the queue and write left of the deadline. The shared wait
+    // includes journal catch-up. At least 1 ms:
+    // 0 means "one snapshot" to `wait::run`, and an expired deadline must still
     // end the call (as `timeout`).
     let remaining = deadline
         .saturating_duration_since(Instant::now())
@@ -158,40 +157,6 @@ async fn transact(handle: SerialHandle, body: Bytes, params: Params) -> Result<V
     let mut result = result.map_err(|e| Refusal::Unavailable(format!("{e:#}")))?;
     result["sent_bytes"] = sent.into();
     Ok(result)
-}
-
-/// How often [`journal_catch_up`] re-reads the in-process health.
-const CATCH_UP_POLL: Duration = Duration::from_millis(2);
-
-/// Wait, until `deadline`, for the raw receive journal to reach the boundary.
-///
-/// The boundary is the live receive cursor (`last_rx_seq`), which the
-/// supervisor advances the moment it reads a chunk; the capture thread
-/// persists that chunk to the journal a moment later and only then advances
-/// `evidence_through_seq`. The wait reads the journal, and a boundary the
-/// journal has not reached yet is beyond everything it holds, which it reports
-/// as `cursor_ahead` — a `gap` — ending the transaction before the reply. That
-/// lag is the normal in-progress append (`capture_pending`), not missing
-/// history, so it is waited out here.
-///
-/// Anything that means the journal will not catch up — a recorded write
-/// fault, a capture thread that has stopped, a new epoch — ends this at once,
-/// and so does the deadline; the wait then reports that state exactly as it
-/// would have without this step. Nothing is masked: this only decides when
-/// the first read happens.
-async fn journal_catch_up(handle: &SerialHandle, epoch: &str, since: u64, deadline: Instant) {
-    loop {
-        let health = handle.status().health;
-        if health.epoch != epoch
-            || health.evidence_through_seq >= since
-            || health.evidence_error.is_some()
-            || !health.capture_alive
-            || Instant::now() >= deadline
-        {
-            return;
-        }
-        tokio::time::sleep_until(deadline.min(Instant::now() + CATCH_UP_POLL)).await;
-    }
 }
 
 #[cfg(all(test, unix))]
@@ -340,13 +305,42 @@ mod tests {
         std::fs::remove_dir_all(dir).ok();
     }
 
+    #[tokio::test]
+    async fn journal_still_behind_at_deadline_reports_timeout() {
+        let (handle, mut far, dir) = spawn_on_pty("transact-lag-timeout");
+        let (_, mut rx) = handle.attach();
+        recv_until(&mut rx, b"serial connected").await;
+        let held = handle.hold_journal();
+        far.write_all(b"old output\r\n").unwrap();
+        recv_until(&mut rx, b"old output\r\n").await;
+        let since = handle.status().health.last_rx_seq;
+        let result = run(
+            handle.clone(),
+            Bytes::from_static(b"version\r"),
+            params("OK", 100, 4096),
+        )
+        .await
+        .unwrap();
+        drop(held);
+        assert_eq!(result["status"], "timeout", "{result}");
+        assert_eq!(result["since"], since);
+        assert_eq!(result["sent_bytes"], 8);
+        assert!(reply_bytes(&result).is_empty());
+        drop(far);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
     /// A target that never answers ends the call at the deadline with whatever
     /// arrived; a chatty one ends it at the byte cap.
     #[tokio::test]
     async fn timeout_and_cap_are_explicit_outcomes() {
-        let (handle, far, dir) = spawn_on_pty("transact-outcomes");
+        let (handle, mut far, dir) = spawn_on_pty("transact-outcomes");
         let (_, mut rx) = handle.attach();
         recv_until(&mut rx, b"serial connected").await;
+        // Establish a receive boundary so this tests reply timeout/cap, not
+        // the independent race with capture-thread startup.
+        far.write_all(b"ready\r\n").unwrap();
+        recv_until(&mut rx, b"ready\r\n").await;
 
         let mut target = far.try_clone().unwrap();
         let responder = std::thread::spawn(move || {
