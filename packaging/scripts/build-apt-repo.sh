@@ -17,7 +17,7 @@
 # under /apt/. Stateless by design: point it at a directory of .debs (the
 # workflow downloads them from recent GitHub Releases) and it emits a complete
 # pooled repo — pool/, per-arch Packages indexes, a GPG-signed
-# Release/InRelease, and the public key as paniolo.asc — into the output dir.
+# Release/InRelease, and the public key as panio.asc — into the output dir.
 # Nothing is kept between runs, so the live repo always mirrors the releases.
 #
 # The signing key must already be imported into the calling GNUPGHOME and must
@@ -34,7 +34,7 @@ KEY="$3"
 SUITE=stable
 COMPONENT=main
 ARCHES="amd64 arm64"
-BASE_URL="https://curtisgalloway.github.io/paniolo/apt"
+BASE_URL="https://panio.dev/apt"
 
 command -v dpkg-scanpackages >/dev/null 2>&1 || {
   echo "error: dpkg-scanpackages not found (apt-get install dpkg-dev)" >&2
@@ -66,7 +66,7 @@ FPR="$(gpg --batch --with-colons --fingerprint "$KEY" \
 # against apt 2.8: the field was missing from the published Release).
 VALID_SECONDS=$((30 * 24 * 3600))
 
-POOL="pool/$COMPONENT/p/paniolo"
+POOL="pool/$COMPONENT/p/panio"
 mkdir -p "$OUT/$POOL"
 cp "$DEBS_DIR"/*.deb "$OUT/$POOL/"
 
@@ -83,8 +83,8 @@ for arch in $ARCHES; do
 done
 
 apt-ftparchive \
-  -o "APT::FTPArchive::Release::Origin=paniolo" \
-  -o "APT::FTPArchive::Release::Label=paniolo" \
+  -o "APT::FTPArchive::Release::Origin=panio" \
+  -o "APT::FTPArchive::Release::Label=panio" \
   -o "APT::FTPArchive::Release::Suite=$SUITE" \
   -o "APT::FTPArchive::Release::Codename=$SUITE" \
   -o "APT::FTPArchive::Release::Architectures=$ARCHES" \
@@ -96,25 +96,25 @@ gpg --batch --yes --local-user "$KEY" --armor --detach-sign \
   --output "dists/$SUITE/Release.gpg" "dists/$SUITE/Release"
 gpg --batch --yes --local-user "$KEY" --clearsign \
   --output "dists/$SUITE/InRelease" "dists/$SUITE/Release"
-gpg --batch --armor --export "$KEY" > paniolo.asc
+gpg --batch --armor --export "$KEY" > panio.asc
 
 cat > index.html <<EOF
 <!DOCTYPE html>
-<html lang="en"><head><meta charset="utf-8"><title>paniolo apt repository</title></head>
-<body><h1>paniolo apt repository</h1>
-<p>Signed apt repository for <a href="https://github.com/curtisgalloway/paniolo">paniolo</a>
+<html lang="en"><head><meta charset="utf-8"><title>panio apt repository</title></head>
+<body><h1>panio apt repository</h1>
+<p>Signed apt repository for <a href="https://github.com/curtisgalloway/panio">panio</a>
 (amd64/arm64, Debian 12+ and Raspberry Pi OS). To use it:</p>
 <pre>
 sudo install -d /etc/apt/keyrings
-sudo curl -fsSL -o /etc/apt/keyrings/paniolo.asc $BASE_URL/paniolo.asc
-sudo tee /etc/apt/sources.list.d/paniolo.sources &gt;/dev/null &lt;&lt;'SRC'
+sudo curl -fsSL -o /etc/apt/keyrings/panio.asc $BASE_URL/panio.asc
+sudo tee /etc/apt/sources.list.d/panio.sources &gt;/dev/null &lt;&lt;'SRC'
 Types: deb
 URIs: $BASE_URL
 Suites: $SUITE
 Components: $COMPONENT
-Signed-By: /etc/apt/keyrings/paniolo.asc
+Signed-By: /etc/apt/keyrings/panio.asc
 SRC
-sudo apt update &amp;&amp; sudo apt install paniolo
+sudo apt update &amp;&amp; sudo apt install panio
 </pre>
 <p>Signing key fingerprint: <code>$FPR</code></p>
 </body></html>

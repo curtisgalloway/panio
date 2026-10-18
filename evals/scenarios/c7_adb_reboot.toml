@@ -6,17 +6,17 @@ core = true
 conditions = ["cold", "warm", "preloaded"]
 capabilities = ["adb", "power"]
 goal = """
-Add my Android tablet as a paniolo target named `tablet`. Its adb serial is
-`ABC123`. Then set things up so that `paniolo power-cycle tablet` reboots it.
+Add my Android tablet as a panio target named `tablet`. Its adb serial is
+`ABC123`. Then set things up so that `panio power-cycle tablet` reboots it.
 """
 traps = [
-  "there is NO `paniolo adb reboot` — reboot is wired through the power hook",
+  "there is NO `panio adb reboot` — reboot is wired through the power hook",
   "the cycle hook should run `adb -s ABC123 reboot`",
 ]
 reference = [
-  'paniolo target add tablet',
-  'paniolo adb set -t tablet --serial ABC123',
-  'paniolo power set -t tablet --cycle-cmd "adb -s ABC123 reboot"',
+  'panio target add tablet',
+  'panio adb set -t tablet --serial ABC123',
+  'panio power set -t tablet --cycle-cmd "adb -s ABC123 reboot"',
 ]
 seed = ""
 

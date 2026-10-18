@@ -15,7 +15,7 @@
 //! netbootd — single-client netboot daemon: DHCP + read-only TFTP (+ HTTP) in
 //! one process.
 //!
-//! Proof-of-concept port of paniolo's `_dhcp.py` + `_tftp.py`. Unlike the
+//! Proof-of-concept port of panio's `_dhcp.py` + `_tftp.py`. Unlike the
 //! Python version (two `sudo python -m …` subprocesses coordinating through an
 //! on-disk `client-mac` file), this is a single binary running both servers as
 //! tokio tasks — no inter-process file handshake needed.
@@ -31,7 +31,7 @@
 //! the file servers are unreachable from any other interface on the host.
 //! Startup is: validate → bind and pin all listeners → drop root (Linux, see
 //! [`privdrop`]) → serve. Privileged ports 67/69 still require root or
-//! `CAP_NET_BIND_SERVICE` on Linux, which is why `paniolo netboot start`
+//! `CAP_NET_BIND_SERVICE` on Linux, which is why `panio netboot start`
 //! spawns netbootd through `sudo` there; the daemon gives that root back as
 //! soon as the sockets are bound. The BPF path on macOS needs no privilege in
 //! the daemon at all (the setuid helper opens the descriptor).
@@ -285,7 +285,7 @@ fn spawn_listener_task(
 }
 
 /// Resolve when the daemon is asked to stop: Ctrl-C (SIGINT) or, on Unix,
-/// SIGTERM — which is what `paniolo netboot stop` sends. Yields the name of
+/// SIGTERM — which is what `panio netboot stop` sends. Yields the name of
 /// the signal for the log.
 async fn shutdown_signal() -> &'static str {
     #[cfg(unix)]
@@ -329,7 +329,7 @@ fn build_bpf_sender(interface: &str) -> bpf::BpfSender {
             Err(e) => {
                 error!(
                     "BPF handoff failed ({e}); falling back to kernel send_to. \
-                     Install the privileged helper with `paniolo setup`."
+                     Install the privileged helper with `panio setup`."
                 );
                 bpf::BpfSender::unavailable()
             }

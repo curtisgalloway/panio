@@ -26,12 +26,12 @@ works on **macOS and Linux**.
 ## Install
 
 ```bash
-cargo install --git https://github.com/curtisgalloway/paniolo shellyplug
+cargo install --git https://github.com/curtisgalloway/panio shellyplug
 ```
 
 Needs a [Rust toolchain](https://rustup.rs). The binary lands in
 `~/.cargo/bin/shellyplug`. It lives in the
-[paniolo](https://github.com/curtisgalloway/paniolo) repository but builds and
+[panio](https://github.com/curtisgalloway/panio) repository but builds and
 runs on its own.
 
 ## Quick start
@@ -67,7 +67,7 @@ shellyplug -d <host> doctor [id] [--json] read-only health check: reachable, aut
 `on`/`off`/`cycle` read `Switch.GetStatus` back and exit non-zero on a
 mismatch. A relay that ignores the off command aborts `cycle` before the hold.
 
-`doctor` never switches the relay. `--json` prints the report `paniolo doctor`
+`doctor` never switches the relay. `--json` prints the report `panio doctor`
 reads when the power channel is set with `--doctor`, and exits 0 whatever the
 checks found; without `--json` it prints one line per check and exits 1 if any
 failed.

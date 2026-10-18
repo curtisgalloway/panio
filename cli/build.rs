@@ -12,10 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! `PANIOLO_VERSION` is read at compile time by `option_env!` in
+//! `PANIO_VERSION` is read at compile time by `option_env!` in
 //! `src/main.rs`; without this hint cargo would keep a stale stamp in an
 //! incremental build after the variable changed.
 
 fn main() {
-    println!("cargo:rerun-if-env-changed=PANIOLO_VERSION");
+    println!("cargo:rerun-if-env-changed=PANIO_VERSION");
 }

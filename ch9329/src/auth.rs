@@ -487,7 +487,7 @@ mod tests {
     #[test]
     fn write_private_file_is_owner_only_and_replaces_atomically() {
         let dir = std::env::temp_dir().join(format!(
-            "paniolo-auth-{}-{}",
+            "panio-auth-{}-{}",
             std::process::id(),
             std::thread::current().name().unwrap_or("t").len()
         ));

@@ -13,13 +13,13 @@
 // limitations under the License.
 
 //! ch9329 — drive a WCH CH9329 USB-HID bridge (as in the Openterface Mini-KVM)
-//! over its control UART, speaking paniolo's HID serial protocol.
+//! over its control UART, speaking panio's HID serial protocol.
 //!
 //! This is a sibling of `hidrig` (the KB2040 injector client): same CLI surface
 //! — `type`, `key`, `combo`, `down`, `up`, `releaseall`, `move`, `moveabs`,
 //! `click`, `mdown`, `mup`, `scroll`, `ping`, `version`, `run`, plus `serve`/
-//! `stop` for the KVM daemon — so it drops into a paniolo `hid` channel
-//! (`paniolo hid set --cmd "ch9329 -d <uart>"`). Unlike hidrig there is no
+//! `stop` for the KVM daemon — so it drops into a panio `hid` channel
+//! (`panio hid set --cmd "ch9329 -d <uart>"`). Unlike hidrig there is no
 //! microcontroller running firmware: the CH9329 chip is itself the USB HID
 //! device, so this client speaks the chip's binary frame protocol directly (see
 //! `session.rs`). `serve` runs a daemon that owns the UART and re-exposes the
@@ -142,18 +142,18 @@ enum Cmd {
         delay_ms: u64,
     },
     /// Run the KVM daemon: own the UART and re-expose the protocol over a
-    /// localhost WebSocket (the `paniolo console` path). Blocks until stopped.
+    /// localhost WebSocket (the `panio console` path). Blocks until stopped.
     /// One-shots for the same device route through this daemon automatically.
     Serve {
         /// TCP port to listen on (0 = OS-assigned; the port is published in the
-        /// discovery file paniolo reads).
+        /// discovery file panio reads).
         #[arg(long, default_value_t = 0)]
         port: u16,
     },
     /// Ask a running hid daemon to shut down using its authentication token.
     ///
     /// Older daemons without the shutdown endpoint must be stopped with
-    /// `paniolo daemons stop hid` before starting the updated daemon.
+    /// `panio daemons stop hid` before starting the updated daemon.
     Stop,
     /// Persistently set the CH9329's serial baud (SET_PARA_CFG flash + reset),
     /// then reconnect at the new rate. The datasheet range is 1200..=115200
@@ -184,7 +184,7 @@ fn main() -> Result<()> {
                     tracing_subscriber::EnvFilter::try_from_default_env()
                         .unwrap_or_else(|_| "info".into()),
                 )
-                // Log to stderr: the paniolo CLI redirects a daemon's stderr into its
+                // Log to stderr: the panio CLI redirects a daemon's stderr into its
                 // daemon.log and discards stdout, so logging to stdout left every managed
                 // daemon's log file empty.
                 .with_writer(std::io::stderr)
@@ -355,19 +355,19 @@ fn cmd_stop() -> Result<()> {
 /// whenever it did not exit cleanly, and once the kernel reuses that PID the
 /// record names an unrelated process; only the token proves the request
 /// reached the daemon that wrote the file. A daemon too old to have the
-/// endpoint answers 404 and must be stopped by the paniolo CLI, which checks
+/// endpoint answers 404 and must be stopped by the panio CLI, which checks
 /// the process identity before it signals anything.
 fn request_stop(d: &daemon::Discovery) -> Result<()> {
     let token =
         d.token.as_deref().filter(|t| !t.is_empty()).context(
-            "daemon has no token; use `paniolo daemons stop hid` to stop the older daemon",
+            "daemon has no token; use `panio daemons stop hid` to stop the older daemon",
         )?;
     ureq::post(&format!("http://127.0.0.1:{}/stop", d.port))
         .set("Authorization", &format!("Bearer {token}"))
         .timeout(Duration::from_secs(5))
         .send_bytes(&[])
         .context(
-            "authenticated shutdown failed; for an older daemon use `paniolo daemons stop hid`",
+            "authenticated shutdown failed; for an older daemon use `panio daemons stop hid`",
         )?;
     Ok(())
 }

@@ -14,16 +14,16 @@ See the License for the specific language governing permissions and
 limitations under the License.
 -->
 
-# ch9329 — CH9329 USB-HID injector for paniolo
+# ch9329 — CH9329 USB-HID injector for panio
 
 **Terms:** HID is USB keyboard/mouse input; UART is a hardware serial port;
 CDC-ACM is USB's virtual serial-port interface. See the
 [glossary](../docs/glossary.md).
 
-`ch9329` is a paniolo `hid` helper (the target's keyboard and mouse) for the
+`ch9329` is a panio `hid` helper (the target's keyboard and mouse) for the
 **WCH CH9329**, a chip that turns UART commands into USB keyboard and mouse
 input on the target. It has the **same CLI surface** as
-[`hidrig`](../hidrig/README.md), so `paniolo hid send` drives it the same way.
+[`hidrig`](../hidrig/README.md), so `panio hid send` drives it the same way.
 
 | Device | How it connects | Status |
 |---|---|---|
@@ -38,23 +38,23 @@ protocol** directly (`HEAD 57 AB · ADDR · CMD · LEN · DATA · SUM`); see
 ## Wiring it into a target
 
 ```bash
-# Build/install with everything else (lands in ~/.local/libexec/paniolo/bin):
+# Build/install with everything else (lands in ~/.local/libexec/panio/bin):
 make install            # from the repo root; or: make rust
 
 # Bind the CH9329 to a target's hid channel (use its CH340 serial device):
-paniolo hid set -t winbox --cmd "ch9329 -d /dev/cu.usbserial-4120"
+panio hid set -t winbox --cmd "ch9329 -d /dev/cu.usbserial-4120"
 
 # Drive it — identical to any hid helper:
-paniolo hid send -t winbox type "hello world"
-paniolo hid send -t winbox combo LEFT_CONTROL S
-paniolo hid send -t winbox moveabs 16384 16384   # center; 0..32767 logical
-paniolo hid send -t winbox click left
-paniolo hid send -t winbox ping
+panio hid send -t winbox type "hello world"
+panio hid send -t winbox combo LEFT_CONTROL S
+panio hid send -t winbox moveabs 16384 16384   # center; 0..32767 logical
+panio hid send -t winbox click left
+panio hid send -t winbox ping
 ```
 
 Add a `video` channel on the same Openterface's MS2109 capture
-(`paniolo video set -t winbox --device "<id>"`) for a full KVM:
-`paniolo video shot` for eyes, `ch9329` for hands.
+(`panio video set -t winbox --device "<id>"`) for a full KVM:
+`panio video shot` for eyes, `ch9329` for hands.
 
 ## Commands
 
@@ -77,12 +77,12 @@ sequences.
 
 - **`ch9329 -d <dev> info`**: CH9329 `GET_INFO`. Reports device `chip_version`,
   whether the target has enumerated the emulated HID (`target_connected`),
-  lock-LED state, and the negotiated baud. Useful for `paniolo doctor`-style
+  lock-LED state, and the negotiated baud. Useful for `panio doctor`-style
   checks.
 - **`ch9329 -d <dev> usb host|target|state`**: switch or query the USB mux that
   shares the onboard microSD reader between host and target. **Openterface
-  KVM-Go** only; a real CH9329 lacks it. Wired into paniolo as the `usb` channel
-  (`paniolo usb attach-host|attach-target|state`, docs/usb.md); protocol in
+  KVM-Go** only; a real CH9329 lacks it. Wired into panio as the `usb` channel
+  (`panio usb attach-host|attach-target|state`, docs/usb.md); protocol in
   notes/openterface-usb-mux-spec.md.
   - All three print the resulting side; `host`/`target` fail if the mux did not
     move.
@@ -135,10 +135,10 @@ macOS ignores shorter lock-key presses.
 **The KVM daemon (`serve`/`stop`) is hardware-verified.** `ch9329 serve` owns
 the UART and serves the protocol on a localhost WebSocket (`GET /hid`) plus a
 `POST /send` one-shot endpoint. It publishes
-`/tmp/paniolo-<uid>/hid/<target>/daemon.json` (port and per-start token) for
-paniolo's `console`, so the web-console "Capture input" KVM works.
+`/tmp/panio-<uid>/hid/<target>/daemon.json` (port and per-start token) for
+panio's `console`, so the web-console "Capture input" KVM works.
 
-- While a daemon runs, `paniolo hid send` routes through it, so the CLI and
+- While a daemon runs, `panio hid send` routes through it, so the CLI and
   browser share the UART.
 - The UART uses the blocking `serialport` path on a dedicated thread, because
   tokio-serial's async reads are unreliable on a macOS tty.

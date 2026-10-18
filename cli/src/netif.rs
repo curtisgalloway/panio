@@ -299,15 +299,15 @@ fn refuse_shared_subnet(interface: &str, host_ip: &str, addrs: &[(String, String
             "refusing to put '{interface}' in {subnet}: '{other}' already holds {addr} on this \
              host. Two links in one /24 leave every route to a target ambiguous — ssh, AMT, \
              ffx and fastboot all follow whichever link the kernel lists first. Give each \
-             link its own /24 (paniolo netboot set -t <target> --host-ip <addr>), or release \
-             the other link first (paniolo netif mode off <its target>)."
+             link its own /24 (panio netboot set -t <target> --host-ip <addr>), or release \
+             the other link first (panio netif mode off <its target>)."
         );
     }
     Ok(())
 }
 
 /// Never put a second interface on this host into a /24 another one already
-/// holds — whether paniolo assigned that address (a target left in `mode
+/// holds — whether panio assigned that address (a target left in `mode
 /// link`, a live netboot) or somebody did by hand. The lab-file check in
 /// `model::validate_for_save` catches the configured case at edit time; this
 /// is the live one, run wherever an address is about to be assigned.

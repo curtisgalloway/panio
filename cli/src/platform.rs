@@ -12,9 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! The POSIX facilities paniolo depends on, behind a portable surface.
+//! The POSIX facilities panio depends on, behind a portable surface.
 //!
-//! Paniolo grew up on macOS and Linux, so process and filesystem primitives
+//! Panio grew up on macOS and Linux, so process and filesystem primitives
 //! were reached for directly (`libc::getuid`, `libc::kill`, `CommandExt::exec`,
 //! `DirBuilderExt::mode`). Windows has none of those. Rather than sprinkle
 //! `#[cfg]` through the call sites, every such primitive lives here with one
@@ -46,7 +46,7 @@ pub enum Signal {
 
 // ── identity ────────────────────────────────────────────────────────────────
 
-/// A stable per-user id used to namespace the runtime base (`paniolo-<id>`).
+/// A stable per-user id used to namespace the runtime base (`panio-<id>`).
 ///
 /// On Unix this is the real uid. Windows has no uid, so we hash the username
 /// (FNV-1a, truncated) — the value is meaningless on its own but is stable for
@@ -72,7 +72,7 @@ pub fn current_uid() -> u32 {
 // ── runtime directories ─────────────────────────────────────────────────────
 
 /// Default root beneath which the per-user runtime base is created, when
-/// `$PANIOLO_RUNTIME_BASE` is unset.
+/// `$PANIO_RUNTIME_BASE` is unset.
 ///
 /// Unix uses a hardcoded `/tmp` rather than `$TMPDIR`, because macOS hands each
 /// environment a different TMPDIR (GUI terminal vs SSH vs a sandboxed agent
@@ -97,7 +97,7 @@ pub fn default_runtime_root() -> std::path::PathBuf {
 /// On Unix this is a 0700 create plus an ownership *and mode* check, guarding
 /// against a squatter pre-creating the well-known `/tmp` path. An existing
 /// directory that is ours but group/world-accessible — left by a plain
-/// `create_dir_all` in an older paniolo, or made by hand — is tightened to
+/// `create_dir_all` in an older panio, or made by hand — is tightened to
 /// 0700 and accepted: it is our own directory, so there is nothing to refuse
 /// and nothing to report. One that is a symlink, not a directory, or owned
 /// by someone else is an error. On Windows the parent is inside the user's
@@ -250,7 +250,7 @@ pub fn write_atomic(path: &Path, data: &[u8]) -> std::io::Result<()> {
 /// pids as *broadcasts*: 0 means "every process in my group", -1 means "every
 /// process I am allowed to signal", and any other negative is a process group.
 /// So a zero or corrupt pid in a discovery file would make `pid_alive` answer
-/// "yes, running" and `signal_pid(.., Kill)` take down paniolo itself and the
+/// "yes, running" and `signal_pid(.., Kill)` take down panio itself and the
 /// shell that launched it. Only positive pids are ever real daemons.
 fn is_real_pid(pid: i32) -> bool {
     pid > 0
@@ -592,7 +592,7 @@ mod tests {
 
     #[test]
     fn ensure_private_dir_creates_then_revalidates() {
-        let tmp = std::env::temp_dir().join(format!("paniolo-test-{}", std::process::id()));
+        let tmp = std::env::temp_dir().join(format!("panio-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
 
         ensure_private_dir(&tmp).expect("first call creates");
@@ -606,7 +606,7 @@ mod tests {
 
     #[test]
     fn ensure_private_dir_rejects_a_non_directory() {
-        let tmp = std::env::temp_dir().join(format!("paniolo-test-file-{}", std::process::id()));
+        let tmp = std::env::temp_dir().join(format!("panio-test-file-{}", std::process::id()));
         std::fs::write(&tmp, b"not a directory").unwrap();
         assert!(
             ensure_private_dir(&tmp).is_err(),
@@ -616,14 +616,14 @@ mod tests {
     }
 
     /// A base left group/world-accessible by an earlier creator (an older
-    /// paniolo's plain `create_dir_all`, or the user by hand) is ours to
+    /// panio's plain `create_dir_all`, or the user by hand) is ours to
     /// tighten: after the call it must be 0700, so nothing beneath it — a
     /// discovery file, a capture log — is reachable by other users.
     #[cfg(unix)]
     #[test]
     fn ensure_private_dir_tightens_an_open_dir_we_own() {
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
-        let tmp = std::env::temp_dir().join(format!("paniolo-test-open-{}", std::process::id()));
+        let tmp = std::env::temp_dir().join(format!("panio-test-open-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir(&tmp).unwrap();
         std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -643,8 +643,8 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn private_dir_checks_reject_a_symlink() {
-        let real = std::env::temp_dir().join(format!("paniolo-test-real-{}", std::process::id()));
-        let link = std::env::temp_dir().join(format!("paniolo-test-link-{}", std::process::id()));
+        let real = std::env::temp_dir().join(format!("panio-test-real-{}", std::process::id()));
+        let link = std::env::temp_dir().join(format!("panio-test-link-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&real);
         let _ = std::fs::remove_file(&link);
         ensure_private_dir(&real).unwrap();

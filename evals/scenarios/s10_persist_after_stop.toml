@@ -8,7 +8,7 @@ capabilities = ["serial"]
 goal = """
 When you're done driving `dut`, stop the capture daemon to free up the serial
 port — but I'll still want to read back the boot log afterward. Can I, and how?
-List the exact paniolo commands you would run.
+List the exact panio commands you would run.
 """
 traps = [
   "the timestamped capture is persisted on disk per interface — it survives `stop` and daemon restarts",
@@ -16,9 +16,9 @@ traps = [
   "only the live dashboard view needs the daemon up",
 ]
 reference = [
-  'paniolo serial watch dut',
-  'paniolo serial stop dut          # releases the port',
-  'paniolo serial log dut --tail 50  # still works — reads the persisted on-disk capture',
+  'panio serial watch dut',
+  'panio serial stop dut          # releases the port',
+  'panio serial log dut --tail 50  # still works — reads the persisted on-disk capture',
 ]
 seed = "dut_console.toml"
 

@@ -113,7 +113,7 @@ impl ListenerInterface {
             // lock namespace. Never unlink it, even at shutdown: a waiter may
             // already have the inode open. flock releases on exit/crash.
             lock_interface_file(std::path::Path::new(&format!(
-                "/tmp/paniolo-netboot-interface-{index}.lock"
+                "/tmp/panio-netboot-interface-{index}.lock"
             )))?
         };
         Ok(Self {

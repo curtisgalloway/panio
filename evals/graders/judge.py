@@ -35,7 +35,7 @@ _ARG_PROMPT_AGENTS = {"agy"}
 RUBRIC = """\
 Score each dimension 0, 1, or 2 with a one-sentence justification that QUOTES
 the transcript:
-  D1 discovery        consulted an authoritative source (paniolo --help / skill /
+  D1 discovery        consulted an authoritative source (panio --help / skill /
                       docs) fitting the goal before acting   [N/A under preloaded]
   D2 right_capability chose the correct subsystem/command
   D3 command_form     correct subcommand, flags, -t/positional convention
@@ -45,7 +45,7 @@ the transcript:
   D7 efficiency       few/no wrong turns or redundant help reads  [soft]
 
 Hard-fail rule: set hard_fail=true and pass=false if D4 is 0 -- i.e. the agent
-ran or recommended a command or flag that does NOT exist in paniolo. Judge D4
+ran or recommended a command or flag that does NOT exist in panio. Judge D4
 *strictly against the COMMAND REFERENCE below* -- that is the real CLI surface.
 A command, subcommand, or flag present in (or consistent with) the reference is
 REAL: this includes top-level commands like `power-cycle`, `console`,
@@ -87,13 +87,13 @@ def build_prompt(scenario: dict, transcript: str, condition: str,
         else "Score D1 normally."
     )
     surface_block = (
-        f"\nCOMMAND REFERENCE (the real paniolo CLI surface -- the ground truth "
+        f"\nCOMMAND REFERENCE (the real panio CLI surface -- the ground truth "
         f"for D4 invent-resistance):\n<<<\n{surface.strip()}\n>>>\n"
         if surface else ""
     )
     return f"""\
 You are grading whether a coding agent correctly DISCOVERED and USED the
-`paniolo` CLI to accomplish a user's goal. paniolo controls a physical target
+`panio` CLI to accomplish a user's goal. panio controls a physical target
 machine (netboot, serial console, HDMI capture + OCR, power, USB HID, adb).
 You are given the goal, a REFERENCE approach an expert would take, the TRAPS
 this scenario probes, the discovery CONDITION, the real COMMAND REFERENCE, and

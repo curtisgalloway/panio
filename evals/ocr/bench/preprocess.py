@@ -6,12 +6,12 @@
 Two things are being measured here, and they are not the same question.
 
 **Which preprocessing helps an engine.** Upscaling, inverting and binarizing
-change what the engine sees. Note that paniolo's helpers already preprocess
+change what the engine sees. Note that panio's helpers already preprocess
 internally (`visionocr` and `linuxocr` both upscale 2x and pad), so a variant
 applied here stacks on top of that — the numbers say "does more help", not "does
 any help".
 
-**Whether paniolo's own pipeline is destroying quality.** `luma_direct` against
+**Whether panio's own pipeline is destroying quality.** `luma_direct` against
 `rgb_roundtrip` is the interesting pair. On macOS and Windows a captured frame
 is NV12: the Y plane *is* the greyscale image OCR wants, available for free. But
 `/ocr` converts to RGB, encodes a PNG, and the helper decodes and re-greyscales
@@ -66,7 +66,7 @@ def otsu(img: np.ndarray) -> np.ndarray:
 
 
 def rgb_roundtrip(img: np.ndarray) -> np.ndarray:
-    """Simulate what paniolo's capture path does to a frame before OCR.
+    """Simulate what panio's capture path does to a frame before OCR.
 
     NV12 in, RGB out, chroma subsampled at 4:2:0 and reconstructed. This is not
     a preprocessing step anyone would choose — it is the pipeline reproduced so

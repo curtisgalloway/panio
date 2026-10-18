@@ -15,7 +15,7 @@
 
 Reads the lab.toml the agent produced and asserts a set of (path, matcher)
 checks against it, and reads the invoked-argv log to confirm the agent ran
-only commands in paniolo's T1-safe set (no `netboot start`, `power on`, etc.).
+only commands in panio's T1-safe set (no `netboot start`, `power on`, etc.).
 """
 
 from __future__ import annotations
@@ -148,7 +148,7 @@ _GLOBAL_VALUE_FLAGS = {"--lab"}
 
 
 def classify(argv: list[str]) -> tuple[str, bool, str]:
-    """Return (prefix, safe, reason) for one logged paniolo invocation."""
+    """Return (prefix, safe, reason) for one logged panio invocation."""
     if any(a in ("-h", "--help", "-V", "--version") for a in argv):
         return ("help/version", True, "")
     i = 0

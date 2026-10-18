@@ -1,6 +1,6 @@
 # Video capture
 
-paniolo captures the target's screen through `hdmicap`, a daemon that keeps a
+panio captures the target's screen through `hdmicap`, a daemon that keeps a
 USB HDMI capture device open and serves the current frame over HTTP, so there
 is no per-capture reopen delay.
 
@@ -23,10 +23,10 @@ control host.
 
 ```bash
 # Detect available capture devices (each line ends with its stable id)
-paniolo video devices
+panio video devices
 
 # Configure the target's video channel — prefer the stable id
-paniolo video set -t target-machine --device "0x8300000534d2109"
+panio video set -t target-machine --device "0x8300000534d2109"
 ```
 
 The `--device` value may be:
@@ -38,12 +38,12 @@ The `--device` value may be:
 | **`/dev/video*` path** (Linux) | Accepted, but not stable across reboots. |
 
 On Linux, `video devices` hides SoC-internal video nodes (e.g. a Raspberry
-Pi's `pispbe-*` stages). `paniolo helper hdmicap devices --all` lists
+Pi's `pispbe-*` stages). `panio helper hdmicap devices --all` lists
 everything, and an internal device you configure explicitly still resolves.
 
 The device is stored on the target's `video` channel in the lab file (see
-[config-redesign.md](https://github.com/curtisgalloway/paniolo/blob/main/notes/config-redesign.md)).
-`paniolo configure` proposes the stable id when it finds one capture device,
+[config-redesign.md](https://github.com/curtisgalloway/panio/blob/main/notes/config-redesign.md)).
+`panio configure` proposes the stable id when it finds one capture device,
 and lists the ids when it finds several.
 
 ---
@@ -72,10 +72,10 @@ reports `no_device` and reconnects.
 ### Example: a JetKVM
 
 ```bash
-paniolo hid set   -t target-machine --cmd "jetkvm -d 192.0.2.10 --password-command 'op read op://vault/jetkvm/password'"
-paniolo video set -t target-machine --device rfb+hid:
-paniolo video watch target-machine     # starts the jetkvm daemon, then hdmicap
-paniolo video shot target-machine -o screen.png
+panio hid set   -t target-machine --cmd "jetkvm -d 192.0.2.10 --password-command 'op read op://vault/jetkvm/password'"
+panio video set -t target-machine --device rfb+hid:
+panio video watch target-machine     # starts the jetkvm daemon, then hdmicap
+panio video shot target-machine -o screen.png
 ```
 
 The `jetkvm` daemon decodes the device's H.264 video with an **`ffmpeg`
@@ -83,7 +83,7 @@ subprocess**, so `ffmpeg` must be installed on the control host (on `PATH`,
 in a common Homebrew or `/usr` location, or named with `serve --ffmpeg PATH`
 in the hid `--cmd`). Without it HID still works and video reports the reason.
 Decoding runs only while `hdmicap` is attached. Details:
-[jetkvm/README.md](https://github.com/curtisgalloway/paniolo/blob/main/jetkvm/README.md).
+[jetkvm/README.md](https://github.com/curtisgalloway/panio/blob/main/jetkvm/README.md).
 
 ### Caveats
 
@@ -107,21 +107,21 @@ Decoding runs only while `hdmicap` is attached. Details:
   macOS control host. Not verified: Windows, a Linux control host, `rfb://`
   against AMT or a VM.
 
-Design record: [network-video-rfb.md](https://github.com/curtisgalloway/paniolo/blob/main/notes/network-video-rfb.md).
+Design record: [network-video-rfb.md](https://github.com/curtisgalloway/panio/blob/main/notes/network-video-rfb.md).
 
 ---
 
 ## Starting and stopping the daemon
 
 ```bash
-paniolo video watch [target-machine]   # start hdmicap daemon for a target
-paniolo video watch --restart          # force-restart a running (stalled) daemon
-paniolo video stop  [target-machine]   # stop it (on the target's host)
-paniolo video show  [target-machine]   # show daemon address and status
+panio video watch [target-machine]   # start hdmicap daemon for a target
+panio video watch --restart          # force-restart a running (stalled) daemon
+panio video stop  [target-machine]   # stop it (on the target's host)
+panio video show  [target-machine]   # show daemon address and status
 ```
 
 `watch` starts `hdmicap daemon` detached and prints its address. To open the
-dashboard, run `paniolo video preview`.
+dashboard, run `panio video preview`.
 
 The port is OS-assigned unless the lab pins one (`video set --port N`;
 `video watch --port N` overrides it for one start). See
@@ -131,10 +131,10 @@ The port is OS-assigned unless the lab pins one (`video set --port N`;
 
 **Every request to the daemon needs its token**, from `token` in the
 discovery file ([Runtime paths](#runtime-paths)), new on each start.
-paniolo's commands (`shot`, `read`, `console`, …) send it automatically. By
+panio's commands (`shot`, `read`, `console`, …) send it automatically. By
 hand, send `Authorization: Bearer <token>` or `?token=<token>`. The daemon
-also requires a loopback `Host` and `Origin`. A daemon from a paniolo older
-than the token has none; `paniolo daemons restart hdmicap` replaces it.
+also requires a loopback `Host` and `Origin`. A daemon from a panio older
+than the token has none; `panio daemons restart hdmicap` replaces it.
 
 **`video preview` is the only command that prints the URL with the token.**
 `show`, `console` and `watch` print `http://127.0.0.1:<port>` only, to keep
@@ -145,7 +145,7 @@ writes the full URL to a `0600` `dashboard-url.txt` in the target's runtime
 dir and prints the **path**:
 
 ```bash
-xdg-open "$(cat /tmp/paniolo-1000/hdmicap/target-machine/dashboard-url.txt)"
+xdg-open "$(cat /tmp/panio-1000/hdmicap/target-machine/dashboard-url.txt)"
 ```
 
 Inside an SSH session `console` opens no browser and prints an `ssh -N -L …`
@@ -157,14 +157,14 @@ launch. See [dashboard.md](dashboard.md#viewing-from-another-machine-over-ssh).
 `video stop` (and `hdmicap stop`) uses the authenticated `POST /stop` and
 never signals the discovery-file PID, which a crash could leave pointing at an
 unrelated process. Stop a daemon too old for the endpoint with
-`paniolo daemons stop hdmicap`, which checks process identity first.
+`panio daemons stop hdmicap`, which checks process identity first.
 
 ### Stale and untracked daemons
 
 **Stale.** A daemon whose running executable content differs from the installed
-helper shows as **stale** in `paniolo video show` and `paniolo daemons`.
+helper shows as **stale** in `panio video show` and `panio daemons`.
 `watch` restarts it automatically (no `--restart` needed), or run
-`paniolo daemons restart --stale`. Reinstalling identical bytes, changing a
+`panio daemons restart --stale`. Reinstalling identical bytes, changing a
 modification time, or moving the same binary does not make it stale.
 
 A successful content comparison reports **binary content matches installed**
@@ -174,7 +174,7 @@ If content cannot be compared, the commands report **binary identity unknown**
 with a reason (missing recorded identity, inaccessible executable, or metadata
 changes without readable content). Unknown identity does not recommend or trigger
 a restart and is excluded from `--stale`; an intentional
-`paniolo daemons restart hdmicap` or `video watch --restart` still works.
+`panio daemons restart hdmicap` or `video watch --restart` still works.
 See [architecture](dev/architecture.md) for content identity details.
 
 **Untracked.** A daemon whose discovery file was deleted keeps running and
@@ -184,18 +184,18 @@ A new `video watch` then dies on the advisory lock
 (`another hdmicap daemon is already running`).
 
 - `video show` reports `running, untracked (pid N)` instead of `stopped`.
-- `paniolo daemons` lists it under **Untracked daemons**.
+- `panio daemons` lists it under **Untracked daemons**.
 - `video watch` and `video stop` reap it (`SIGTERM`, then `SIGKILL`).
 
-The serial channel works the same way (`paniolo serial show` / `watch` /
+The serial channel works the same way (`panio serial show` / `watch` /
 `stop`); see [serial.md](serial.md).
 
-**Prevention.** The `.deb` ships `/usr/lib/tmpfiles.d/paniolo.conf`
-(`x /tmp/paniolo-*`). **A control host installed with `make install` must add
+**Prevention.** The `.deb` ships `/usr/lib/tmpfiles.d/panio.conf`
+(`x /tmp/panio-*`). **A control host installed with `make install` must add
 it itself**, or its daemons go untracked every ten days:
 
 ```bash
-echo 'x /tmp/paniolo-*' | sudo tee /usr/lib/tmpfiles.d/paniolo.conf
+echo 'x /tmp/panio-*' | sudo tee /usr/lib/tmpfiles.d/panio.conf
 ```
 
 ### Stall recovery and format choice
@@ -203,7 +203,7 @@ echo 'x /tmp/paniolo-*' | sudo tee /usr/lib/tmpfiles.d/paniolo.conf
 **A stalled capture recovers on its own.** A watchdog reopens the device when
 no frame arrives (12s after opening, or 4s without progress after that),
 and `/snapshot`/`/status` show `no_device` meanwhile. The daemon exits only after 8 consecutive
-stalls with no healthy frame between; `paniolo video watch` (or
+stalls with no healthy frame between; `panio video watch` (or
 `daemons restart --stale`) brings it back.
 
 **The capture format is chosen by what streams.** On Linux the daemon tries
@@ -217,13 +217,13 @@ delivers (e.g. the target is off), the best format that allocated is used.
 ## Capturing frames
 
 ```bash
-paniolo video shot [target-machine] -o out.png   # save a screenshot (PNG)
-paniolo video shot [target-machine]              # PNG to stdout (default -o -)
-paniolo video shot --stable -o out.png           # wait for a steady frame first
-paniolo video shot --changed-since <hex-hash> --timeout 10000 -o out.png
+panio video shot [target-machine] -o out.png   # save a screenshot (PNG)
+panio video shot [target-machine]              # PNG to stdout (default -o -)
+panio video shot --stable -o out.png           # wait for a steady frame first
+panio video shot --changed-since <hex-hash> --timeout 10000 -o out.png
                                                  # block until the frame differs
-paniolo video preview [target-machine]           # print the live-dashboard URL (optional target, like `show`)
-paniolo video preview --open                     # open it in a browser instead of printing it
+panio video preview [target-machine]           # print the live-dashboard URL (optional target, like `show`)
+panio video preview --open                     # open it in a browser instead of printing it
 ```
 
 ### `shot`
@@ -249,8 +249,8 @@ sources need this; a JetKVM's H.264 video wobbles by up to 8 levels on a
 screen nothing is touching.
 
 ```bash
-paniolo video set -t target-machine --change-threshold 16   # the default
-paniolo video set -t target-machine --change-threshold 0    # exact: any 1-level change counts
+panio video set -t target-machine --change-threshold 16   # the default
+panio video set -t target-machine --change-threshold 0    # exact: any 1-level change counts
 ```
 
 - The comparison is against the last *accepted* frame, not the previous one,
@@ -264,7 +264,7 @@ paniolo video set -t target-machine --change-threshold 0    # exact: any 1-level
   image hdmicap already makes for each frame, so a lone single-pixel change
   is averaged with its neighbors and can fall under the threshold.
 - A new value takes effect when the daemon next starts
-  (`paniolo video watch --restart`). `video show` prints it, and the daemon's
+  (`panio video watch --restart`). `video show` prints it, and the daemon's
   `/status` reports it as `change_threshold`.
 
 `-o <path>` always writes on the **invoking machine**, even when the video
@@ -276,7 +276,7 @@ channel is on a remote control host. A failed capture removes the stub file.
 |---|---|
 | `x-signal: stale` | The last frame is too old to describe the screen now (capture stopped delivering, though the daemon process is up). |
 | `x-signal: no_device` | No capture device is open. |
-| **No `x-signal` header, body `capture thread gone`** | The daemon's capture thread has exited and is not coming back. This daemon needs `paniolo video watch --restart`, not another `shot`. |
+| **No `x-signal` header, body `capture thread gone`** | The daemon's capture thread has exited and is not coming back. This daemon needs `panio video watch --restart`, not another `shot`. |
 
 ### `preview`
 
@@ -285,7 +285,7 @@ channel is on a remote control host. A failed capture removes the stub file.
 no browser launches, it writes the URL to the same `0600` file `console` uses.
 
 `--open` is refused when the video channel is on another host. Use
-`paniolo console <target>`, which forwards ports and opens a local browser.
+`panio console <target>`, which forwards ports and opens a local browser.
 
 `GET /rfb` serves the warm frame as RFB over a WebSocket (token required, as
 `Authorization: Bearer` or `?token=`; subprotocol `binary`; security None; up to
@@ -298,7 +298,7 @@ target's hid daemon when `video watch`/`console` found a local `hid` channel
 otherwise the view is watch-only. `GET /status` shows `rfb_clients` and
 `rfb_input`.
 
-`GET /preview` is the MJPEG stream behind `paniolo video preview` and the
+`GET /preview` is the MJPEG stream behind `panio video preview` and the
 [dashboard](dashboard.md):
 
 - Open preview connections share one encode per frame.
@@ -314,8 +314,8 @@ otherwise the view is watch-only. `GET /status` shows `rfb_clients` and
 ## OCR
 
 ```bash
-paniolo video read [target-machine]            # OCR the current frame, text to stdout
-paniolo video read --stable [--timeout <ms>]   # wait for a steady frame first
+panio video read [target-machine]            # OCR the current frame, text to stdout
+panio video read --stable [--timeout <ms>]   # wait for a steady frame first
 ```
 
 OCR runs locally: Apple Vision's `VNRecognizeTextRequest` on macOS, Tesseract
@@ -326,7 +326,7 @@ instead of returning empty text.
 OCR button also uses:
 
 ```bash
-d=/tmp/paniolo-$(id -u)/hdmicap/target-machine/daemon.json
+d=/tmp/panio-$(id -u)/hdmicap/target-machine/daemon.json
 curl -s -H "Authorization: Bearer $(jq -r .token "$d")" \
     "http://127.0.0.1:$(jq -r .port "$d")/ocr"
 ```
@@ -338,13 +338,13 @@ GUI screens on Linux read more accurately with a different engine (see
 Set it per target:
 
 ```bash
-paniolo video set -t target-machine --device "0x8300000534d2109" --ocr-mode gui
-paniolo video set -t target-machine --ocr-mode text   # back to the platform default
+panio video set -t target-machine --device "0x8300000534d2109" --ocr-mode gui
+panio video set -t target-machine --ocr-mode text   # back to the platform default
 ```
 
 - `--ocr-mode` is `text` (default) or `gui`. It matters only on Linux.
 - It works when the video channel is on a remote control host.
-- `paniolo setup` builds the ~317 MB `rapidocr` venv only when a target in the
+- `panio setup` builds the ~317 MB `rapidocr` venv only when a target in the
   active lab has `--ocr-mode gui`.
 
 ### Limits
@@ -371,14 +371,14 @@ source.
 
 ### Helper installation
 
-`paniolo setup` installs the platform's helper into the private libexec dir:
+`panio setup` installs the platform's helper into the private libexec dir:
 
 - **macOS:** compiles `ocr/visionocr.swift` with `swiftc`
-  (`~/.local/libexec/paniolo/bin/visionocr`).
+  (`~/.local/libexec/panio/bin/visionocr`).
 - **Linux:** installs `linuxocr`, which shells out to Tesseract
   (`apt-get install tesseract-ocr`; Pillow is optional, for preprocessing).
 
-The daemon finds the helper there, or via `PANIOLO_VISIONOCR`.
+The daemon finds the helper there, or via `PANIO_VISIONOCR`.
 
 **OCR tuning:** `.fast` recognition (not `.accurate`, which misses small
 console text), 2× upscale with black padding, and a lowered
@@ -390,12 +390,12 @@ console text), 2× upscale with black padding, and a lowered
 
 | Purpose | Path |
 |---|---|
-| Video config | the target's `video` channel in the lab file (`~/.config/paniolo/lab.toml`) |
-| hdmicap discovery | `/tmp/paniolo-<uid>/hdmicap/<target>/daemon.json` (`{pid, port, token}`; owner-only, it holds the token) |
-| hdmicap advisory lock | `/tmp/paniolo-<uid>/hdmicap/<target>/daemon.lock` |
-| hdmicap stderr log | `/tmp/paniolo-<uid>/hdmicap/<target>/daemon.log` (truncated on each start; shown on start timeout) |
+| Video config | the target's `video` channel in the lab file (`~/.config/panio/lab.toml`) |
+| hdmicap discovery | `/tmp/panio-<uid>/hdmicap/<target>/daemon.json` (`{pid, port, token}`; owner-only, it holds the token) |
+| hdmicap advisory lock | `/tmp/panio-<uid>/hdmicap/<target>/daemon.lock` |
+| hdmicap stderr log | `/tmp/panio-<uid>/hdmicap/<target>/daemon.log` (truncated on each start; shown on start timeout) |
 
 The daemon is **per target**, so several targets can capture at once. The
-runtime base honors `$PANIOLO_RUNTIME_BASE` (default `/tmp`). A `/tmp` sweep
+runtime base honors `$PANIO_RUNTIME_BASE` (default `/tmp`). A `/tmp` sweep
 can remove these files (see
 [Stale and untracked daemons](#stale-and-untracked-daemons)).

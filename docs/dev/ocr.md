@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0
 
 # OCR: the helper protocol
 
-paniolo reads the target's screen by piping a captured frame to an **OCR
+panio reads the target's screen by piping a captured frame to an **OCR
 helper binary** and parsing the result. This page is the contract a helper
 implements, and which helper runs where.
 
@@ -19,12 +19,12 @@ Defaults are **platform-native**, for accuracy and latency:
 
 | Platform | Helper | Engine | Installed by |
 | --- | --- | --- | --- |
-| macOS | `visionocr` | Apple Vision (`VNRecognizeTextRequest`) | `paniolo setup` compiles `ocr/visionocr.swift` with `swiftc` |
-| Windows | `winocr` | `Windows.Media.Ocr` (in-box, offline) | `paniolo setup` builds `ocr/winocr`; the release zip ships it in `libexec` |
-| Linux (console/firmware screens) | `linuxocr` | Tesseract 5 | `paniolo setup` copies `ocr/linuxocr`; needs `tesseract-ocr` |
-| Linux (GUI screens) | `rapidocr` | PP-OCRv6 via RapidOCR on ONNX Runtime | `paniolo setup` copies `ocr/rapidocr` and, when a lab file asks for it, builds its venv |
+| macOS | `visionocr` | Apple Vision (`VNRecognizeTextRequest`) | `panio setup` compiles `ocr/visionocr.swift` with `swiftc` |
+| Windows | `winocr` | `Windows.Media.Ocr` (in-box, offline) | `panio setup` builds `ocr/winocr`; the release zip ships it in `libexec` |
+| Linux (console/firmware screens) | `linuxocr` | Tesseract 5 | `panio setup` copies `ocr/linuxocr`; needs `tesseract-ocr` |
+| Linux (GUI screens) | `rapidocr` | PP-OCRv6 via RapidOCR on ONNX Runtime | `panio setup` copies `ocr/rapidocr` and, when a lab file asks for it, builds its venv |
 
-`$PANIOLO_VISIONOCR` overrides the choice with an explicit path.
+`$PANIO_VISIONOCR` overrides the choice with an explicit path.
 
 So the same screen OCRs differently on different control hosts. Every result
 names its engine (`engine`, `engine_detail`), and the override lets a lab force
@@ -33,7 +33,7 @@ one engine across hosts when comparing runs.
 ### Linux needs two engines; the other platforms need one
 
 `ocr_mode` on the target's `video` channel selects the Linux engine: `"text"`
-(the default) or `"gui"`. Set it with `paniolo video set -t <target> --ocr-mode
+(the default) or `"gui"`. Set it with `panio video set -t <target> --ocr-mode
 gui` (see [video.md](../video.md#ocr)). It is configured because it cannot be
 inferred at runtime (see the confidence table under
 [The contract](#the-contract)).
@@ -63,7 +63,7 @@ all slower than `raw` and none more accurate. `visionocr` and `linuxocr`
 upscale internally.
 
 **The venv is opt-in.** It is ~317 MB (onnxruntime 58 MB, models 31 MB,
-numpy/opencv the rest); `paniolo setup` builds it only when some target sets
+numpy/opencv the rest); `panio setup` builds it only when some target sets
 `ocr_mode = "gui"`. It is a venv because Pi OS is PEP 668-managed (the system
 Python refuses `pip install`). `opencv-python-headless` replaces the
 `opencv-python` RapidOCR pulls in: the full build needs `libGL.so.1`, which
@@ -71,7 +71,7 @@ headless Pi OS lacks, and fails at first OCR rather than at install.
 
 ## The contract
 
-**Help:** `paniolo helper <name> --help` (or `-h`) prints usage and exits 0
+**Help:** `panio helper <name> --help` (or `-h`) prints usage and exits 0
 without reading an image. All helpers accept `--json`; `visionocr` also offers
 `--accurate` (the default), `--fast`, and `--self-test` (internal checks without
 an image).
@@ -86,7 +86,7 @@ an image).
 **Output:** plain text by default, one line per recognized line, in reading
 order, for humans.
 
-**paniolo always passes `--json`**, the machine contract:
+**panio always passes `--json`**, the machine contract:
 
 ```json
 {
@@ -161,10 +161,10 @@ Two past defects:
   shrinking the width/height, so a line flush with the left edge came back a
   few pixels too wide.
 
-## What paniolo does with it
+## What panio does with it
 
 `hdmicap`'s `GET /ocr` runs the helper with `--json` and returns the envelope as
-`application/json`. `paniolo video read` prints `text` by default and the whole
+`application/json`. `panio video read` prints `text` by default and the whole
 envelope under `--json`.
 
 **Version skew degrades rather than fails, in both directions**, because the
@@ -173,7 +173,7 @@ helper, daemon and CLI upgrade separately:
 - If a helper's stdout does not parse as an envelope, `/ocr` treats it as plain
   text from a pre-v1 helper: it synthesizes an envelope with no `lines` (never
   fabricated boxes) and logs a warning naming the binary.
-- `paniolo video read` passes a non-envelope body through unchanged, so a CLI
+- `panio video read` passes a non-envelope body through unchanged, so a CLI
   newer than its daemon still reads screens.
 
 The envelope check is `version` being present, not "the body is JSON", so a
@@ -221,7 +221,7 @@ Match such strings loosely or corroborate them; do not trust an exact compare.
 
 ## Resource limits
 
-paniolo does not bound the bytes or resolution a video channel produces. Every
+panio does not bound the bytes or resolution a video channel produces. Every
 helper enforces the same three limits before the expensive work (a full decode,
 or the 2x upscale in `linuxocr`/`visionocr`), so oversized input fails fast
 instead of driving an oversized allocation.
@@ -284,7 +284,7 @@ CI runs the Python helpers' error-path tests (`ocr/tests`) and `visionocr`'s
 
 1. Read a PNG from stdin or a path; support `--json`.
 2. Emit the envelope above, with boxes mapped back to source coordinates.
-3. Name it in `daemons::helper_dirs()`'s install path and in `paniolo setup`.
+3. Name it in `daemons::helper_dirs()`'s install path and in `panio setup`.
 
 If the engine cannot report confidence, omit it rather than invent a number;
 real confidence enables fallback routing and high-confidence token matching.

@@ -85,7 +85,7 @@ hdmicap/         Rust crate: warm-stream HDMI capture daemon
                  Subprocess hooks set kill_on_drop(true) and run under
                  wait_with_timeout (504, process killed): OCR under OCR_TIMEOUT
                  (30 s); power hooks (/power on/off/cycle via
-                 run_paniolo_action, /power-state) under POWER_TIMEOUT (60 s).
+                 run_panio_action, /power-state) under POWER_TIMEOUT (60 s).
                  /devices runs capture::enumerate() on spawn_blocking
     auth.rs      token + loopback Host/Origin layer (byte-identical in
                  serialcap/hidrig/ch9329)
@@ -103,17 +103,17 @@ hdmicap/         Rust crate: warm-stream HDMI capture daemon
 
 ## Combined dashboard (video + serial)
 
-`GET /` is a two-pane page: noVNC view of `GET /rfb` on top, xterm.js terminal below. A **video VNC | MJPEG** toggle is stored in `localStorage` as `paniolo-video-mode`; MJPEG is also the fallback when `/rfb` cannot connect, and the Capture-input overlay exists only in MJPEG mode. xterm.js and noVNC are vendored (no CDN) so it works on an isolated lab network.
+`GET /` is a two-pane page: noVNC view of `GET /rfb` on top, xterm.js terminal below. A **video VNC | MJPEG** toggle is stored in `localStorage` as `panio-video-mode`; MJPEG is also the fallback when `/rfb` cannot connect, and the Capture-input overlay exists only in MJPEG mode. xterm.js and noVNC are vendored (no CDN) so it works on an isolated lab network.
 
-The terminal opens a WebSocket to **serialcap** (separate daemon and port; hdmicap only references it by URL, keeping the subsystems decoupled). Default `ws://<host>:8724/stream`; override with `?serialws=<url>` (or `?serial=<port>`, which cannot carry a token). `paniolo console` passes `?serialws=` (serialcap's `/stream` with its own `?token=` percent-encoded inside) locally and through the tunnel, plus hdmicap's token as `?token=`. The page refuses a non-loopback URL.
+The terminal opens a WebSocket to **serialcap** (separate daemon and port; hdmicap only references it by URL, keeping the subsystems decoupled). Default `ws://<host>:8724/stream`; override with `?serialws=<url>` (or `?serial=<port>`, which cannot carry a token). `panio console` passes `?serialws=` (serialcap's `/stream` with its own `?token=` percent-encoded inside) locally and through the tunnel, plus hdmicap's token as `?token=`. The page refuses a non-loopback URL.
 
 **Multi-pane serial:** the page fetches serialcap's `GET /interfaces` and calls `buildPanes(names)`. One interface: a single terminal, status in the top bar. Several: one `.serial-pane` div each, side by side in bottom mode or stacked in right-panel mode; all fits are in `allFits[]` so resize and layout toggles re-fit every terminal. `?interface=<name>` skips the fetch and pins single-pane mode.
 
-**Layout toggle:** a status-bar button switches the serial panel between bottom (default, 40 vh) and right-panel (380 px, video fills the rest); persisted in `localStorage` as `paniolo-serial-layout`.
+**Layout toggle:** a status-bar button switches the serial panel between bottom (default, 40 vh) and right-panel (380 px, video fills the rest); persisted in `localStorage` as `panio-serial-layout`.
 
-**Power controls:** an on/off toggle plus a **⟳ Cycle** button in the video overlay, each behind a confirmation modal; they drive the default power level only. State comes from read-only **`GET /power`**: it runs `paniolo power-state <target>` and maps the output's first line (`power_state_verdict`) to `on`/`off`/`unknown`; the dashboard polls every 5 s. Actions are **`POST /power-on` | `/power-off` | `/power-cycle`**. All use `PANIOLO_TARGET`, set by `paniolo video watch <target>`; without it the controls are hidden (501). Never probe availability with a POST: `/power-cycle` would cycle power on every page load.
+**Power controls:** an on/off toggle plus a **⟳ Cycle** button in the video overlay, each behind a confirmation modal; they drive the default power level only. State comes from read-only **`GET /power`**: it runs `panio power-state <target>` and maps the output's first line (`power_state_verdict`) to `on`/`off`/`unknown`; the dashboard polls every 5 s. Actions are **`POST /power-on` | `/power-off` | `/power-cycle`**. All use `PANIO_TARGET`, set by `panio video watch <target>`; without it the controls are hidden (501). Never probe availability with a POST: `/power-cycle` would cycle power on every page load.
 
 ## Gotchas
 
-- **Device identity.** Devices have a stable, port-derived id (AVFoundation `uniqueID` on macOS, `/dev/v4l/by-path` symlink on Linux), shown by `hdmicap devices` / `paniolo video devices`. Prefer the id in lab files: identical dongles (MS2109s have no USB serial) are indistinguishable by name. A name substring matching several devices is a hard error listing their ids; `paniolo configure` lists id alternatives as comments.
+- **Device identity.** Devices have a stable, port-derived id (AVFoundation `uniqueID` on macOS, `/dev/v4l/by-path` symlink on Linux), shown by `hdmicap devices` / `panio video devices`. Prefer the id in lab files: identical dongles (MS2109s have no USB serial) are indistinguishable by name. A name substring matching several devices is a hard error listing their ids; `panio configure` lists id alternatives as comments.
 - **macOS capture is our own AVFoundation layer.** (1) Never set `activeVideoMin/MaxFrameDuration`: MS2109-class sticks throw NSException from those KVC paths. (2) `activeFormat` alone is ignored (the default preset scales to 1080p-class), so native resolution needs explicit `kCVPixelBufferWidth/HeightKey` in the output's `videoSettings` (`AVCaptureSessionPresetInputPriority` is iOS-only). macOS decodes MJPEG before AVFoundation, so raw-MJPEG passthrough is impossible there: frames arrive as NV12 ('420v', video-range) and RGB materializes lazily per request.

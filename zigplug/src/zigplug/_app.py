@@ -43,22 +43,22 @@ from zigpy_znp.zigbee.application import ControllerApplication
 # Pre-state-dir-API location (zigbee.db beside the lab file — the collision
 # the helpers/ namespace exists to prevent); migrated lazily by
 # default_db_path().
-LEGACY_DB = Path.home() / ".config" / "paniolo" / "zigbee.db"
+LEGACY_DB = Path.home() / ".config" / "panio" / "zigbee.db"
 
 
 def default_db_path() -> Path:
-    """The zigpy device DB path, honoring the paniolo helper state-dir API.
+    """The zigpy device DB path, honoring the panio helper state-dir API.
 
-    `$PANIOLO_STATE_DIR/zigbee.db` when paniolo set the env var; the same
-    canonical location (`~/.config/paniolo/helpers/zigplug/zigbee.db`) when
+    `$PANIO_STATE_DIR/zigbee.db` when panio set the env var; the same
+    canonical location (`~/.config/panio/helpers/zigplug/zigbee.db`) when
     run standalone. A DB at the legacy top-level location is atomically
     renamed into place (with its sqlite -wal/-shm sidecars) on first touch.
     """
-    state = os.environ.get("PANIOLO_STATE_DIR")
+    state = os.environ.get("PANIO_STATE_DIR")
     base = (
         Path(state)
         if state
-        else Path.home() / ".config" / "paniolo" / "helpers" / "zigplug"
+        else Path.home() / ".config" / "panio" / "helpers" / "zigplug"
     )
     db = base / "zigbee.db"
     if not db.exists() and LEGACY_DB.exists():

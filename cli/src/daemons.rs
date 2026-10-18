@@ -12,10 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Shared plumbing for paniolo's per-subsystem daemons (serialcap, hdmicap).
+//! Shared plumbing for panio's per-subsystem daemons (serialcap, hdmicap).
 //!
 //! Every daemon follows the same contract: it is an installed binary (the
-//! paniolo libexec dir, PATH, or legacy `~/.cargo/bin` — see [`find_binary`]),
+//! panio libexec dir, PATH, or legacy `~/.cargo/bin` — see [`find_binary`]),
 //! binds localhost (port 0 = OS-assigned), and writes a discovery file
 //! `{pid, port, token, …}` under `<runtime>/<name>[/<target>]/daemon.json`.
 //! `token` is the bearer secret every request to that daemon must carry (see
@@ -24,7 +24,7 @@
 //! optional `<target>` segment lets per-target capture daemons (serialcap,
 //! hdmicap, hid) coexist on one host; host-singleton daemons (zigplug,
 //! cambrionix, netbootd) omit it (see [`runtime_rel`]). `<runtime>` is
-//! `<base>/paniolo-<uid>` where `<base>` honors `$PANIOLO_RUNTIME_BASE`
+//! `<base>/panio-<uid>` where `<base>` honors `$PANIO_RUNTIME_BASE`
 //! (default `/tmp`; see [`runtime_root`]). Liveness is "the recorded pid
 //! still exists".
 
@@ -33,25 +33,25 @@ use std::time::Duration;
 
 use anyhow::Result;
 
-/// The cargo-install root for paniolo's helper binaries. Binaries land in
+/// The cargo-install root for panio's helper binaries. Binaries land in
 /// `<root>/bin` (cargo appends `bin/` itself) — see [`libexec_dir`].
 pub fn libexec_root() -> Option<PathBuf> {
-    dirs::home_dir().map(|h| h.join(".local/libexec/paniolo"))
+    dirs::home_dir().map(|h| h.join(".local/libexec/panio"))
 }
 
-/// Private helper dir (libexec): `~/.local/libexec/paniolo/bin`. The helpers
+/// Private helper dir (libexec): `~/.local/libexec/panio/bin`. The helpers
 /// (hdmicap, serialcap, netbootd, cambrionix, hidrig, zigplug, visionocr, …)
-/// live here rather than on PATH — they are paniolo's plumbing, invoked by
-/// paniolo (or explicitly via `paniolo helper <name> …`), not user commands.
+/// live here rather than on PATH — they are panio's plumbing, invoked by
+/// panio (or explicitly via `panio helper <name> …`), not user commands.
 pub fn libexec_dir() -> Option<PathBuf> {
     libexec_root().map(|r| r.join("bin"))
 }
 
 /// Helper dir used by the Linux system packages (.deb/tarball installs to a
-/// system prefix): `/usr/libexec/paniolo/bin`. Searched after the per-user
+/// system prefix): `/usr/libexec/panio/bin`. Searched after the per-user
 /// libexec dir, so a `make install` build overrides an installed package.
 pub fn system_libexec_dir() -> PathBuf {
-    PathBuf::from("/usr/libexec/paniolo/bin")
+    PathBuf::from("/usr/libexec/panio/bin")
 }
 
 /// Candidate file names for a helper in a directory.
@@ -69,8 +69,8 @@ fn binary_names(name: &str) -> Vec<String> {
 }
 
 /// Helper dirs relative to the running CLI binary, after resolving symlinks
-/// (Homebrew links `<prefix>/bin/paniolo` into the versioned keg):
-/// `../libexec/bin` (Homebrew keg layout) and `../libexec/paniolo/bin`
+/// (Homebrew links `<prefix>/bin/panio` into the versioned keg):
+/// `../libexec/bin` (Homebrew keg layout) and `../libexec/panio/bin`
 /// (FHS-style prefix). A relocated install is self-locating without
 /// enumerating package managers. Deliberately NOT the exe's own dir: for a
 /// `make install` CLI that is `~/.cargo/bin`, the legacy location that must
@@ -83,12 +83,9 @@ fn exe_relative_dirs() -> Vec<PathBuf> {
     let Some(prefix) = exe.parent().and_then(|d| d.parent()) else {
         return Vec::new();
     };
-    let mut dirs = vec![
-        prefix.join("libexec/bin"),
-        prefix.join("libexec/paniolo/bin"),
-    ];
-    // The portable Windows layout is `paniolo\paniolo.exe` with the helpers in
-    // `paniolo\libexec` beside it — the exe's own directory is the install
+    let mut dirs = vec![prefix.join("libexec/bin"), prefix.join("libexec/panio/bin")];
+    // The portable Windows layout is `panio\panio.exe` with the helpers in
+    // `panio\libexec` beside it — the exe's own directory is the install
     // prefix there, since Windows has no bin/libexec split to hang them off.
     if cfg!(windows) {
         if let Some(exe_dir) = exe.parent() {
@@ -98,15 +95,15 @@ fn exe_relative_dirs() -> Vec<PathBuf> {
     dirs
 }
 
-/// The paniolo helper directories, in resolution order: the per-user libexec
-/// dir (`~/.local/libexec/paniolo/bin`), then dirs relative to the running CLI
+/// The panio helper directories, in resolution order: the per-user libexec
+/// dir (`~/.local/libexec/panio/bin`), then dirs relative to the running CLI
 /// (Homebrew keg / prefix install — see [`exe_relative_dirs`]), then the
-/// system package dir (`/usr/libexec/paniolo/bin`). These are the only places
-/// paniolo ships helpers into: [`find_binary`] searches them (before falling
+/// system package dir (`/usr/libexec/panio/bin`). These are the only places
+/// panio ships helpers into: [`find_binary`] searches them (before falling
 /// back to `$PATH` and `~/.cargo/bin`), [`hook_path`] prepends them, and
-/// `paniolo helper` lists them. A per-user `make install` thus shadows an
+/// `panio helper` lists them. A per-user `make install` thus shadows an
 /// installed system package. The system dir is always present, so this is
-/// never empty. Plugin roots (`PANIOLO_PLUGIN_PATH`) are deliberately not
+/// never empty. Plugin roots (`PANIO_PLUGIN_PATH`) are deliberately not
 /// here: they come after all of these, see [`all_helper_dirs`].
 pub fn helper_dirs() -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> = libexec_dir().into_iter().collect();
@@ -118,18 +115,18 @@ pub fn helper_dirs() -> Vec<PathBuf> {
 /// Environment variable naming extra **plugin roots**: install prefixes for
 /// out-of-tree helpers and skills (GitHub #303). A list in the platform's
 /// `PATH` syntax (`:`-separated on Unix, `;` on Windows). Each root
-/// contributes `<root>/libexec/paniolo/bin` to the helper search
-/// ([`plugin_helper_dirs`]) and `<root>/share/paniolo/skills` to the skill
+/// contributes `<root>/libexec/panio/bin` to the helper search
+/// ([`plugin_helper_dirs`]) and `<root>/share/panio/skills` to the skill
 /// search (`skills.rs`). Read on whichever host runs the command; dispatch to
 /// a control host sets it there from the host's `plugin_path` lab field, via
 /// the global `--plugin-path` flag.
-pub const PLUGIN_PATH_ENV: &str = "PANIOLO_PLUGIN_PATH";
+pub const PLUGIN_PATH_ENV: &str = "PANIO_PLUGIN_PATH";
 
-/// Split a `PANIOLO_PLUGIN_PATH` value into usable roots and ignored entries.
+/// Split a `PANIO_PLUGIN_PATH` value into usable roots and ignored entries.
 ///
 /// Empty components (a leading, trailing or doubled separator) are skipped
 /// silently, like an empty `PATH` component. A relative entry is returned in
-/// the second list: it would resolve against whatever directory paniolo
+/// the second list: it would resolve against whatever directory panio
 /// happens to be started from (the user's home over SSH, a daemon's cwd), so
 /// it is never searched, and the caller warns about it. No other validation:
 /// the variable names directories, not lab names.
@@ -169,9 +166,9 @@ pub fn plugin_roots() -> Vec<PathBuf> {
     roots
 }
 
-/// A plugin root's helper dir: `<root>/libexec/paniolo/bin`.
+/// A plugin root's helper dir: `<root>/libexec/panio/bin`.
 pub fn plugin_helper_dir(root: &Path) -> PathBuf {
-    root.join("libexec/paniolo/bin")
+    root.join("libexec/panio/bin")
 }
 
 /// The helper dirs of every plugin root ([`plugin_roots`]), in order.
@@ -182,11 +179,11 @@ pub fn plugin_helper_dirs() -> Vec<PathBuf> {
         .collect()
 }
 
-/// Every directory paniolo resolves a helper from before `$PATH`: the
+/// Every directory panio resolves a helper from before `$PATH`: the
 /// bundled [`helper_dirs`] first, then the plugin dirs. The order is the
 /// guarantee #303 keeps from #206: a plugin can **add** a helper, but one
 /// with the same name as a bundled helper never wins, so a daemon still runs
-/// the binary paniolo installed. There is no opt-in to shadow a bundled
+/// the binary panio installed. There is no opt-in to shadow a bundled
 /// helper.
 pub fn all_helper_dirs() -> Vec<PathBuf> {
     with_plugins(helper_dirs(), plugin_helper_dirs())
@@ -199,7 +196,7 @@ fn with_plugins(bundled: Vec<PathBuf>, plugins: Vec<PathBuf>) -> Vec<PathBuf> {
     dirs
 }
 
-/// One entry of `paniolo helper` (list): a helper's file name and, when it
+/// One entry of `panio helper` (list): a helper's file name and, when it
 /// resolves from a plugin dir, the plugin root it came from (`None` = one of
 /// the bundled [`helper_dirs`]).
 #[derive(Debug, PartialEq, Eq)]
@@ -208,7 +205,7 @@ pub struct HelperEntry {
     pub plugin_root: Option<PathBuf>,
 }
 
-/// The helpers `paniolo helper` lists, sorted by name, each attributed to the
+/// The helpers `panio helper` lists, sorted by name, each attributed to the
 /// first dir that has it (the one [`find_binary`] would run). Also returns the
 /// plugin helpers that lost to an earlier dir, as `(name, root)`, for
 /// `doctor`.
@@ -260,7 +257,7 @@ pub fn helper_entries_in(
     (entries, shadowed)
 }
 
-/// One `paniolo helper` list line: the bare name for a bundled helper, or the
+/// One `panio helper` list line: the bare name for a bundled helper, or the
 /// name, a tab, and `plugin: <root>` for one from a plugin root. The name is
 /// always the first whitespace-separated field, so a script that read the
 /// one-name-per-line output keeps working.
@@ -271,9 +268,9 @@ pub fn helper_list_line(e: &HelperEntry) -> String {
     }
 }
 
-/// Find an installed binary: the paniolo helper dirs first (per-user, then
+/// Find an installed binary: the panio helper dirs first (per-user, then
 /// relative to the running CLI — Homebrew keg or other prefix install — then
-/// the system package's `/usr/libexec/paniolo/bin`; see [`helper_dirs`]), then
+/// the system package's `/usr/libexec/panio/bin`; see [`helper_dirs`]), then
 /// the plugin roots' helper dirs ([`plugin_helper_dirs`]), then $PATH, then
 /// ~/.cargo/bin (the pre-libexec install location, kept as a transitional
 /// fallback). Never the in-repo build tree, so a running daemon can't point at
@@ -287,14 +284,14 @@ pub fn find_binary(name: &str) -> Option<PathBuf> {
     first_match(&dirs, &binary_names(name), |p| p.is_file())
 }
 
-/// The directories [`find_binary`] searches, in order: the paniolo helper dirs
+/// The directories [`find_binary`] searches, in order: the panio helper dirs
 /// (bundled, then plugin: [`all_helper_dirs`]), then `$PATH`, then
 /// `~/.cargo/bin`.
 ///
 /// Pure, so the **order** is testable without a host that happens to have a
 /// helper installed. The order is the whole point: a packaged helper in
-/// `/usr/libexec/paniolo/bin` must win over a stale one on the operator's
-/// `$PATH`, so a daemon always runs the binary paniolo installed. That
+/// `/usr/libexec/panio/bin` must win over a stale one on the operator's
+/// `$PATH`, so a daemon always runs the binary panio installed. That
 /// guarantee had no test of its own until GitHub #206 removed the one that
 /// exercised it by accident.
 fn search_dirs(
@@ -333,8 +330,8 @@ pub fn hook_path() -> std::ffi::OsString {
     std::env::join_paths(paths).unwrap_or(current)
 }
 
-/// The temp root beneath which paniolo's per-uid runtime base lives. Honors
-/// `$PANIOLO_RUNTIME_BASE` (default `/tmp`), so the location is configurable
+/// The temp root beneath which panio's per-uid runtime base lives. Honors
+/// `$PANIO_RUNTIME_BASE` (default `/tmp`), so the location is configurable
 /// without resorting to `$TMPDIR`: macOS hands each environment a different
 /// TMPDIR (GUI terminal vs SSH vs sandboxed agent shells), which would make a
 /// daemon started in one environment invisible to the others — the bug the
@@ -342,19 +339,19 @@ pub fn hook_path() -> std::ffi::OsString {
 /// (systemd removes `/run/user/<uid>` when the user's last session ends,
 /// breaking daemons that outlive the SSH session that started them).
 pub fn runtime_root() -> PathBuf {
-    std::env::var_os("PANIOLO_RUNTIME_BASE")
+    std::env::var_os("PANIO_RUNTIME_BASE")
         .map(PathBuf::from)
         .unwrap_or_else(crate::platform::default_runtime_root)
 }
 
-/// Stable per-user runtime base: `<root>/paniolo-<uid>`, identical in every
+/// Stable per-user runtime base: `<root>/panio-<uid>`, identical in every
 /// environment of the same user. The per-uid namespace and its 0700 ownership
 /// check (see [`ensure_runtime_dir`]) are always applied beneath the root.
 /// Keep in sync with `runtime_dir()` in hdmicap/src/daemon.rs and
 /// serialcap/src/daemon.rs.
 fn runtime_base() -> PathBuf {
     let uid = crate::platform::current_uid();
-    runtime_root().join(format!("paniolo-{uid}"))
+    runtime_root().join(format!("panio-{uid}"))
 }
 
 /// Sanitize a user-chosen key (a target name, a hook program's basename, …)
@@ -367,7 +364,7 @@ fn runtime_base() -> PathBuf {
 /// Reused everywhere a name that ultimately reached the lab file (a target
 /// name that predates [`crate::model::validate_name`], a power hook's
 /// program) is turned into a filesystem path component: [`runtime_rel`],
-/// [`hook_helper_name`], the `paniolo helper <name>` host-singleton branch in
+/// [`hook_helper_name`], the `panio helper <name>` host-singleton branch in
 /// main.rs, and `state::target_dir`.
 pub(crate) fn sanitize_component(s: &str) -> String {
     let out: String = s
@@ -473,7 +470,7 @@ fn trusted_runtime_base() -> std::result::Result<Option<PathBuf>, String> {
     if crate::platform::is_private_dir(&base) {
         return Ok(Some(base));
     }
-    // Our own directory left too open — created by an older paniolo, or by
+    // Our own directory left too open — created by an older panio, or by
     // the ssh ControlMaster path before it went through the private-dir
     // check. Tighten it exactly as the write path does rather than pretend
     // nothing is running; only a symlink or another owner is refused.
@@ -493,22 +490,22 @@ fn trusted_runtime_base() -> std::result::Result<Option<PathBuf>, String> {
 // ── helper state/runtime-dir API ────────────────────────────────────────────
 //
 // Helpers must not invent their own paths (a helper writing unnamespaced
-// state into ~/.config/paniolo/ collides with the lab file and each other),
-// and must not re-implement the runtime-base logic above. Paniolo is the
-// single source of truth: every invocation of a helper — `paniolo helper`,
+// state into ~/.config/panio/ collides with the lab file and each other),
+// and must not re-implement the runtime-base logic above. Panio is the
+// single source of truth: every invocation of a helper — `panio helper`,
 // hook commands, daemon spawns — carries two environment variables:
 //
-//   PANIOLO_STATE_DIR    ~/.config/paniolo/helpers/<name>   durable state
-//   PANIOLO_RUNTIME_DIR  /tmp/paniolo-<uid>/<name>          discovery, locks,
+//   PANIO_STATE_DIR    ~/.config/panio/helpers/<name>   durable state
+//   PANIO_RUNTIME_DIR  /tmp/panio-<uid>/<name>          discovery, locks,
 //                                                           logs (wiped on boot)
 //
 // Both directories exist by the time the helper runs. Helpers should prefer
 // these over hand-rolled paths, falling back to the same literal locations
 // when run standalone (documented in docs/dev/adding-power-helpers.md).
 
-/// Durable per-helper state base: `~/.config/paniolo/helpers`.
+/// Durable per-helper state base: `~/.config/panio/helpers`.
 pub fn state_base() -> Option<PathBuf> {
-    dirs::home_dir().map(|h| h.join(".config/paniolo/helpers"))
+    dirs::home_dir().map(|h| h.join(".config/panio/helpers"))
 }
 
 /// The `(var, value)` environment pairs for invoking helper `name`, with both
@@ -520,11 +517,11 @@ pub fn helper_env(name: &str, instance: Option<&str>) -> Vec<(&'static str, Path
     let mut env = Vec::new();
     if let Some(state) = state_base().map(|b| b.join(runtime_rel(name, instance))) {
         if std::fs::create_dir_all(&state).is_ok() {
-            env.push(("PANIOLO_STATE_DIR", state));
+            env.push(("PANIO_STATE_DIR", state));
         }
     }
     if let Ok(runtime) = ensure_runtime_dir(name, instance) {
-        env.push(("PANIOLO_RUNTIME_DIR", runtime));
+        env.push(("PANIO_RUNTIME_DIR", runtime));
     }
     env
 }
@@ -634,7 +631,7 @@ impl BinaryStatus {
     pub fn note(self) -> String {
         match self {
             Self::Current => " (binary content matches installed)".into(),
-            Self::Changed => " (stale: binary content changed; `paniolo daemons restart`)".into(),
+            Self::Changed => " (stale: binary content changed; `panio daemons restart`)".into(),
             Self::Unknown(reason) => format!(" (binary identity unknown: {reason})"),
         }
     }
@@ -684,7 +681,7 @@ fn content_digest(path: &Path) -> Option<String> {
             "-Command",
             concat!(
                 "$ErrorActionPreference='Stop'; $stream=$null; $hash=$null; ",
-                "try { $stream=[System.IO.File]::OpenRead($env:PANIOLO_HASH_FILE); ",
+                "try { $stream=[System.IO.File]::OpenRead($env:PANIO_HASH_FILE); ",
                 "$hash=[System.Security.Cryptography.SHA256]::Create(); ",
                 "[System.BitConverter]::ToString($hash.ComputeHash($stream))",
                 ".Replace('-','').ToLowerInvariant() } ",
@@ -692,7 +689,7 @@ fn content_digest(path: &Path) -> Option<String> {
                 "if ($null -ne $stream) { $stream.Dispose() } }",
             ),
         ]);
-        cmd.env("PANIOLO_HASH_FILE", path);
+        cmd.env("PANIO_HASH_FILE", path);
         cmd
     };
     #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
@@ -950,15 +947,15 @@ pub fn list_discovered() -> Vec<DaemonInfo> {
     out
 }
 
-/// Processes launched from a paniolo helper dir that are neither in
+/// Processes launched from a panio helper dir that are neither in
 /// `exclude_pids` nor descended from one of them — stray helper invocations
 /// (e.g. a wedged one-shot holding a serial port).
 ///
 /// "Launched from" means the process's program path (argv[0]) sits directly
 /// in one of [`helper_dirs`], the bundled dirs only: a process running out of
-/// a plugin root (#303) is not paniolo's to signal, so `daemons stop --all`
+/// a plugin root (#303) is not panio's to signal, so `daemons stop --all`
 /// leaves it alone. The rest of the command line is not consulted,
-/// so the `cargo install --root …/libexec/paniolo …` that `make install`
+/// so the `cargo install --root …/libexec/panio …` that `make install`
 /// runs, an editor, or an `ls` that merely *mentions* the dir is not a stray
 /// and is not TERMed by `daemons stop --all`. Descendants of an excluded pid
 /// are excluded too, because a recorded pid is not always the helper itself:
@@ -1039,7 +1036,7 @@ fn strays_in_ps(
 // not been touched for ten days is deleted — including the discovery file of a
 // daemon that has simply been *running* that long without a command being run
 // against it. Nothing tells the daemon; it keeps running and keeps its capture
-// device. Paniolo, whose only handle on it was the deleted file, reports the
+// device. Panio, whose only handle on it was the deleted file, reports the
 // channel `stopped`, and the next `watch` spawns a replacement that dies on
 // the orphan's advisory lock — one command says stopped, the next says already
 // running, and neither can fix it. Measured on a Pi 5 control host: three
@@ -1050,7 +1047,7 @@ fn strays_in_ps(
 // hand-cleaned /tmp all produce the same orphan — and an operator looking at
 // one needs a way out of it regardless of how it got there.
 //
-// The way out is to recognize the *process*: paniolo's daemons are spawned
+// The way out is to recognize the *process*: panio's daemons are spawned
 // from a helper dir, with a `daemon` subcommand and a `--device`, all of which
 // `ps` still shows long after the file is gone.
 
@@ -1105,7 +1102,7 @@ fn flag_value<'a>(toks: &[&'a str], i: usize, flag: &str) -> Option<&'a str> {
     None
 }
 
-/// Classify one `ps` command line as a paniolo daemon invocation, returning the
+/// Classify one `ps` command line as a panio daemon invocation, returning the
 /// helper's basename and every device it holds. `None` for anything not running
 /// the `daemon` subcommand: a wedged one-shot (`zigplug … on 1`), or a daemon's
 /// own OCR child. Pure, so the classification is unit-testable without a
@@ -1139,7 +1136,7 @@ fn daemon_invocation(args: &str) -> Option<(String, Vec<String>)> {
 
 /// One [`list_stray_helpers`] row as an untracked daemon, or `None` when the
 /// process is a stray of some other kind. Callers that already have a stray
-/// listing (the `paniolo daemons` inventory) use this to split it rather than
+/// listing (the `panio daemons` inventory) use this to split it rather than
 /// walking `ps` a second time.
 pub fn untracked_of(pid: i32, args: &str) -> Option<Untracked> {
     let (name, devices) = daemon_invocation(args)?;
@@ -1151,7 +1148,7 @@ pub fn untracked_of(pid: i32, args: &str) -> Option<Untracked> {
     })
 }
 
-/// Every untracked daemon on this host: a process launched from a paniolo
+/// Every untracked daemon on this host: a process launched from a panio
 /// helper dir, running its `daemon` subcommand, whose pid no live discovery
 /// file names. Tracked daemons and their children are excluded by
 /// [`list_stray_helpers`], so a healthy daemon never appears here.
@@ -1216,8 +1213,8 @@ pub fn query_escape(s: &str) -> String {
 
 /// A running daemon's HTTP endpoint, as read from its discovery file: the
 /// loopback port and the bearer token every request must carry. `token` is
-/// `None` for a daemon started by a paniolo older than the token — it accepts
-/// unauthenticated requests; a named `paniolo daemons restart` replaces it.
+/// `None` for a daemon started by a panio older than the token — it accepts
+/// unauthenticated requests; a named `panio daemons restart` replaces it.
 /// `--stale` excludes instances whose content identity cannot be compared.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Endpoint {
@@ -1380,7 +1377,7 @@ pub fn remove_discovery_for_pid(name: &str, instance: Option<&str>, pid: i32) ->
     }
 }
 
-/// `PANIOLO_RUNTIME_BASE` is process-global and `cargo test` runs the unit
+/// `PANIO_RUNTIME_BASE` is process-global and `cargo test` runs the unit
 /// tests as threads of one process, so every test that points it somewhere
 /// holds this — **including the ones in other modules**.
 ///
@@ -1463,7 +1460,7 @@ mod tests {
     /// is the `--device` it was handed.
     #[test]
     fn daemon_invocation_reads_the_helper_and_its_device() {
-        let args = "/usr/libexec/paniolo/bin/hdmicap daemon \
+        let args = "/usr/libexec/panio/bin/hdmicap daemon \
                     --device /dev/v4l/by-path/x-video-index0 --port 0";
         let (name, devices) = daemon_invocation(args).expect("this is a daemon");
         assert_eq!(name, "hdmicap");
@@ -1471,13 +1468,13 @@ mod tests {
 
         // `--device=<path>` is the same argument spelled the other way.
         let (_, devices) =
-            daemon_invocation("/usr/libexec/paniolo/bin/hdmicap daemon --device=/dev/video0")
+            daemon_invocation("/usr/libexec/panio/bin/hdmicap daemon --device=/dev/video0")
                 .expect("this is a daemon");
         assert_eq!(devices, ["/dev/video0"]);
 
         // A daemon that names no device is still a daemon.
         let (name, devices) =
-            daemon_invocation("/usr/libexec/paniolo/bin/zigplug daemon").expect("still a daemon");
+            daemon_invocation("/usr/libexec/panio/bin/zigplug daemon").expect("still a daemon");
         assert_eq!(name, "zigplug");
         assert!(devices.is_empty());
     }
@@ -1488,16 +1485,16 @@ mod tests {
     #[test]
     fn daemon_invocation_rejects_anything_that_is_not_a_daemon() {
         assert_eq!(
-            daemon_invocation("/usr/libexec/paniolo/bin/zigplug -d /dev/x on 1"),
+            daemon_invocation("/usr/libexec/panio/bin/zigplug -d /dev/x on 1"),
             None
         );
         assert_eq!(
-            daemon_invocation("/usr/libexec/paniolo/bin/linuxocr --json /tmp/frame.png"),
+            daemon_invocation("/usr/libexec/panio/bin/linuxocr --json /tmp/frame.png"),
             None
         );
         // `--device` alone, with no subcommand, is not a daemon either.
         assert_eq!(
-            daemon_invocation("/usr/libexec/paniolo/bin/hdmicap shot --device /dev/video0"),
+            daemon_invocation("/usr/libexec/panio/bin/hdmicap shot --device /dev/video0"),
             None
         );
         assert_eq!(daemon_invocation(""), None);
@@ -1508,7 +1505,7 @@ mod tests {
     #[test]
     fn daemon_invocation_strips_the_windows_suffix() {
         let (name, _) =
-            daemon_invocation(r"C:\paniolo\libexec\hdmicap.exe daemon --device 0").unwrap();
+            daemon_invocation(r"C:\panio\libexec\hdmicap.exe daemon --device 0").unwrap();
         assert_eq!(name, "hdmicap");
     }
 
@@ -1519,7 +1516,7 @@ mod tests {
     /// holding its port.
     #[test]
     fn daemon_invocation_reads_every_serial_interface_device() {
-        let args = "/usr/libexec/paniolo/bin/serialcap daemon --port 0 \
+        let args = "/usr/libexec/panio/bin/serialcap daemon --port 0 \
                     --interface console=/dev/ttyUSB0@115200 \
                     --interface aux=/dev/serial/by-id/usb-FTDI_A-if00-port0@9600:cts";
         let (name, devices) = daemon_invocation(args).expect("this is a daemon");
@@ -1577,16 +1574,16 @@ mod tests {
     /// The whole recovery pipeline over a realistic `ps` listing: the stray
     /// walk excludes the tracked daemon and its OCR child, and the
     /// classification then separates the orphaned daemon from a wedged
-    /// one-shot. This is the exact split `paniolo daemons` prints, and the set
+    /// one-shot. This is the exact split `panio daemons` prints, and the set
     /// `video watch` searches before it starts a replacement (#187).
     #[test]
     fn an_orphaned_daemon_is_separated_from_a_tracked_one_and_from_a_one_shot() {
-        let libexec = PathBuf::from("/usr/libexec/paniolo/bin");
+        let libexec = PathBuf::from("/usr/libexec/panio/bin");
         let ps = "\
-  100   1 /usr/libexec/paniolo/bin/hdmicap daemon --device /dev/video0 --port 0
-  101 100 /usr/libexec/paniolo/bin/linuxocr --json /tmp/frame.png
-  200   1 /usr/libexec/paniolo/bin/hdmicap daemon --device /dev/video1 --port 0
-  300   1 /usr/libexec/paniolo/bin/zigplug -d /dev/tty.usb on 1
+  100   1 /usr/libexec/panio/bin/hdmicap daemon --device /dev/video0 --port 0
+  101 100 /usr/libexec/panio/bin/linuxocr --json /tmp/frame.png
+  200   1 /usr/libexec/panio/bin/hdmicap daemon --device /dev/video1 --port 0
+  300   1 /usr/libexec/panio/bin/zigplug -d /dev/tty.usb on 1
   400   1 /usr/bin/vim daemon --device /dev/video9
 ";
         // pid 100 is the one daemon with a live discovery file.
@@ -1605,14 +1602,14 @@ mod tests {
             untracked.iter().map(|u| u.pid).collect::<Vec<_>>(),
             vec![200],
             "only the daemon with no discovery file is untracked: 100 is tracked, \
-             101 is its child, 300 is a one-shot, 400 is not a paniolo helper"
+             101 is its child, 300 is a one-shot, 400 is not a panio helper"
         );
         assert_eq!(untracked[0].name, "hdmicap");
         assert_eq!(untracked[0].devices, ["/dev/video1"]);
         assert_eq!(rest, vec![300], "the wedged one-shot stays a plain stray");
     }
 
-    /// The row `paniolo daemons` prints for an orphan, end to end from the
+    /// The row `panio daemons` prints for an orphan, end to end from the
     /// command line `ps` shows to the text an operator reads. On waldo,
     /// upgraded to 0.3.0, the two serialcap orphans holding serial ports
     /// printed as
@@ -1626,7 +1623,7 @@ mod tests {
     /// is the fix, not an incidental of it.
     #[test]
     fn the_inventory_row_names_every_port_an_orphan_is_sitting_on() {
-        let serialcap = "/usr/libexec/paniolo/bin/serialcap daemon --port 0 \
+        let serialcap = "/usr/libexec/panio/bin/serialcap daemon --port 0 \
                          --interface console=/dev/ttyUSB0@115200 \
                          --interface aux=/dev/ttyUSB1@9600:cts";
         let u = untracked_of(14488, serialcap).expect("this is a daemon");
@@ -1640,14 +1637,13 @@ mod tests {
         // itself at the other's expense.
         let u = untracked_of(
             200,
-            "/usr/libexec/paniolo/bin/hdmicap daemon --device /dev/video1",
+            "/usr/libexec/panio/bin/hdmicap daemon --device /dev/video1",
         )
         .expect("this is a daemon");
         assert_eq!(u.devices_display(), "/dev/video1");
 
         // A daemon that holds no device still gets a row; `-` is right here.
-        let u =
-            untracked_of(300, "/usr/libexec/paniolo/bin/zigplug daemon").expect("still a daemon");
+        let u = untracked_of(300, "/usr/libexec/panio/bin/zigplug daemon").expect("still a daemon");
         assert_eq!(u.devices_display(), "-");
     }
 
@@ -1842,14 +1838,14 @@ mod tests {
 
     /// A packaged helper must beat a stale one on the operator's `$PATH`.
     ///
-    /// This is what makes "the daemon always runs the binary paniolo
+    /// This is what makes "the daemon always runs the binary panio
     /// installed" true, and it had no test of its own: the one test that
     /// exercised the ordering did so by accident, and only on a host that
     /// happened to have a packaged helper (GitHub #206). Reversing the two
     /// loops in `find_binary` used to leave the whole suite green.
     #[test]
     fn helper_dirs_are_searched_before_path_and_cargo_bin() {
-        let libexec = PathBuf::from("/usr/libexec/paniolo/bin");
+        let libexec = PathBuf::from("/usr/libexec/panio/bin");
         let on_path = PathBuf::from("/usr/local/bin");
         let cargo_bin = PathBuf::from("/home/u/.cargo/bin");
         let dirs = search_dirs(
@@ -1892,12 +1888,12 @@ mod tests {
     }
 
     /// Plugin helper dirs come after every bundled dir and before `$PATH`, so
-    /// a same-name plugin helper never wins over the one paniolo installed
+    /// a same-name plugin helper never wins over the one panio installed
     /// (#303 keeps #206's guarantee), but still beats `$PATH`.
     #[test]
     fn plugin_dirs_follow_bundled_dirs_and_precede_path() {
-        let user = abs("/home/u/.local/libexec/paniolo/bin");
-        let system = abs("/usr/libexec/paniolo/bin");
+        let user = abs("/home/u/.local/libexec/panio/bin");
+        let system = abs("/usr/libexec/panio/bin");
         let plugin = plugin_helper_dir(&abs("/opt/lab-plugins"));
         let on_path = abs("/usr/local/bin");
         let helper = with_plugins(vec![user.clone(), system.clone()], vec![plugin.clone()]);
@@ -1990,7 +1986,7 @@ mod tests {
     /// packaged `hdmicap.exe` is found before an extension-less sibling.
     #[test]
     fn first_match_tries_every_candidate_name_in_order() {
-        let dir = PathBuf::from("/opt/paniolo/libexec");
+        let dir = PathBuf::from("/opt/panio/libexec");
         let names = binary_names("hdmicap");
         let found = first_match(std::slice::from_ref(&dir), &names, |_| true).unwrap();
         assert_eq!(found, dir.join(&names[0]));
@@ -2008,9 +2004,9 @@ mod tests {
     fn find_binary_resolves_a_helper_through_path() {
         let dir = tempfile::tempdir().unwrap();
         let name = if cfg!(windows) {
-            "paniolo-fake-helper.exe"
+            "panio-fake-helper.exe"
         } else {
-            "paniolo-fake-helper"
+            "panio-fake-helper"
         };
         let path = dir.path().join(name);
         std::fs::write(&path, b"").unwrap();
@@ -2031,7 +2027,7 @@ mod tests {
         unsafe { std::env::set_var("PATH", std::env::join_paths(paths).unwrap()) };
 
         // Named bare, as every caller names helpers.
-        let found = find_binary("paniolo-fake-helper");
+        let found = find_binary("panio-fake-helper");
 
         match prev {
             Some(p) => unsafe { std::env::set_var("PATH", p) },
@@ -2146,7 +2142,7 @@ mod tests {
         let _guard = RUNTIME_BASE_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if std::env::var_os("PANIOLO_RUNTIME_BASE").is_none() {
+        if std::env::var_os("PANIO_RUNTIME_BASE").is_none() {
             assert_eq!(runtime_root(), crate::platform::default_runtime_root());
             if cfg!(unix) {
                 assert_eq!(runtime_root(), PathBuf::from("/tmp"));
@@ -2154,27 +2150,27 @@ mod tests {
         }
     }
 
-    /// Run `f` with `PANIOLO_RUNTIME_BASE` pointed at a fresh scratch root
-    /// (so `runtime_base()` is `<root>/paniolo-<uid>`), restoring the
+    /// Run `f` with `PANIO_RUNTIME_BASE` pointed at a fresh scratch root
+    /// (so `runtime_base()` is `<root>/panio-<uid>`), restoring the
     /// previous value afterwards.
     fn with_runtime_root<R>(f: impl FnOnce(&Path) -> R) -> R {
         let _guard = RUNTIME_BASE_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let root = tempfile::tempdir().unwrap();
-        let prev = std::env::var_os("PANIOLO_RUNTIME_BASE");
+        let prev = std::env::var_os("PANIO_RUNTIME_BASE");
         // Safe: serialized by the lock above; restored below.
-        unsafe { std::env::set_var("PANIOLO_RUNTIME_BASE", root.path()) };
+        unsafe { std::env::set_var("PANIO_RUNTIME_BASE", root.path()) };
         let r = f(root.path());
         match prev {
-            Some(p) => unsafe { std::env::set_var("PANIOLO_RUNTIME_BASE", p) },
-            None => unsafe { std::env::remove_var("PANIOLO_RUNTIME_BASE") },
+            Some(p) => unsafe { std::env::set_var("PANIO_RUNTIME_BASE", p) },
+            None => unsafe { std::env::remove_var("PANIO_RUNTIME_BASE") },
         }
         r
     }
 
     fn expected_base(root: &Path) -> PathBuf {
-        root.join(format!("paniolo-{}", crate::platform::current_uid()))
+        root.join(format!("panio-{}", crate::platform::current_uid()))
     }
 
     /// A discovery file naming *this* process, so the liveness check passes
@@ -2347,7 +2343,7 @@ mod tests {
     }
 
     /// A base we own but left group/world-accessible is refused by the
-    /// readers: a base we own that was left too open (an older paniolo, or
+    /// readers: a base we own that was left too open (an older panio, or
     /// the ssh ControlMaster path) is tightened to 0700 and then trusted, so
     /// an upgrade never makes a running daemon look stopped.
     #[cfg(unix)]
@@ -2391,14 +2387,14 @@ mod tests {
     /// `daemons stop --all` then TERMed them.
     #[test]
     fn strays_match_the_program_path_not_the_arguments() {
-        let dirs = vec![PathBuf::from("/opt/paniolo/libexec/bin")];
+        let dirs = vec![PathBuf::from("/opt/panio/libexec/bin")];
         let ps = "\
-  100     1 /opt/paniolo/libexec/bin/zigplug -d /dev/ttyUSB0 on 1
-  101     1 cargo install --path zigplug --root /opt/paniolo/libexec
-  102     1 ls -l /opt/paniolo/libexec/bin
-  103     1 vim /opt/paniolo/libexec/bin/notes.txt
-  104     1 /opt/paniolo/libexec/binx/other
-  105     1 /opt/paniolo/libexec/bin/sub/deeper
+  100     1 /opt/panio/libexec/bin/zigplug -d /dev/ttyUSB0 on 1
+  101     1 cargo install --path zigplug --root /opt/panio/libexec
+  102     1 ls -l /opt/panio/libexec/bin
+  103     1 vim /opt/panio/libexec/bin/notes.txt
+  104     1 /opt/panio/libexec/binx/other
+  105     1 /opt/panio/libexec/bin/sub/deeper
 ";
         let pids: Vec<i32> = strays_in_ps(ps, &dirs, 999, &[])
             .into_iter()
@@ -2413,22 +2409,22 @@ mod tests {
     /// a child of a known daemon. The wedged one-shot is what remains.
     #[test]
     fn strays_exclude_us_known_pids_and_their_descendants() {
-        let dirs = vec![PathBuf::from("/usr/libexec/paniolo/bin")];
+        let dirs = vec![PathBuf::from("/usr/libexec/panio/bin")];
         let ps = "\
-  200     1 sudo env NO_COLOR=1 /usr/libexec/paniolo/bin/netbootd --host-ip 192.168.99.1
-  201   200 /usr/libexec/paniolo/bin/netbootd --host-ip 192.168.99.1
-  202   201 /usr/libexec/paniolo/bin/bpf-helper
-  300     1 /usr/libexec/paniolo/bin/hdmicap daemon --device /dev/video0
-  301   300 /usr/libexec/paniolo/bin/linuxocr
-  400     1 /usr/libexec/paniolo/bin/zigplug -d /dev/ttyUSB1 on 1
-  500     1 /usr/libexec/paniolo/bin/serialcap stop
+  200     1 sudo env NO_COLOR=1 /usr/libexec/panio/bin/netbootd --host-ip 192.168.99.1
+  201   200 /usr/libexec/panio/bin/netbootd --host-ip 192.168.99.1
+  202   201 /usr/libexec/panio/bin/bpf-helper
+  300     1 /usr/libexec/panio/bin/hdmicap daemon --device /dev/video0
+  301   300 /usr/libexec/panio/bin/linuxocr
+  400     1 /usr/libexec/panio/bin/zigplug -d /dev/ttyUSB1 on 1
+  500     1 /usr/libexec/panio/bin/serialcap stop
 ";
         let strays = strays_in_ps(ps, &dirs, 500, &[200, 300]);
         assert_eq!(
             strays,
             vec![(
                 400,
-                "/usr/libexec/paniolo/bin/zigplug -d /dev/ttyUSB1 on 1".to_string()
+                "/usr/libexec/panio/bin/zigplug -d /dev/ttyUSB1 on 1".to_string()
             )]
         );
     }
@@ -2439,9 +2435,9 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn start_failure_tells_an_exited_daemon_from_a_slow_one() {
-        use crate::error::{Kind, PanioloError};
+        use crate::error::{Kind, PanioError};
         let kind_of = |e: anyhow::Error| {
-            let pe = e.downcast::<PanioloError>().expect("classified");
+            let pe = e.downcast::<PanioError>().expect("classified");
             (pe.kind, pe.child_exit)
         };
         // Wait for the exit without a fixed sleep; std caches the status, so
@@ -2455,7 +2451,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         let e = start_failure(
-            "paniolo-test-daemon",
+            "panio-test-daemon",
             None,
             Duration::from_secs(5),
             Some(&mut fresh),
@@ -2467,7 +2463,7 @@ mod tests {
             .spawn()
             .unwrap();
         let e = start_failure(
-            "paniolo-test-daemon",
+            "panio-test-daemon",
             None,
             Duration::from_secs(5),
             Some(&mut slow),
@@ -2476,14 +2472,14 @@ mod tests {
         let _ = slow.kill();
         let _ = slow.wait();
 
-        let e = start_failure("paniolo-test-daemon", None, Duration::from_secs(5), None);
+        let e = start_failure("panio-test-daemon", None, Duration::from_secs(5), None);
         assert_eq!(kind_of(e), (Kind::Timeout, None));
 
         // A helper that forked and exited 0 may still bring its daemon up.
         let mut forked = std::process::Command::new("true").spawn().unwrap();
         let _ = forked.wait();
         let e = start_failure(
-            "paniolo-test-daemon",
+            "panio-test-daemon",
             None,
             Duration::from_secs(5),
             Some(&mut forked),

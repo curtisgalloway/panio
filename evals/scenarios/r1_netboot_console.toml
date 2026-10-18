@@ -7,9 +7,9 @@ conditions = ["cold", "warm", "preloaded"]
 capabilities = ["netboot", "serial"]
 goal = """
 I just built a new kernel image at `out/kernel.img`. The Raspberry Pi `pico` is
-configured in paniolo. Get that image onto the Pi, boot it over the network,
+configured in panio. Get that image onto the Pi, boot it over the network,
 and show me the first 50 lines of boot console output. Do NOT actually run the
-commands — list the exact paniolo commands you would run, in order, and say
+commands — list the exact panio commands you would run, in order, and say
 where you learned each.
 """
 traps = [
@@ -18,11 +18,11 @@ traps = [
   "a Pi 5 kernel is dropped as `kernel_2712.img` in the TFTP root",
 ]
 reference = [
-  'paniolo netboot tftp-root pico        # find where to drop the file',
+  'panio netboot tftp-root pico        # find where to drop the file',
   'cp out/kernel.img <tftp-root>/kernel_2712.img',
-  'paniolo netboot start pico',
-  'paniolo serial watch pico             # start the capture daemon BEFORE reading',
-  'paniolo serial log pico --tail 50',
+  'panio netboot start pico',
+  'panio serial watch pico             # start the capture daemon BEFORE reading',
+  'panio serial log pico --tail 50',
 ]
 
 seed = "bench.toml"

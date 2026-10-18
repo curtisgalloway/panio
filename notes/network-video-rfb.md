@@ -112,7 +112,7 @@ input goes through the `hid` path.
 
 JetKVM firmware 0.5.9 in front of an x86 board, macOS control host:
 
-- `paniolo video watch` started both daemons.
+- `panio video watch` started both daemons.
 - `video shot` returned a 1920x1080 PNG of the real screen.
 - `hid send` typed into an application while video ran on the same session (no
   eviction).

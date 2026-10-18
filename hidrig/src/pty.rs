@@ -14,12 +14,12 @@
 
 //! A pseudo-terminal the hid daemon uses to re-export the DUT serial console.
 //!
-//! paniolo's `serial` channel opens a *device path* (`serialcap` hands it
+//! panio's `serial` channel opens a *device path* (`serialcap` hands it
 //! straight to `tokio_serial`), so to feed the multiplexed `0x03` console
 //! through it unchanged we hand the daemon a PTY: the owner thread reads/writes
-//! the master end, and paniolo opens the slave path (via a stable symlink the
+//! the master end, and panio opens the slave path (via a stable symlink the
 //! daemon publishes). A PTY — not a socket — is what also satisfies
-//! `paniolo serial connect`, which `exec`s `tio` against a real terminal.
+//! `panio serial connect`, which `exec`s `tio` against a real terminal.
 //!
 //! The daemon also keeps its own handle on the slave, open in raw mode, for as
 //! long as it runs. Without it the slave sits at the kernel's cooked defaults
@@ -40,7 +40,7 @@ use std::os::unix::io::{AsRawFd, FromRawFd, RawFd};
 use anyhow::{anyhow, Result};
 
 /// An allocated PTY: the master end (owned by the daemon), the daemon's own
-/// raw-mode handle on the slave, and the slave device path that paniolo's
+/// raw-mode handle on the slave, and the slave device path that panio's
 /// `serial` channel points its `device =` at.
 pub struct Pty {
     /// Master end, in non-blocking mode (so it never stalls the owner loop).

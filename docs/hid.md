@@ -1,13 +1,13 @@
 # USB HID injection
 
-**Terms:** HID is USB keyboard/mouse input; the control host runs paniolo and
+**Terms:** HID is USB keyboard/mouse input; the control host runs panio and
 the target receives input. CDC-ACM is USB's virtual serial-port interface.
 See the [glossary](glossary.md).
 
-paniolo injects keyboard and mouse events into the target through a USB HID
+panio injects keyboard and mouse events into the target through a USB HID
 injector: a device plugged into the target that acts as a keyboard and mouse.
 A helper tool on the control host drives it. The target's **hid channel** is
-a command prefix: paniolo appends arguments and runs it.
+a command prefix: panio appends arguments and runs it.
 
 ---
 
@@ -17,9 +17,9 @@ Pick the helper that matches your injector hardware. There is no default.
 
 | Helper | Drives | Bind with |
 |---|---|---|
-| [`ch9329`](https://github.com/curtisgalloway/paniolo/blob/main/ch9329/README.md) | KVM-over-USB devices speaking the WCH CH9329 protocol (serial-to-HID chip): the **Openterface Mini-KVM**, the **Openterface KVM-Go** (see the [KVM-Go notes](https://github.com/curtisgalloway/paniolo/blob/main/notes/openterface-kvm-go.md)), and the **Sipeed NanoKVM-USB**. | `--cmd "ch9329 -d <uart>"` |
-| [`jetkvm`](https://github.com/curtisgalloway/paniolo/blob/main/jetkvm/README.md) | The **JetKVM** network KVM (firmware 0.5.9), over the network instead of a serial port. Keyboard and mouse, plus video via `rfb+hid:` (see [Video](video.md#network-sources-rfb)); see [JetKVM](#jetkvm-network-kvm-jetkvm). | `--cmd "jetkvm -d <host>"` |
-| [`hidrig`](https://github.com/curtisgalloway/paniolo/blob/main/hidrig/README.md) | The DIY dual-board KB2040 rig below. The only option that also bridges the DUT's serial console and switches its power. | `--cmd "hidrig -d <data-cdc>"` |
+| [`ch9329`](https://github.com/curtisgalloway/panio/blob/main/ch9329/README.md) | KVM-over-USB devices speaking the WCH CH9329 protocol (serial-to-HID chip): the **Openterface Mini-KVM**, the **Openterface KVM-Go** (see the [KVM-Go notes](https://github.com/curtisgalloway/panio/blob/main/notes/openterface-kvm-go.md)), and the **Sipeed NanoKVM-USB**. | `--cmd "ch9329 -d <uart>"` |
+| [`jetkvm`](https://github.com/curtisgalloway/panio/blob/main/jetkvm/README.md) | The **JetKVM** network KVM (firmware 0.5.9), over the network instead of a serial port. Keyboard and mouse, plus video via `rfb+hid:` (see [Video](video.md#network-sources-rfb)); see [JetKVM](#jetkvm-network-kvm-jetkvm). | `--cmd "jetkvm -d <host>"` |
+| [`hidrig`](https://github.com/curtisgalloway/panio/blob/main/hidrig/README.md) | The DIY dual-board KB2040 rig below. The only option that also bridges the DUT's serial console and switches its power. | `--cmd "hidrig -d <data-cdc>"` |
 
 Any other injector works if it implements the command vocabulary (`type`,
 `key`, `moveabs`, …) of the [HID serial protocol](dev/hid-serial-protocol.md).
@@ -58,7 +58,7 @@ sending GET_INFO. Restore the serial driver, then use the normal helper. The
 diagnostic needs explicit device selection and may need USB-access privileges;
 it temporarily interrupts that unit's serial connection. Capture and cleanup
 instructions, limitations, and pinned source evidence are in the
-[investigation note](https://github.com/curtisgalloway/paniolo/blob/main/notes/openterface-v2-linux-serial.md).
+[investigation note](https://github.com/curtisgalloway/panio/blob/main/notes/openterface-v2-linux-serial.md).
 An ordinary replug followed by another tty open can repeat the failure.
 
 ## JetKVM network KVM (`jetkvm`)
@@ -72,7 +72,7 @@ vocabulary as the other hid helpers.
 ```bash
 # Bind it. -d is the JetKVM's address (host or host:port); there is no serial
 # port. Use a documentation address in examples, your own in the lab file.
-paniolo hid set -t target-machine --cmd "jetkvm -d 192.0.2.10"
+panio hid set -t target-machine --cmd "jetkvm -d 192.0.2.10"
 ```
 
 **Password.** The device password never goes in a flag or the lab file. The
@@ -90,18 +90,18 @@ automating.
 
 **`OK` does not prove delivery.** The firmware reports success for HID calls
 even when the target has not enumerated the USB device. Run
-`paniolo hid send -t target-machine info` to read the USB state, video state
+`panio hid send -t target-machine info` to read the USB state, video state
 and keyboard LEDs before trusting a silent run.
 
 Pointer clicks (`click`, `mdown`, `mup`) happen wherever the pointer already
-is, so follow a `moveabs` with the click. `paniolo console` works as a KVM
+is, so follow a `moveabs` with the click. `panio console` works as a KVM
 through the helper's daemon exactly as it does for `ch9329`.
 
 **The daemon also carries the screen.** `jetkvm serve` adds a receive-only
 H.264 video track to its one session, decodes it with an `ffmpeg` subprocess
 (`serve --ffmpeg PATH`, else `PATH`, else the usual Homebrew and `/usr`
 locations), and serves it as RFB at the token-authenticated `GET /rfb`. Point
-the target's video channel at it with `paniolo video set -t target-machine
+the target's video channel at it with `panio video set -t target-machine
 --device rfb+hid:`; see [Network sources (RFB)](video.md#network-sources-rfb).
 `ffmpeg` is needed only for video. Because the session is shared, video and
 HID run together without evicting each other.
@@ -132,7 +132,7 @@ DUT as a USB HID device and is the I2C1 peripheral.
 control board; the line protocol never travels on a wire.
 
 - Design and frame format: [`hid-dual-board-design.md`](dev/hid-dual-board-design.md)
-- Host CLI: [`hidrig/README.md`](https://github.com/curtisgalloway/paniolo/blob/main/hidrig/README.md)
+- Host CLI: [`hidrig/README.md`](https://github.com/curtisgalloway/panio/blob/main/hidrig/README.md)
 - Wiring and firmware bring-up: the [`paniolo-hardware`](https://github.com/curtisgalloway/paniolo-hardware)
   repo's [`hidrig-kb2040/`](https://github.com/curtisgalloway/paniolo-hardware/tree/main/hidrig-kb2040)
 
@@ -142,37 +142,37 @@ control board; the line protocol never travels on a wire.
 
 ```bash
 # Build and install the helpers (once per control host; libexec, off PATH).
-# `make install` rebuilds everything via `paniolo setup`; to do just one:
-cargo install --path ch9329 --root ~/.local/libexec/paniolo
-cargo install --path hidrig --root ~/.local/libexec/paniolo
+# `make install` rebuilds everything via `panio setup`; to do just one:
+cargo install --path ch9329 --root ~/.local/libexec/panio
+cargo install --path hidrig --root ~/.local/libexec/panio
 
 # Bind a helper to the target in the lab file — pick the one matching your
 # hardware. For ch9329, -d is the device's control UART:
-paniolo hid set -t nuc --cmd "ch9329 -d /dev/ttyUSB0 -b 57600"
+panio hid set -t nuc --cmd "ch9329 -d /dev/ttyUSB0 -b 57600"
 
 # For hidrig, -d is the control board's DATA CDC port (the second usbmodem
 # of its pair):
-paniolo hid set -t pi5 --cmd "hidrig -d /dev/cu.usbmodemXXXX"
+panio hid set -t pi5 --cmd "hidrig -d /dev/cu.usbmodemXXXX"
 
 # Channel on a remote control host
-paniolo hid set -t pi5 --cmd "hidrig -d /dev/ttyACM1" --host bench1
+panio hid set -t pi5 --cmd "hidrig -d /dev/ttyACM1" --host bench1
 
 # A fixed port for the hid daemon (0 clears; see dashboard.md "Fixed ports")
-paniolo hid set -t pi5 --cmd "hidrig -d /dev/ttyACM1" --port 8725
+panio hid set -t pi5 --cmd "hidrig -d /dev/ttyACM1" --port 8725
 
 # Remove the channel
-paniolo hid rm -t pi5
+panio hid rm -t pi5
 ```
 
-paniolo puts `~/.local/libexec/paniolo/bin` first on PATH when running the
+panio puts `~/.local/libexec/panio/bin` first on PATH when running the
 hook, so bare helper names work. Run a helper by hand with
-`paniolo helper <name> …`. `paniolo doctor` checks the helper exists on the
+`panio helper <name> …`. `panio doctor` checks the helper exists on the
 channel's host (`command -v` for a bare name). `hid set … --doctor` also has
 it run `<cmd> doctor --json`, the helper's own read-only health check (see
 [Helper health checks](power.md#helper-health-checks-doctor)). None of the
 bundled hid helpers implements it yet, so for them doctor reports `no-check`.
 
-Read a helper's own help with `paniolo helper hidrig --help`; everything
+Read a helper's own help with `panio helper hidrig --help`; everything
 after the helper name goes to the helper. To run one where the injector is
 attached, put `-t <target> --channel hid` before the name. Reading bundled
 helper help does not open hardware or start a daemon.
@@ -181,19 +181,19 @@ helper help does not open hardware or start a daemon.
 
 ## Commands
 
-`paniolo hid send` appends its arguments to the configured command and runs
+`panio hid send` appends its arguments to the configured command and runs
 it (over SSH for a remote channel):
 
 ```bash
-paniolo hid send -t pi5 type hello world     # type a string
-paniolo hid send -t pi5 key ENTER            # tap (press+release) a key
-paniolo hid send -t pi5 combo LEFT_CONTROL C # chord: press all, release all
-paniolo hid send -t pi5 releaseall           # release any held keys
-paniolo hid send -t pi5 click left           # click left/right/middle
-paniolo hid send -t pi5 move 300 -50         # relative mouse move
-paniolo hid send -t pi5 moveabs 16000 8000   # absolute move (0..32767 logical)
-paniolo hid send -t pi5 scroll -3            # scroll wheel (negative = down)
-paniolo hid send -t pi5 ping                 # injector liveness check
+panio hid send -t pi5 type hello world     # type a string
+panio hid send -t pi5 key ENTER            # tap (press+release) a key
+panio hid send -t pi5 combo LEFT_CONTROL C # chord: press all, release all
+panio hid send -t pi5 releaseall           # release any held keys
+panio hid send -t pi5 click left           # click left/right/middle
+panio hid send -t pi5 move 300 -50         # relative mouse move
+panio hid send -t pi5 moveabs 16000 8000   # absolute move (0..32767 logical)
+panio hid send -t pi5 scroll -3            # scroll wheel (negative = down)
+panio hid send -t pi5 ping                 # injector liveness check
 ```
 
 With one target, `-t` may be omitted. Put `-t` before the helper arguments.
@@ -242,7 +242,7 @@ hidrig -d /dev/cu.usbmodemXXXX run - < boot-sequence.txt   # via stdin
 
 ## KVM mode: type and click from the web console
 
-With a `hid` channel, `paniolo console` turns the dashboard into a KVM. In the
+With a `hid` channel, `panio console` turns the dashboard into a KVM. In the
 default noVNC view, click into the video and type; there is no capture button
 (see [Dashboard](dashboard.md)). In the MJPEG view:
 
@@ -266,10 +266,10 @@ the command vocabulary over a localhost WebSocket (the
 commands from the browser *and* the CLI:
 
 ```bash
-paniolo console pi5                    # KVM dashboard (auto-starts the hid daemon)
-paniolo hid serve pi5                  # warm the daemon ahead of time (idempotent)
-paniolo hid send  -t pi5 type "while console is open"   # intermixes with the browser
-paniolo hid stop pi5                   # stop the daemon (positional target —
+panio console pi5                    # KVM dashboard (auto-starts the hid daemon)
+panio hid serve pi5                  # warm the daemon ahead of time (idempotent)
+panio hid send  -t pi5 type "while console is open"   # intermixes with the browser
+panio hid stop pi5                   # stop the daemon (positional target —
                                        #   only `hid send`/`set`/`rm` use -t)
 ```
 
@@ -277,20 +277,20 @@ While a daemon runs, `hidrig -d <device> …` one-shots route through it
 automatically.
 
 **The daemon's API needs its token**, from its discovery file
-(`/tmp/paniolo-<uid>/hid/<target>/daemon.json`, owner-only). Send it as
+(`/tmp/panio-<uid>/hid/<target>/daemon.json`, owner-only). Send it as
 `Authorization: Bearer <token>` or `?token=<token>`; only loopback
 `Host`/`Origin` values are accepted. Routed one-shots send it automatically,
-and `paniolo console` passes it in the `?hidws=` URL. A daemon from an older
-paniolo has no token; `paniolo daemons restart --stale` replaces it.
+and `panio console` passes it in the `?hidws=` URL. A daemon from an older
+panio has no token; `panio daemons restart --stale` replaces it.
 
 **Stopping.** `hid stop` (and `ch9329 stop` / `hidrig stop` / `jetkvm stop`) uses the
-authenticated `POST /stop`. `paniolo hid stop` then waits for the daemon to exit
+authenticated `POST /stop`. `panio hid stop` then waits for the daemon to exit
 and removes any leftover discovery file for that PID, so an immediate `console`
 or `video watch` starts a fresh daemon. After a five-second grace period it
 force-stops the process only if its identity still matches a HID helper; failure
 to exit is reported as an error. The helpers' own `stop` commands return when
 shutdown is accepted. Stop a daemon too old for the endpoint with
-`paniolo daemons stop hid`.
+`panio daemons stop hid`.
 
 **Limits.**
 

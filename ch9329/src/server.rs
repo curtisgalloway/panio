@@ -13,7 +13,7 @@
 // limitations under the License.
 
 //! Localhost HTTP/WebSocket API for the hid daemon (identical to hidrig's, so
-//! `paniolo console` drives a CH9329 daemon the same way).
+//! `panio console` drives a CH9329 daemon the same way).
 //!
 //! `GET /hid` is a bidirectional WebSocket carrying the HID serial protocol:
 //! each client text frame is one command line; the daemon replies one text

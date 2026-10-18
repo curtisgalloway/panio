@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Minimal read-only TFTP server for paniolo netboot (port of `_tftp.py`).
+//! Minimal read-only TFTP server for panio netboot (port of `_tftp.py`).
 //!
 //! Read-only (RRQ) per RFC 1350, with the `blksize` (RFC 2348) and `tsize`
 //! (RFC 2349) options the Raspberry Pi bootloader negotiates.
@@ -206,7 +206,7 @@ fn error_packet(code: u16, msg: &str) -> Vec<u8> {
 /// The reply socket is created per transfer, inside `tftp::serve`, which
 /// only starts after `privdrop::drop_privileges` has already given up root
 /// (see `main.rs`'s startup order). `SO_BINDTODEVICE` has not needed
-/// `CAP_NET_RAW` since Linux 5.7 — every kernel paniolo targets (Pi OS
+/// `CAP_NET_RAW` since Linux 5.7 — every kernel panio targets (Pi OS
 /// Trixie is 6.x, Debian 12 is 6.1) — so the pin still succeeds after the
 /// drop there. A kernel older than that answers `EPERM`/`EACCES`, which is
 /// the one case worth falling back on rather than failing the transfer: it

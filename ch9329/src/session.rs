@@ -73,7 +73,7 @@ const PARA_CFG_BAUD: usize = 3;
 
 /// CH9329 absolute coordinate full-scale (12-bit, in a 4096×4096 grid).
 const ABS_FULL: i64 = 4096;
-/// paniolo's `moveabs` logical maximum (`hidrig` ABS_MAX).
+/// panio's `moveabs` logical maximum (`hidrig` ABS_MAX).
 const LOGICAL_MAX: i64 = 32_767;
 
 /// Baud rates tried, in order, when none is forced. Openterface units default
@@ -331,7 +331,7 @@ impl Session {
                      compatibility issue: tty echo of startup data can leave its \
                      firmware parser unresponsive. Firmware release is unknown; \
                      chip_version is not a reliable release number. See \
-                     https://curtisgalloway.github.io/paniolo/hid/#openterface-cdc-on-linux \
+                     https://panio.dev/hid/#openterface-cdc-on-linux \
                      for diagnosis and the cold-start/direct-USB workaround; verify \
                      board and firmware compatibility before updating",
                 );
@@ -833,7 +833,7 @@ impl Session {
         Ok(())
     }
 
-    /// Absolute move; `x`/`y` are paniolo logical coords in `0..=32767`.
+    /// Absolute move; `x`/`y` are panio logical coords in `0..=32767`.
     ///
     /// The CH9329 absolute device coalesces a report whose coordinates equal
     /// its previous one. If the pointer was since moved by a relative report
@@ -915,7 +915,7 @@ impl Session {
     }
 }
 
-/// Map a paniolo logical coordinate (`0..=32767`) to a CH9329 12-bit
+/// Map a panio logical coordinate (`0..=32767`) to a CH9329 12-bit
 /// coordinate (`0..=4095`), rounded.
 fn scale_abs(v: i32) -> u16 {
     let v = v.clamp(0, LOGICAL_MAX as i32) as i64;

@@ -39,14 +39,14 @@ def test_base_env_scopes_the_runtime_base_to_the_sandbox(
         tmp_path, monkeypatch, isolation):
     # Neither the default /tmp nor an operator override may leak through: the
     # post-run `daemons stop --all` sweep runs with this env.
-    monkeypatch.setenv("PANIOLO_RUNTIME_BASE", "/tmp")
+    monkeypatch.setenv("PANIO_RUNTIME_BASE", "/tmp")
     monkeypatch.setenv("HOME", str(tmp_path / "real-home"))
     sb_dir = tmp_path / "sandbox"
     sb_dir.mkdir()
 
     env = run_mod.base_env(_sandbox(sb_dir), isolation)
 
-    runtime = Path(env["PANIOLO_RUNTIME_BASE"])
+    runtime = Path(env["PANIO_RUNTIME_BASE"])
     assert sb_dir in runtime.parents
     assert runtime.is_dir()
 
@@ -117,11 +117,11 @@ def test_unknown_scenario_ids_are_an_error(monkeypatch, capsys):
 
 
 def test_surface_cache_is_rebuilt_when_the_binary_is_newer(tmp_path, monkeypatch):
-    fake = tmp_path / "paniolo"
-    fake.write_text("#!/bin/sh\necho 'Usage: paniolo [OPTIONS]'\n")
+    fake = tmp_path / "panio"
+    fake.write_text("#!/bin/sh\necho 'Usage: panio [OPTIONS]'\n")
     fake.chmod(0o755)
     monkeypatch.setattr(run_mod, "HERE", tmp_path)  # the cache lives under HERE
-    cache = tmp_path / ".paniolo_surface.txt"
+    cache = tmp_path / ".panio_surface.txt"
     cache.write_text("STALE")
     old = 1_000_000_000
     os.utime(cache, (old, old))
@@ -130,7 +130,7 @@ def test_surface_cache_is_rebuilt_when_the_binary_is_newer(tmp_path, monkeypatch
     monkeypatch.setattr(run_mod, "_SURFACE_CACHE", None)
     surface = run_mod.command_surface(str(fake))
 
-    assert "Usage: paniolo [OPTIONS]" in surface
+    assert "Usage: panio [OPTIONS]" in surface
     assert cache.read_text() == surface
 
     # A cache newer than the binary is served as-is.

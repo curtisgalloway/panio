@@ -76,7 +76,7 @@ ch9329/          WCH CH9329 UART->USB-HID bridge client. Verified on an
   src/auth.rs      token + loopback Host/Origin layer; byte-identical copy in
                    serialcap/hdmicap/hidrig
   src/daemon.rs    `serve`/`stop`: owns the UART and publishes the same
-                   /tmp/paniolo-<uid>/hid/ discovery file the console reads.
+                   /tmp/panio-<uid>/hid/ discovery file the console reads.
                    Graceful shutdown (SIGTERM/SIGINT or a `/stop`-woken
                    `Notify`) releases held keys/buttons via uart.rs's Release
                    first, and never touches the USB mux; lock-file rule in

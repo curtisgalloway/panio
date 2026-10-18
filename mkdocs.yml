@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Docs site for paniolo. Build/preview locally with:
+# Docs site for panio. Build/preview locally with:
 #   uvx --with mkdocs-material mkdocs serve
 # Deployed to GitHub Pages by .github/workflows/docs.yml.
 #
@@ -20,14 +20,14 @@
 # verified current state) live in the top-level notes/ directory, outside this
 # docs tree — they are readable in the repo but never published.
 
-site_name: paniolo
+site_name: panio
 site_description: >-
   Agent-controlled target machine wrangler for low-level software
   development — netboot, serial, video+OCR, power, and HID control of a
   target board.
-site_url: https://curtisgalloway.github.io/paniolo/
-repo_url: https://github.com/curtisgalloway/paniolo
-repo_name: curtisgalloway/paniolo
+site_url: https://panio.dev/
+repo_url: https://github.com/curtisgalloway/panio
+repo_name: curtisgalloway/panio
 edit_uri: edit/main/docs/
 
 theme:
@@ -94,7 +94,7 @@ nav:
           - OCR helper protocol: dev/ocr.md
           - HID dual-board design: dev/hid-dual-board-design.md
           - CLI error contract: dev/error-contract/design.md
-      - Extending paniolo:
+      - Extending panio:
           - Adding power helpers: dev/adding-power-helpers.md
           - Agent evals: dev/agent-evals.md
           - Serial agent benchmark: dev/serial-agent-benchmark.md

@@ -6,25 +6,25 @@ core = true
 conditions = ["cold", "warm", "preloaded"]
 capabilities = ["netif"]
 goal = """
-On the bench target `pico` I want to test that paniolo's USB-Ethernet link comes
+On the bench target `pico` I want to test that panio's USB-Ethernet link comes
 up and goes back down — bring the bare link up (no netboot daemon, no ffx),
 check it, then take it down in a way the target will actually detect as link
-loss, and check again. List the exact paniolo commands you would run, in order,
+loss, and check again. List the exact panio commands you would run, in order,
 and explain the difference between a soft down and a hard down.
 """
 traps = [
-  "drive the link THROUGH paniolo — don't run `sudo ifconfig`/`ip`/`networksetup`/`ethtool` on the interface by hand; that desyncs paniolo's netif/netbootd state",
-  "the bare link is `paniolo netif mode link` (assigns the host IP only — no DHCP/TFTP daemon, no ffx link-local); `mode netboot` would also start serving, which isn't wanted here",
-  "check either state with `paniolo netif status` (prints mode + carrier + addresses)",
+  "drive the link THROUGH panio — don't run `sudo ifconfig`/`ip`/`networksetup`/`ethtool` on the interface by hand; that desyncs panio's netif/netbootd state",
+  "the bare link is `panio netif mode link` (assigns the host IP only — no DHCP/TFTP daemon, no ffx link-local); `mode netboot` would also start serving, which isn't wanted here",
+  "check either state with `panio netif status` (prints mode + carrier + addresses)",
   "`mode off` is a SOFT down — it only releases the host IP and does NOT force the carrier down. A NIC with Wake-on-LAN keeps the PHY energized, so `netif status` may still report `carrier up` and the target won't see link loss",
-  "for a drop the target DETECTS, use `paniolo netif down-hard` — it does `mode off` then disables WoL and admin-downs the interface (carrier actually drops). Bring it back with `netif mode link`",
+  "for a drop the target DETECTS, use `panio netif down-hard` — it does `mode off` then disables WoL and admin-downs the interface (carrier actually drops). Bring it back with `netif mode link`",
 ]
 reference = [
-  'paniolo netif mode link pico   # link up: assign the host IP only, no daemon',
-  'paniolo netif status pico      # mode=link, carrier up, addresses',
-  'paniolo netif down-hard pico   # hard down: mode off + disable WoL + admin-down',
-  'paniolo netif status pico      # mode=off, carrier down (target sees link loss)',
-  'paniolo netif mode link pico   # bring the link back up for the next iteration',
+  'panio netif mode link pico   # link up: assign the host IP only, no daemon',
+  'panio netif status pico      # mode=link, carrier up, addresses',
+  'panio netif down-hard pico   # hard down: mode off + disable WoL + admin-down',
+  'panio netif status pico      # mode=off, carrier down (target sees link loss)',
+  'panio netif mode link pico   # bring the link back up for the next iteration',
 ]
 
 seed = "bench.toml"

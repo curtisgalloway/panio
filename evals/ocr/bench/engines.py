@@ -3,19 +3,19 @@
 
 """OCR engines, behind one adapter.
 
-**The adapter is paniolo's v1 OCR envelope** (`docs/dev/ocr.md`), not a Python
+**The adapter is panio's v1 OCR envelope** (`docs/dev/ocr.md`), not a Python
 protocol invented here. That is a deliberate departure from the original
 benchmark plan, and the reason is that the envelope arrived in the meantime: it
 already carries text, per-line confidence, bounding boxes and engine identity in
-a uniform shape, and it is what paniolo *actually runs in production*. A harness
+a uniform shape, and it is what panio *actually runs in production*. A harness
 that scored Python library calls instead would be measuring something adjacent
 to the thing being shipped.
 
 So there are two kinds of engine:
 
-- `HelperEngine` runs an installed paniolo helper (`visionocr`, `winocr`,
+- `HelperEngine` runs an installed panio helper (`visionocr`, `winocr`,
   `linuxocr`) with `--json`. This is the deployed path, byte for byte.
-- `RapidOcrEngine` wraps a *candidate* that paniolo does not ship yet, and
+- `RapidOcrEngine` wraps a *candidate* that panio does not ship yet, and
   produces the same envelope.
 
 The point of the second shape is that a candidate which wins can be promoted to
@@ -87,7 +87,7 @@ class OcrEngine(Protocol):
 
 
 class HelperEngine:
-    """An installed paniolo OCR helper, driven exactly as hdmicap drives it."""
+    """An installed panio OCR helper, driven exactly as hdmicap drives it."""
 
     def __init__(self, name: str, binary: str, extra_args: list[str] | None = None):
         self.name = name

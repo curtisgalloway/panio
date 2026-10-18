@@ -77,7 +77,7 @@ mod win {
         let bitmap = decoder.GetSoftwareBitmapAsync()?.join()?;
 
         // Prefer the user's own languages; fall back to English, which is what
-        // every screen paniolo reads is in. A machine with no OCR language pack
+        // every screen panio reads is in. A machine with no OCR language pack
         // installed yields neither, and the caller gets a clear error rather
         // than empty text that looks like a blank screen.
         let engine = OcrEngine::TryCreateFromUserProfileLanguages()

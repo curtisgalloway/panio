@@ -1,11 +1,11 @@
 # SPDX-FileCopyrightText: 2026 Curtis Galloway
 # SPDX-License-Identifier: Apache-2.0
 #
-# paniolo control-host seed — pi-sd flavor. Goes on the FAT `bootfs`
+# panio control-host seed — pi-sd flavor. Goes on the FAT `bootfs`
 # partition as `network-config`. Wired uplink, DHCP.
 #
 # `optional: false` makes boot wait for this link to come up. That is
-# deliberate: the first boot pulls apt packages and the paniolo .deb over the
+# deliberate: the first boot pulls apt packages and the panio .deb over the
 # network, and with `optional: true` those stages can run before the link is
 # ready and fail silently.
 #

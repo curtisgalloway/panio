@@ -9,5 +9,5 @@ baud = 115200
 name = "bmc"
 device = "/dev/ttyUSB1"
 baud = 9600
-# paniolo lab — managed by the `paniolo` CLI; hand-edits are preserved
+# panio lab — managed by the `panio` CLI; hand-edits are preserved
 

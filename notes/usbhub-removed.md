@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0
 
 # Removed: `usbhub` (per-port USB hub power)
 
-paniolo shipped a `usbhub` helper that switched VBUS on individual ports of
+panio shipped a `usbhub` helper that switched VBUS on individual ports of
 off-the-shelf hubs via USB hub-class requests — the uhubctl mechanism, in pure
 Rust. It was removed in full. Do not rebuild it without reading this.
 

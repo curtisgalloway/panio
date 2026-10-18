@@ -17,7 +17,7 @@
 Most serial scenarios (s2–s10) are graded as stated commands by an LLM judge,
 because driving the capture daemon needs a real device. This harness upgrades
 the ones tagged `loopback = true` to *actually run*: it opens a PTY, plays a
-fake DUT on the far end (banner + optional command responses), drives paniolo's
+fake DUT on the far end (banner + optional command responses), drives panio's
 `serial watch` / `send` / `log` against the near end, and asserts on the
 captured log. No hardware.
 
@@ -77,7 +77,7 @@ def select(args: list[str]) -> list[dict]:
 
 
 def serialcap_daemon_log() -> str:
-    path = Path(f"/tmp/paniolo-{os.getuid()}/serialcap/daemon.log")
+    path = Path(f"/tmp/panio-{os.getuid()}/serialcap/daemon.log")
     try:
         return path.read_text()
     except OSError:
@@ -133,7 +133,7 @@ def run_scenario(sc: dict, real: str) -> str:
     lb = sc["loopback"]
     iface = lb.get("interface", "console")
     sb = Path(tempfile.mkdtemp(prefix=f"ser-lb-{sid}-"))
-    env = dict(os.environ, PANIOLO_LAB=str(sb / "lab.toml"))
+    env = dict(os.environ, PANIO_LAB=str(sb / "lab.toml"))
 
     def run(*a):
         return subprocess.run([real, *a], env=env, capture_output=True, text=True)
@@ -241,9 +241,9 @@ def main() -> int:
         print("no loopback scenarios selected")
         return 0
     print(f"serial loopback: {len(scs)} scenario(s)")
-    real = shutil.which("paniolo")
+    real = shutil.which("panio")
     if not real:
-        print("paniolo not found on PATH")
+        print("panio not found on PATH")
         return 2
     results = [run_scenario(sc, real) for sc in scs]
     npass = results.count("PASS")

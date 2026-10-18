@@ -13,14 +13,14 @@
 // limitations under the License.
 
 // Command jetkvm drives a JetKVM network KVM's keyboard and mouse over its
-// WebRTC data channel, speaking paniolo's HID serial protocol.
+// WebRTC data channel, speaking panio's HID serial protocol.
 //
 // It is a sibling of hidrig and ch9329: the same command vocabulary (type,
 // key, combo, down, up, releaseall, move, moveabs, click, mdown, mup, scroll,
 // ping, version, run) and the same serve/stop daemon, so it drops into a
-// paniolo `hid` channel:
+// panio `hid` channel:
 //
-//	paniolo hid set -t target-machine --cmd "jetkvm -d 192.0.2.10"
+//	panio hid set -t target-machine --cmd "jetkvm -d 192.0.2.10"
 //
 // JetKVM firmware exposes keyboard and mouse only over WebRTC and allows ONE
 // session at a time, so a one-shot opens a session, acts, and closes it; the
@@ -49,13 +49,13 @@ const (
 	exitNotConfigured = 3
 )
 
-const usageText = `jetkvm -- JetKVM network KVM keyboard/mouse injection (paniolo hid helper)
+const usageText = `jetkvm -- JetKVM network KVM keyboard/mouse injection (panio hid helper)
 
 usage: jetkvm -d <host[:port]> [options] <command> [args]
 
 options:
   -d, --device <host[:port]>   the JetKVM's address (required for commands that act on it)
-  --target <name>              paniolo target name (selects the daemon's runtime dir)
+  --target <name>              panio target name (selects the daemon's runtime dir)
   --password-file <path>       read the device password from a file
   --password-command <cmd>     run a command (sh -c) that prints the password
   The password is also read from the JETKVM_PASSWORD environment variable,
@@ -435,7 +435,7 @@ func cmdStop(g globals, stdout io.Writer) error {
 // process. Only the token proves the request reached the daemon that wrote it.
 func requestStop(d *Discovery) error {
 	if d.Token == "" {
-		return errors.New("daemon has no token; use `paniolo daemons stop hid` to stop the older daemon")
+		return errors.New("daemon has no token; use `panio daemons stop hid` to stop the older daemon")
 	}
 	req, err := http.NewRequest(http.MethodPost, fmt.Sprintf("http://127.0.0.1:%d/stop", d.Port), bytes.NewReader(nil))
 	if err != nil {
@@ -468,7 +468,7 @@ func cmdServe(g globals, args []string) error {
 		return &usageError{err.Error()}
 	}
 	initLogging()
-	// Fail fast: a daemon started by paniolo with no password should die with
+	// Fail fast: a daemon started by panio with no password should die with
 	// a clear line in its log, not sit there unable to connect.
 	pw, err := resolvePassword(g.sources)
 	if err != nil {

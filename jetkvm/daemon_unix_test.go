@@ -48,14 +48,14 @@ func TestDiscoveryFileIsOwnerOnlyAndAtomic(t *testing.T) {
 }
 
 func TestRuntimeDirFallbackIsPrivateAndPerTarget(t *testing.T) {
-	t.Setenv("PANIOLO_RUNTIME_DIR", "")
+	t.Setenv("PANIO_RUNTIME_DIR", "")
 	base := t.TempDir()
-	t.Setenv("PANIOLO_RUNTIME_BASE", base)
+	t.Setenv("PANIO_RUNTIME_BASE", base)
 	dir, err := runtimeDir("target-machine", true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := filepath.Join(base, "paniolo-"+strconv.Itoa(currentUID()), "hid", "target-machine")
+	want := filepath.Join(base, "panio-"+strconv.Itoa(currentUID()), "hid", "target-machine")
 	if dir != want {
 		t.Fatalf("%s want %s", dir, want)
 	}
@@ -129,8 +129,8 @@ func TestShutdownCleanupLeavesLockFileLocked(t *testing.T) {
 // to drop the flag and report "no hid daemon running" for a live daemon. A
 // token-less record makes stop fail at the request, which proves it was found.
 func TestStopTargetAfterTheVerbFindsTheDaemon(t *testing.T) {
-	t.Setenv("PANIOLO_RUNTIME_DIR", "")
-	t.Setenv("PANIOLO_RUNTIME_BASE", t.TempDir())
+	t.Setenv("PANIO_RUNTIME_DIR", "")
+	t.Setenv("PANIO_RUNTIME_BASE", t.TempDir())
 	dir, err := runtimeDir("target-machine", true)
 	if err != nil {
 		t.Fatal(err)
@@ -155,7 +155,7 @@ func TestStopTargetAfterTheVerbFindsTheDaemon(t *testing.T) {
 
 func TestDiscoverIgnoresDeadPidAndGarbage(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("PANIOLO_RUNTIME_DIR", dir)
+	t.Setenv("PANIO_RUNTIME_DIR", dir)
 	if discover("") != nil {
 		t.Fatal("no file, no daemon")
 	}

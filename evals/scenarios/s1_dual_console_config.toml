@@ -18,9 +18,9 @@ traps = [
   "DTR control is opt-in per interface via `--power-button` (on `serial add`/`set`); it is NOT implied by `--sense`, and `serial dtr`/`reset` error on an interface that lacks it",
 ]
 reference = [
-  'paniolo target add dut',
-  'paniolo serial add console -t dut --device /dev/cu.usbserial-AA --sense cts --power-button',
-  'paniolo serial add bmc -t dut --device /dev/cu.usbserial-BB --baud 9600',
+  'panio target add dut',
+  'panio serial add console -t dut --device /dev/cu.usbserial-AA --sense cts --power-button',
+  'panio serial add bmc -t dut --device /dev/cu.usbserial-BB --baud 9600',
 ]
 seed = ""
 

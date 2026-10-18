@@ -8,16 +8,16 @@ capabilities = ["netif", "power"]
 goal = """
 I'm done with TFTP bring-up on the Pi `pico`. Switch its USB-Ethernet link over
 so I can reach it with `ffx`, and give me the address to add. List the exact
-paniolo commands you would run, in order, and explain why each is needed.
+panio commands you would run, in order, and explain why each is needed.
 """
 traps = [
   "netboot and ffx are mutually exclusive on the link; `netif mode ffx` stops netboot first so a power-cycle falls through to SD",
   "the device address comes from `netif status` (it prints a ready-to-paste `ffx target add ...`), not from scraping the serial log",
 ]
 reference = [
-  'paniolo netif mode ffx pico    # stops netboot, adds host fe80::1/64 for ffx',
-  'paniolo power-cycle pico       # reboot so it SLAACs on the link',
-  'paniolo netif status pico      # reads the neighbor table; prints `ffx target add fe80::...%iface`',
+  'panio netif mode ffx pico    # stops netboot, adds host fe80::1/64 for ffx',
+  'panio power-cycle pico       # reboot so it SLAACs on the link',
+  'panio netif status pico      # reads the neighbor table; prints `ffx target add fe80::...%iface`',
 ]
 
 seed = "bench.toml"

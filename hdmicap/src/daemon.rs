@@ -37,12 +37,12 @@ pub struct Discovery {
     pub token: Option<String>,
 }
 
-/// The daemon's runtime dir. Paniolo passes the canonical location as
-/// `PANIOLO_RUNTIME_DIR` (the helper state/runtime-dir API in the CLI's
+/// The daemon's runtime dir. Panio passes the canonical location as
+/// `PANIO_RUNTIME_DIR` (the helper state/runtime-dir API in the CLI's
 /// daemons.rs — the single source of truth; it also adds a per-target segment
 /// so multiple targets' daemons coexist). The fallback below is for standalone
-/// invocations: `<base>/paniolo-<uid>/hdmicap`, where `<base>` honors
-/// `$PANIOLO_RUNTIME_BASE` (default `/tmp`), identical in every environment of
+/// invocations: `<base>/panio-<uid>/hdmicap`, where `<base>` honors
+/// `$PANIO_RUNTIME_BASE` (default `/tmp`), identical in every environment of
 /// the same user. Deliberately NOT `$TMPDIR`/`temp_dir()` (macOS hands each
 /// environment a different TMPDIR — GUI terminal vs SSH vs sandboxed agent
 /// shells — so a running daemon was invisible from the others) and NOT
@@ -50,13 +50,13 @@ pub struct Discovery {
 /// last session ends, breaking daemons that outlive the SSH session that
 /// started them). Keep in sync with daemons.rs `runtime_root`/`runtime_base`.
 fn runtime_dir() -> Result<PathBuf> {
-    if let Some(dir) = std::env::var_os("PANIOLO_RUNTIME_DIR") {
+    if let Some(dir) = std::env::var_os("PANIO_RUNTIME_DIR") {
         let dir = PathBuf::from(dir);
         fs::create_dir_all(&dir)?;
         return Ok(dir);
     }
     let uid = crate::platform::current_uid();
-    let base = crate::platform::runtime_root().join(format!("paniolo-{uid}"));
+    let base = crate::platform::runtime_root().join(format!("panio-{uid}"));
     crate::platform::ensure_private_dir(&base)?;
     let dir = base.join("hdmicap");
     fs::create_dir_all(&dir)?;
@@ -143,7 +143,7 @@ pub fn run(device: DeviceSpec, port: u16, change_threshold: u8) -> Result<()> {
         let hid = std::env::var_os(crate::hid_link::ENV_HID_DISCOVERY)
             .filter(|p| !p.is_empty())
             .map(|p| crate::hid_link::HidLink::spawn(p.into()));
-        let name = std::env::var("PANIOLO_TARGET")
+        let name = std::env::var("PANIO_TARGET")
             .ok()
             .filter(|n| !n.is_empty())
             .unwrap_or_else(|| "hdmicap".into());
@@ -229,11 +229,11 @@ mod tests {
     /// happened on Windows.
     #[test]
     fn discover_rejects_and_reaps_a_stale_record() {
-        let dir = std::env::temp_dir().join(format!("paniolo-disc-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("panio-disc-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         // Safe: this test owns the variable; it is restored below.
-        let prev = std::env::var_os("PANIOLO_RUNTIME_DIR");
-        unsafe { std::env::set_var("PANIOLO_RUNTIME_DIR", &dir) };
+        let prev = std::env::var_os("PANIO_RUNTIME_DIR");
+        unsafe { std::env::set_var("PANIO_RUNTIME_DIR", &dir) };
 
         // A pid that cannot be running: 0 is never a real process, and the
         // liveness guard rejects non-positive pids outright.
@@ -243,8 +243,8 @@ mod tests {
         let got = discover();
 
         match prev {
-            Some(v) => unsafe { std::env::set_var("PANIOLO_RUNTIME_DIR", v) },
-            None => unsafe { std::env::remove_var("PANIOLO_RUNTIME_DIR") },
+            Some(v) => unsafe { std::env::set_var("PANIO_RUNTIME_DIR", v) },
+            None => unsafe { std::env::remove_var("PANIO_RUNTIME_DIR") },
         }
 
         assert!(got.is_err(), "a dead pid must not look like a live daemon");

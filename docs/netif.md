@@ -1,6 +1,6 @@
 # Link mode (netboot · link · ffx · off)
 
-`paniolo netif` owns the **host side** of the point-to-point USB-Ethernet link
+`panio netif` owns the **host side** of the point-to-point USB-Ethernet link
 to the target and puts it in one of four **mutually-exclusive** modes.
 
 Never run `ifconfig`/`ip`/`networksetup` on the interface by hand: it desyncs
@@ -11,7 +11,7 @@ what `netif status` reports.
 | **netboot** | IPv4 `host_ip`/24 + DHCP + TFTP + HTTP | TFTP/HTTP-booting the target (NET-first boot order) |
 | **link** | IPv4 `host_ip`/24 only — **no** DHCP/TFTP daemon, no ffx LL | bringing the bare link up to test it, without serving anything |
 | **ffx** | IPv6 link-local `fe80::1`/64; no DHCP/TFTP | reaching a booted Fuchsia target over `ffx` (`fe80::…%<iface>`) |
-| **off** | nothing paniolo set up (host IP + ffx LL released) | parking the link / testing it down |
+| **off** | nothing panio set up (host IP + ffx LL released) | parking the link / testing it down |
 
 LL is an IPv6 link-local (`fe80::`) address. `ffx` is Fuchsia's host tool;
 `ffx target list` shows `RCS:Y` when it reaches the device and `RCS:N` when it
@@ -21,7 +21,7 @@ doesn't.
 |---|---|---|
 | Target boots from | TFTP (NET-first boot order) | SD card (firmware reads the FAT partition) |
 | Transport to device | TFTP/netsvc (no shell) | SSH → RemoteControlService over `fe80::…%<iface>` |
-| What you run | `paniolo netboot`, `paniolo serial`, HDMI capture | `ffx target list/show/shell/log`, `ffx component` |
+| What you run | `panio netboot`, `panio serial`, HDMI capture | `ffx target list/show/shell/log`, `ffx component` |
 
 netif prevents two mistakes:
 
@@ -36,30 +36,30 @@ netif prevents two mistakes:
 ## Commands
 
 ```bash
-# Switch to netboot (IPv4 + DHCP + TFTP + HTTP). Same as `paniolo netboot start`,
+# Switch to netboot (IPv4 + DHCP + TFTP + HTTP). Same as `panio netboot start`,
 # but first removes any ffx-mode IPv6 link-local.
-paniolo netif mode netboot <target>
+panio netif mode netboot <target>
 
 # Bring the bare link up: assign the host IP only, no daemon, no ffx LL.
-paniolo netif mode link <target>
+panio netif mode link <target>
 
 # Switch to ffx: stop netboot, then add the host fe80::1/64.
-paniolo netif mode ffx <target>
+panio netif mode ffx <target>
 
 # Tear down every mode, soft (release the host IP and the ffx LL).
-paniolo netif mode off <target>
+panio netif mode off <target>
 
 # Take the link down HARD: `mode off` + disable Wake-on-LAN + admin-down the
 # interface, so the peer actually sees carrier loss.
-paniolo netif down-hard <target>
+panio netif down-hard <target>
 
 # Show which mode the link is in, its carrier (physical link) state, its
 # addresses, and any discovered ffx peer.
-paniolo netif status <target>
+panio netif status <target>
 ```
 
 Omit `<target>` when exactly one is configured, or pass it as `-t/--target`
-(`paniolo netif mode link -t pi5`). Giving both is refused.
+(`panio netif mode link -t pi5`). Giving both is refused.
 
 Every mode is **idempotent**. `netif mode ffx` re-adds the link-local after a
 reboot, `netif mode netboot` skips a redundant start, and `netif mode off`
@@ -76,7 +76,7 @@ networking. Use a dedicated USB-Ethernet adapter for the netboot link.
 ```
 
 On a remote control host, bypassing this would lock you out of SSH. Fix the
-target's `interface` in the lab file instead (`paniolo discover` lists
+target's `interface` in the lab file instead (`panio discover` lists
 candidates).
 
 ---
@@ -106,10 +106,10 @@ candidates).
 Toggle between `link` and `off` and read `netif status` each time:
 
 ```bash
-paniolo netif mode link <target>     # link up: host IP assigned, no daemon
-paniolo netif status <target>        # mode=link, carrier up, inet host_ip/24
-paniolo netif mode off  <target>     # link down: host IP released
-paniolo netif status <target>        # mode=off, inet (none)
+panio netif mode link <target>     # link up: host IP assigned, no daemon
+panio netif status <target>        # mode=link, carrier up, inet host_ip/24
+panio netif mode off  <target>     # link down: host IP released
+panio netif status <target>        # mode=off, inet (none)
 ```
 
 **`mode off` is a soft down.** It releases the host IP but does not drop the
@@ -131,7 +131,7 @@ until you run `sudo ethtool -s <iface> wol g` or replug the adapter.
 
 ## Status and finding the device
 
-`paniolo netif status` **probes** the mode, so it is correct after a reboot:
+`panio netif status` **probes** the mode, so it is correct after a reboot:
 
 - netboot daemons running → `netboot`
 - else the `fe80::1` host link-local present → `ffx`
@@ -159,13 +159,13 @@ autoconfiguration).
 ## Typical ffx-over-network flow
 
 ```bash
-paniolo netif mode ffx fortune       # stop netboot + ready the host IPv6 side
-paniolo power-cycle fortune          # boots from SD
-paniolo netif status fortune         # grab the device's fe80::…%<iface>
+panio netif mode ffx fortune       # stop netboot + ready the host IPv6 side
+panio power-cycle fortune          # boots from SD
+panio netif status fortune         # grab the device's fe80::…%<iface>
 cd ~/src/fuchsia && ./.jiri_root/bin/ffx target list   # expect RCS:Y
 ```
 
-To go back to TFTP bring-up: `paniolo netif mode netboot fortune`.
+To go back to TFTP bring-up: `panio netif mode netboot fortune`.
 
 ---
 

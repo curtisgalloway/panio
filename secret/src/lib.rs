@@ -326,7 +326,7 @@ fn run_command(spec: &Spec, cmd: &str, timeout: Duration) -> Result<Secret, NotC
     })
 }
 
-/// A shell invocation for the command string, the same way paniolo runs a
+/// A shell invocation for the command string, the same way panio runs a
 /// lab file's hooks (`cli/src/platform.rs`, `shell_command`): `sh -c` on
 /// Unix, `cmd /C` on Windows with the string passed verbatim.
 #[cfg(unix)]

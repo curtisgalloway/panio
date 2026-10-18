@@ -51,7 +51,7 @@ pub fn read_evidence(
         bail!("--max-bytes must be 1..={MAX_EVIDENCE_BYTES}");
     }
     let binary = daemons::find_binary(DAEMON).ok_or_else(|| {
-        crate::error::PanioloError::not_configured("serialcap not found — run `paniolo setup`")
+        crate::error::PanioError::not_configured("serialcap not found — run `panio setup`")
     })?;
     let mut cmd = Command::new(binary);
     cmd.args([
@@ -190,8 +190,8 @@ pub fn start_daemon(
     target: &str,
 ) -> Result<std::process::Child> {
     let binary = daemons::find_binary(DAEMON).ok_or_else(|| {
-        crate::error::PanioloError::not_configured(
-            "serialcap not found (libexec or PATH) — run `paniolo setup`".to_string(),
+        crate::error::PanioError::not_configured(
+            "serialcap not found (libexec or PATH) — run `panio setup`".to_string(),
         )
     })?;
     let mut cmd = Command::new(&binary);
@@ -297,7 +297,7 @@ pub fn transact(
 /// success).
 pub fn exec_tio(device: &str, baud: i64) -> Result<()> {
     let tio = daemons::find_binary("tio").ok_or_else(|| {
-        crate::error::PanioloError::not_configured(
+        crate::error::PanioError::not_configured(
             "tio not found in PATH — install it (e.g. brew install tio)".to_string(),
         )
     })?;

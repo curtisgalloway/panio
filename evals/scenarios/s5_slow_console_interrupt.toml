@@ -8,7 +8,7 @@ capabilities = ["serial"]
 goal = """
 `dut`'s U-Boot prints "Hit any key to stop autoboot" but its console is a slow,
 polled UART with no flow control — bytes get dropped if sent too fast. Stop the
-autoboot by sending a single keypress (not a whole line). List the exact paniolo
+autoboot by sending a single keypress (not a whole line). List the exact panio
 commands you would run.
 """
 traps = [
@@ -17,8 +17,8 @@ traps = [
   "the daemon must be running (`watch`) for `send` to reach the port",
 ]
 reference = [
-  'paniolo serial watch dut',
-  'paniolo serial send dut " " --no-newline --pace-ms 8',
+  'panio serial watch dut',
+  'panio serial send dut " " --no-newline --pace-ms 8',
 ]
 seed = "dut_console.toml"
 

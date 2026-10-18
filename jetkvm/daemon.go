@@ -30,14 +30,14 @@ import (
 	"time"
 )
 
-// discoveryName is the paniolo channel name, not the binary name, so paniolo
+// discoveryName is the panio channel name, not the binary name, so panio
 // finds the daemon without knowing which helper implements the channel.
 const discoveryName = "hid"
 
 // releaseTimeout bounds the release of held keys and buttons at shutdown.
 const releaseTimeout = 2 * time.Second
 
-// Discovery is the daemon.json record paniolo reads.
+// Discovery is the daemon.json record panio reads.
 type Discovery struct {
 	PID    int    `json:"pid"`
 	Port   int    `json:"port"`
@@ -45,12 +45,12 @@ type Discovery struct {
 	Device string `json:"device"`
 }
 
-// runtimeDir is the daemon's runtime directory. paniolo passes the canonical
-// location as PANIOLO_RUNTIME_DIR; the fallback is
-// $PANIOLO_RUNTIME_BASE|/tmp/paniolo-<uid>/hid[/<target>] for standalone use.
+// runtimeDir is the daemon's runtime directory. panio passes the canonical
+// location as PANIO_RUNTIME_DIR; the fallback is
+// $PANIO_RUNTIME_BASE|/tmp/panio-<uid>/hid[/<target>] for standalone use.
 // With create false nothing is made, so a one-shot only reads.
 func runtimeDir(target string, create bool) (string, error) {
-	if d := os.Getenv("PANIOLO_RUNTIME_DIR"); d != "" {
+	if d := os.Getenv("PANIO_RUNTIME_DIR"); d != "" {
 		if create {
 			if err := os.MkdirAll(d, 0o700); err != nil {
 				return "", err
@@ -58,14 +58,14 @@ func runtimeDir(target string, create bool) (string, error) {
 		}
 		return d, nil
 	}
-	root := os.Getenv("PANIOLO_RUNTIME_BASE")
+	root := os.Getenv("PANIO_RUNTIME_BASE")
 	if root == "" {
 		root = "/tmp"
 		if runtime.GOOS == "windows" {
 			root = os.TempDir()
 		}
 	}
-	base := filepath.Join(root, fmt.Sprintf("paniolo-%d", currentUID()))
+	base := filepath.Join(root, fmt.Sprintf("panio-%d", currentUID()))
 	dir := filepath.Join(base, discoveryName)
 	if target != "" {
 		dir = filepath.Join(dir, target)

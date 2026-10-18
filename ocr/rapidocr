@@ -41,7 +41,7 @@ every variant was slower than `raw` and none was more accurate. Unlike
 `visionocr` and `linuxocr`, which both upscale internally, this helper hands the
 frame over untouched.
 
-Requires the `rapidocr` and `onnxruntime` packages. `paniolo setup` builds a
+Requires the `rapidocr` and `onnxruntime` packages. `panio setup` builds a
 dedicated venv beside this script (see `_reexec_into_venv`), because Pi OS is
 PEP 668-managed and a system-wide install is refused.
 """
@@ -62,13 +62,13 @@ def _reexec_into_venv() -> None:
     """Re-exec under the sibling venv's interpreter whenever one exists.
 
     The helper is invoked by hdmicap as a bare executable, so it cannot rely on
-    a virtualenv being active. `paniolo setup` creates `ocr-venv/` next to this
+    a virtualenv being active. `panio setup` creates `ocr-venv/` next to this
     script, and if that interpreter is there this hands over to it -- without
     first asking whether the ambient interpreter could have served, which the
     docstring used to claim it did (#168).
 
     Unconditional hand-over is the behavior to keep, so this corrects the
-    docstring rather than adding the check it described. `paniolo setup`
+    docstring rather than adding the check it described. `panio setup`
     builds that venv for this script alone and curates it: it pins
     `rapidocr>=3,<4`, then uninstalls the `opencv-python` rapidocr pulls in
     and force-installs `opencv-python-headless` over it, because the full
@@ -80,13 +80,13 @@ def _reexec_into_venv() -> None:
     when it does not, the ambient interpreter is tried and main()'s import
     error names the fix.
     """
-    if os.environ.get("PANIOLO_RAPIDOCR_REEXEC"):
+    if os.environ.get("PANIO_RAPIDOCR_REEXEC"):
         return  # Already tried; do not loop.
     here = Path(__file__).resolve().parent
     for name in VENV_NAMES:
         python = here / name / "bin" / "python3"
         if python.is_file():
-            os.environ["PANIOLO_RAPIDOCR_REEXEC"] = "1"
+            os.environ["PANIO_RAPIDOCR_REEXEC"] = "1"
             os.execv(str(python), [str(python), str(Path(__file__).resolve()), *sys.argv[1:]])
 
 
@@ -214,7 +214,7 @@ def main() -> None:
         import cv2
     except ImportError as e:
         die(
-            f"{e}. Install the OCR venv with `paniolo setup`, or "
+            f"{e}. Install the OCR venv with `panio setup`, or "
             "pip install 'rapidocr>=3,<4' onnxruntime opencv-python-headless"
         )
 

@@ -46,7 +46,7 @@ CERN-OHL-S v2). Reading the v1.9 schematic, BOM, and datasheet shows the
 device is considerably more automatable than "capture + HID": the switchable
 USB-A port and the serial chip's modem lines form a small programmable USB
 fixture. This doc records the findings and the bench tests needed before
-paniolo grows verbs for them.
+panio grows verbs for them.
 
 **Source discipline:** everything below comes from the open *hardware* design
 files, the vendor datasheet, the vendor's published product documentation, or
@@ -128,7 +128,7 @@ switched over).
 
    - **Merely opening the control tty unplugs the A-port device**, because the
      kernel asserts DTR (and RTS) at open; closing it plugs the device back in
-     via `HUPCL`. Any `paniolo hid` invocation would do this. This is the
+     via `HUPCL`. Any `panio hid` invocation would do this. This is the
      load-bearing constraint for OTF-2/3/4: the replug and reset verbs must go
      through the existing session's owner thread, never a second `open()`.
    - **Replugged devices usually come back degraded.** The hypervisor
@@ -149,7 +149,7 @@ switched over).
      recovered it; a physical replug restored everything with no lasting
      damage. Mechanism unconfirmed — plausibly hub-level disruption from the
      brownout storm — but the practical point stands: **this primitive can
-     take down the control channel paniolo needs for HID.**
+     take down the control channel panio needs for HID.**
 
 3. **CH340 `RTS#` → net `HIDRESET` → CH9329 reset/config pin** (p3).
    **Confirmed on hardware.** An RTS-low pulse resets the chip; recovery is
@@ -170,7 +170,7 @@ switched over).
    Note this unit's CH9329 runs at **9600 baud**, the factory rate, not the
    115200 Openterface default — relevant because the helper's autodetect is
    unreliable against a factory-baud part
-   ([#81](https://github.com/curtisgalloway/paniolo/issues/81)).
+   ([#81](https://github.com/curtisgalloway/panio/issues/81)).
 
    **`DATAFLIP` is not observable from the host.** The schematic reading has a
    third line running to the CH9329 `DEF`/`UP` pins, but sampling all four
@@ -395,7 +395,7 @@ Blocked, not merely pending — each needs something this bench cannot supply:
   command — so this is implementable. Route it through the existing session
   rather than a second `open()`, since opening asserts DTR and RTS. A watchdog
   that reconnects should force the baud rather than rely on autodetect —
-  see [#81](https://github.com/curtisgalloway/paniolo/issues/81), filed from
+  see [#81](https://github.com/curtisgalloway/panio/issues/81), filed from
   this bench's factory-baud chip.
 - `usb attach-host` / `usb attach-target` (OTF-3) is **blocked** on a way to
   drive the MS2109 GPIO.

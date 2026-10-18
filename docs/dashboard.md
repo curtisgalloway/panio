@@ -9,12 +9,12 @@ to serialcap (serial daemon) over WebSocket.
 ## Starting the dashboard
 
 ```bash
-paniolo console                  # open in the default browser
+panio console                  # open in the default browser
 ```
 
-`paniolo console` starts any daemon not already running (hdmicap, serialcap,
+`panio console` starts any daemon not already running (hdmicap, serialcap,
 and the hid daemon if the target has a `hid` channel), then opens the page.
-`paniolo video watch` / `paniolo serial watch` start them individually.
+`panio video watch` / `panio serial watch` start them individually.
 
 **Use the URL the browser was handed**, not a bare `http://127.0.0.1:<port>/`:
 it carries each daemon's token (hdmicap's as `?token=`, the others inside
@@ -41,14 +41,14 @@ output is then a credential in your scrollback. `--open` launches a browser
 on the control host anyway.
 
 To get the URL again after the dashboard is open, rerun
-`paniolo console <target> --print-url`: the daemons are already running, so it
+`panio console <target> --print-url`: the daemons are already running, so it
 only rebuilds the URL from their discovery files.
 
 The page shows one terminal pane per serialcap interface. To pin one
 interface (single-pane mode):
 
 ```bash
-paniolo console -i bmc
+panio console -i bmc
 ```
 
 ### Fixed ports
@@ -58,9 +58,9 @@ change. To reach it through a standing SSH forward instead, pin each daemon's
 port in the lab file:
 
 ```bash
-paniolo video set -t target-machine --device <dev> --port 8723
-paniolo serial set console -t target-machine --port 8724
-paniolo hid set -t target-machine --cmd "<helper>" --port 8725
+panio video set -t target-machine --device <dev> --port 8723
+panio serial set console -t target-machine --port 8724
+panio hid set -t target-machine --cmd "<helper>" --port 8725
 ```
 
 Then, on the machine you browse from, forward them permanently in
@@ -76,7 +76,7 @@ Host bench1
 serialcap is one daemon for all of a target's interfaces, so set its port on
 any one interface; interfaces naming different ports are refused. Two daemons
 on one host cannot share a port, so validation refuses that too. `--port 0`
-clears a pin. A new port takes effect when the daemon next starts (`paniolo
+clears a pin. A new port takes effect when the daemon next starts (`panio
 daemons restart <name>`, or `video watch --restart`).
 
 ---
@@ -89,13 +89,13 @@ works for every video source, a USB capture device or a network one. Only the
 screen tiles that changed are sent (lossless ZRLE; a mostly-text 1080p frame
 measured 81,417 bytes against 8,294,400 raw), and the view scales to the pane.
 A **video: VNC | MJPEG** toggle switches to the older MJPEG stream (the choice
-is remembered in `localStorage` under `paniolo-video-mode`). If `/rfb` cannot
-connect, for instance to a daemon from an older paniolo, the page falls back to
+is remembered in `localStorage` under `panio-video-mode`). If `/rfb` cannot
+connect, for instance to a daemon from an older panio, the page falls back to
 MJPEG on its own.
 
 **Typing and pointing in the VNC view:** click into the video and type. When
 the target has a `hid` channel on the control host, key and pointer events go to
-the target's hid daemon, intermixed with CLI `paniolo hid send` input. Details:
+the target's hid daemon, intermixed with CLI `panio hid send` input. Details:
 
 - Keys: printable ASCII, editing and navigation keys, F1 to F12, modifiers
   (Meta maps to Alt, AltGr to Right Alt), and the keypad (mapped to the
@@ -126,13 +126,13 @@ right-panel (380 px) layouts; saved in `localStorage`.
 
 **OCR button:** calls `GET /ocr` on hdmicap, which OCRs the current frame
 (`visionocr` on macOS, `linuxocr` on Linux). Needs the OCR helper
-(`paniolo setup`).
+(`panio setup`).
 
 **Capture input (KVM, MJPEG mode only):** in the MJPEG view, with a `hid`
 channel, **⌨ Capture input** sends your
 keyboard and absolute mouse to the target; it reads **⌨ Capturing** while
 active. Click again or leave the window to release. Your cursor stays visible
-(no pointer lock), and CLI `paniolo hid send` input intermixes. See
+(no pointer lock), and CLI `panio hid send` input intermixes. See
 [HID injection › KVM mode](hid.md#kvm-mode-type-and-click-from-the-web-console).
 
 **Power:** with a `power` channel, a live **toggle switch**
@@ -146,11 +146,11 @@ acts. Loading the page never powers the target (`GET /power` only reads).
 | Parameter | Effect |
 |---|---|
 | `?token=<token>` | hdmicap's own token; the page puts it on every request it makes back to hdmicap |
-| `?serialws=<url>` | Connect the terminal to this serialcap WebSocket URL, serialcap's `?token=` inside (percent-encoded; what `paniolo console` passes) |
+| `?serialws=<url>` | Connect the terminal to this serialcap WebSocket URL, serialcap's `?token=` inside (percent-encoded; what `panio console` passes) |
 | `?serial=<port>` | Connect to serialcap on this local port; no token, so only a daemon started without one accepts it |
 | `?serial=none` | No terminal pane (a target with no serial channel) |
 | `?interface=<name>` | Preselect a named serial interface |
-| `?hidws=<url>` | Enable KVM input via this hid WebSocket URL, hid's `?token=` inside (what `paniolo console` passes) |
+| `?hidws=<url>` | Enable KVM input via this hid WebSocket URL, hid's `?token=` inside (what `panio console` passes) |
 | `?hid=<port>` | Enable KVM input via the hid daemon on this local port (no token, as for `?serial=`) |
 
 `serialws`/`hidws` (and URLs built from `serial`/`hid`) must be loopback
@@ -172,11 +172,11 @@ reproducibly from a pinned, checksummed release.
 
 ## Connecting the daemons
 
-`paniolo console` reads each daemon's discovery file (port and token) and
+`panio console` reads each daemon's discovery file (port and token) and
 passes `?serialws=ws://127.0.0.1:<port>/stream?token=…` and
 `?hidws=…/hid?token=…`; over a remote tunnel, `<port>` is the tunnel's local
 end.
 
 The `?serial=` / `?hid=` port forms carry no token, so they work only against a
-daemon started by an older paniolo. With no parameters, the page falls back to
+daemon started by an older panio. With no parameters, the page falls back to
 `ws://<host>:8724/stream` (the standalone `serialcap --port` default).

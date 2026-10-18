@@ -17,7 +17,7 @@ name = "ch9329"
 version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
-description = "CLI for the WCH CH9329 USB-HID bridge (Openterface Mini-KVM): keyboard/mouse injection over a control UART, speaking paniolo's HID serial protocol"
+description = "CLI for the WCH CH9329 USB-HID bridge (Openterface Mini-KVM): keyboard/mouse injection over a control UART, speaking panio's HID serial protocol"
 
 [[bin]]
 name = "ch9329"

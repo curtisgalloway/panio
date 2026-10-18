@@ -41,7 +41,7 @@ fn default_engine() -> String {
 pub fn state_dir() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_default()
-        .join(".local/share/paniolo")
+        .join(".local/share/panio")
 }
 
 /// `target` becomes a single path component under `state_dir()`. It reaches
@@ -72,7 +72,7 @@ pub fn save_netboot_state(state: &NetbootState) -> anyhow::Result<()> {
     ensure_target_dir(&state.target)?;
     let json = serde_json::to_string_pretty(state)?;
     // Atomic (sibling temp file + rename): a reader of this file — `doctor`,
-    // another `paniolo netboot` invocation — must never see a truncated or
+    // another `panio netboot` invocation — must never see a truncated or
     // half-written state file, and a crash mid-write must leave the previous
     // state intact rather than corrupt.
     crate::platform::write_atomic(&netboot_state_path(&state.target), json.as_bytes())?;
@@ -171,8 +171,8 @@ pub fn is_netboot_running(target: &str) -> bool {
     if state.engine == "rust" {
         is_named_child_alive(state.dhcp_pid, "netbootd")
     } else {
-        is_named_child_alive(state.dhcp_pid, "paniolo._dhcp")
-            && is_named_child_alive(state.tftp_pid, "paniolo._tftp")
+        is_named_child_alive(state.dhcp_pid, "panio._dhcp")
+            && is_named_child_alive(state.tftp_pid, "panio._tftp")
     }
 }
 
@@ -234,7 +234,7 @@ mod tests {
     }
 
     /// A plain, already-safe name passes through unchanged, so existing
-    /// per-target state paths (`~/.local/share/paniolo/<target>/…`) don't
+    /// per-target state paths (`~/.local/share/panio/<target>/…`) don't
     /// move under this change.
     #[test]
     fn target_dir_leaves_a_plain_name_unchanged() {
@@ -259,7 +259,7 @@ mod tests {
         // Alive and still running the daemon: pending, and identifiable.
         assert!(named_process_pending(
             true,
-            "/usr/libexec/paniolo/bin/hdmicap daemon --device /dev/video0",
+            "/usr/libexec/panio/bin/hdmicap daemon --device /dev/video0",
             "hdmicap"
         ));
         // A pid the kernel handed to something else: not ours, and waiting on
@@ -273,7 +273,7 @@ mod tests {
         assert!(!named_process_pending(false, "", "hdmicap"));
         assert!(!named_process_pending(
             false,
-            "/usr/libexec/paniolo/bin/hdmicap daemon",
+            "/usr/libexec/panio/bin/hdmicap daemon",
             "hdmicap"
         ));
     }

@@ -27,20 +27,20 @@
 ## The problem
 
 [Distributed control](../docs/distributed-control.md) principle 3 says control hosts are
-**stateless executors**: "re-image it, re-run `paniolo setup` on it, and it
+**stateless executors**: "re-image it, re-run `panio setup` on it, and it
 resumes its role from the lab file with nothing to restore." That is doctrine
 without tooling — there is no actual re-image path. Standing up a control host
 today means a manual OS install plus a checklist of hand-run steps, which is
-exactly the kind of tedium the rest of paniolo exists to delete.
+exactly the kind of tedium the rest of panio exists to delete.
 
-The paniolo-specific delta on a stock Linux install is deliberately tiny,
+The panio-specific delta on a stock Linux install is deliberately tiny,
 because the hard parts already shipped:
 
 - The **Linux `.deb`** (built by `.github/workflows/release.yml` from
-  [`packaging/nfpm.yaml`](https://github.com/curtisgalloway/paniolo/blob/main/packaging/nfpm.yaml),
+  [`packaging/nfpm.yaml`](https://github.com/curtisgalloway/panio/blob/main/packaging/nfpm.yaml),
   published for **amd64 and arm64**, smoke-tested via `apt-get install` in CI)
   carries the CLI, every helper daemon, linuxocr, and the agent skills.
-- `paniolo setup` has a packaged-install mode (no checkout, no Rust toolchain)
+- `panio setup` has a packaged-install mode (no checkout, no Rust toolchain)
   that finishes per-user platform steps.
 - Everything host-specific lives in the **lab file**, not on the host.
 
@@ -53,12 +53,12 @@ was considered and rejected as wrong-sized.
 
 **Definition of done for the seed:** after one human action (flash media, plug
 in, power on), the box comes up on the network with the operator's SSH key
-authorized, the right groups set, and `paniolo` on `PATH`. An agent can do
+authorized, the right groups set, and `panio` on `PATH`. An agent can do
 everything after that through the existing front door:
 
 1. Add a `[hosts.<name>]` entry to the lab file (`ssh`, `hostname`, `identity`).
-2. `paniolo setup --host <name>` for any remaining per-user platform steps.
-3. Discovery-assisted `paniolo configure` to wire targets, reviewed and
+2. `panio setup --host <name>` for any remaining per-user platform steps.
+3. Discovery-assisted `panio configure` to wire targets, reviewed and
    committed by a human as usual.
 
 What deliberately stays **out** of the seed: lab configuration, target wiring,
@@ -94,7 +94,7 @@ Sketch (the generator templates this from its inputs):
 hostname: <host>
 users:
   - name: <user>
-    groups: [sudo, dialout, video]     # dialout/video: what `paniolo setup` would ask for
+    groups: [sudo, dialout, video]     # dialout/video: what `panio setup` would ask for
     shell: /bin/bash
     sudo: "ALL=(ALL) NOPASSWD:ALL"
     ssh_authorized_keys:
@@ -104,11 +104,11 @@ package_update: true
 packages:
   - tesseract-ocr                      # the .deb only Recommends it; be explicit
 runcmd:
-  # Fetch the paniolo .deb for this architecture from the GitHub release
+  # Fetch the panio .deb for this architecture from the GitHub release
   # (latest by default; the generator can pin --version).
   - arch=$(dpkg --print-architecture)
-  - curl -fsSL -o /tmp/paniolo.deb "<release asset URL for ${arch}>"
-  - apt-get install -y /tmp/paniolo.deb
+  - curl -fsSL -o /tmp/panio.deb "<release asset URL for ${arch}>"
+  - apt-get install -y /tmp/panio.deb
 ```
 
 Notes:
@@ -208,7 +208,7 @@ Recommendations:
 ## Generator shape
 
 Start as a standalone script — `packaging/host-seed/` — with no runtime
-dependency on the CLI; promote to a `paniolo host-seed` subcommand only if it
+dependency on the CLI; promote to a `panio host-seed` subcommand only if it
 earns it. Inputs:
 
 | Input | Meaning | Default |
@@ -216,7 +216,7 @@ earns it. Inputs:
 | `--hostname` | host name for the box | required |
 | `--user` / `--ssh-key` | operator account + authorized pubkey | required |
 | `--flavor` | `x86-usb` (autoinstall USB) or `pi-sd` (NoCloud files for a flashed card) | required |
-| `--paniolo-version` | release to fetch | latest |
+| `--panio-version` | release to fetch | latest |
 | `--dut-nic` | netplan stanza for the DUT-link interface | none (configure later) |
 | `--pi-uart` / `--pi-gadget` | Pi `config.txt` fragments | off |
 
@@ -228,7 +228,7 @@ scriptable around Raspberry Pi Imager or `dd`.
 ## Alternatives considered
 
 - **Full custom image pipeline** (mkosi / debos / NixOS / Yocto): rejected —
-  the paniolo delta is ~40 lines of declarative config, and an image pipeline
+  the panio delta is ~40 lines of declarative config, and an image pipeline
   buys bit-reproducibility (which stateless hosts don't need — first boot
   starts with `apt upgrade` anyway) at the cost of owning kernel/security
   updates and multi-GB build artifacts.
@@ -249,14 +249,14 @@ scriptable around Raspberry Pi Imager or `dd`.
   apply to both (`/boot/firmware/` layout is the same).
 - **PXE-boot the installer via `netbootd`**: not the plan (bootstrap
   chicken-and-egg — it needs an existing control host), but the UEFI PXE path
-  is hardware-verified, so a "paniolo installs its own next control host"
+  is hardware-verified, so a "panio installs its own next control host"
   flow falls out nearly free later. Noted for the demo pile.
 
 ## Open questions
 
 - **Version pinning vs. latest** for the `.deb` fetch — latest is convenient;
   pinning + recorded sha256 is more reproducible. Lean: default latest, offer
-  `--paniolo-version`.
+  `--panio-version`.
 - Whether the x86 flavor should install the `.deb` in the installer's
   late-commands (present in the installed system before first boot) or via
   first-boot `runcmd` like the Pi (one shared code path). Lean: shared

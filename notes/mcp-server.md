@@ -3,13 +3,13 @@ SPDX-FileCopyrightText: 2026 Curtis Galloway
 SPDX-License-Identifier: Apache-2.0
 -->
 
-# An MCP server for paniolo
+# An MCP server for panio
 
 > **Status: built (steps 1–4); hardware-tested for video only.** Converged
 > 2026-10-02. Step 1 (measure per-call dispatch) is done: on a LAN it costs
 > ~17 ms per call, so the spike uses per-call dispatch and the persistent
 > worker is deferred (see *Step 1 result*). Step 2 (SSH keepalive) is done and
-> hardware-checked. Step 3's spike, `paniolo mcp` with `target_list` and
+> hardware-checked. Step 3's spike, `panio mcp` with `target_list` and
 > `video_shot`, is built and passed its stop point against a real target and
 > a real Claude Code client. Step 4 (the full tool set) is built and tested
 > without hardware. Still untested: a target with a live picture, and the new
@@ -18,7 +18,7 @@ SPDX-License-Identifier: Apache-2.0
 ## Goal
 
 Let an agent drive a target through MCP tools instead of shelling out to
-`paniolo` over Bash and SSH. The CLI remains the one implementation; the MCP
+`panio` over Bash and SSH. The CLI remains the one implementation; the MCP
 server is a thin front end over the same command handlers.
 
 ## Why
@@ -38,13 +38,13 @@ server is a thin front end over the same command handlers.
 | Question | Decision | Why |
 |---|---|---|
 | Transport | **stdio**, spawned by the harness | No new listening port. Every daemon today is loopback-only and token-authenticated (#196); a network MCP endpoint would be the first non-loopback listener able to cut power and inject keys. |
-| Where it runs | **The dev machine** (`paniolo mcp`) | The dev machine is the hub ([distributed-control.md](../docs/distributed-control.md)). One target's channels can live on several control hosts; only the hub reaches all of them. |
-| Remote placement | `ssh <host> paniolo mcp` is a **fallback only** | When the harness runs on a machine with no paniolo install or lab file. The harness owns that pipe and generally will not relaunch a dead stdio server, so a drop loses every tool until restart. |
-| Reaching control hosts | **One persistent worker per host**, opened by `paniolo mcp` on first use (step 3) | Removes per-call setup cost; see *Cost of per-call dispatch*. |
+| Where it runs | **The dev machine** (`panio mcp`) | The dev machine is the hub ([distributed-control.md](../docs/distributed-control.md)). One target's channels can live on several control hosts; only the hub reaches all of them. |
+| Remote placement | `ssh <host> panio mcp` is a **fallback only** | When the harness runs on a machine with no panio install or lab file. The harness owns that pipe and generally will not relaunch a dead stdio server, so a drop loses every tool until restart. |
+| Reaching control hosts | **One persistent worker per host**, opened by `panio mcp` on first use (step 3) | Removes per-call setup cost; see *Cost of per-call dispatch*. |
 | Tool surface | **Runtime verbs only** | Configuration (`set`/`add`/`rm`) stays CLI-only, matching the rule that config commands never act on an implied target. |
 | Implementation | Tools **run the CLI as a child process** (stdin null, stdout captured); pure lab reads run in-process | No second implementation to drift. Calling handlers in-process was the first idea, but handlers print to stdout, which is the protocol channel, and `video shot` exits the process. A child costs a few ms against an agent turn of seconds. Investigate generating schemas from the clap tree so docs/help/skill/MCP stay one source. |
 | Protocol library | **Hand-written** JSON-RPC over stdio, no new dependency | Decided 2026-10-02. `rmcp` (the official SDK) scored 8.5/10 on `dep-quality`, but at 0.35 confidence (GitHub data unavailable), and would add 35 crates to `cli` (102 → 137): tokio, futures and a second `syn` major in an otherwise synchronous CLI. It also shipped three major versions in about three months. A tools-only stdio server is five messages and a few hundred lines. Revisit `rmcp` for an HTTP transport, resources or notifications, or if tracking spec revisions by hand starts to hurt. |
-| Server state | **None of its own** | The daemons already hold the real state (capture, serial logs, held keys). Restarting `paniolo mcp` loses nothing. |
+| Server state | **None of its own** | The daemons already hold the real state (capture, serial logs, held keys). Restarting `panio mcp` loses nothing. |
 
 ### First tool set
 
@@ -59,7 +59,7 @@ Today a command whose channel is on another host does three SSH operations
 (`cli/src/ssh.rs`), so there's no new TCP connection or authentication:
 
 1. `sftp_put` — ship a one-target lab file.
-2. `ssh … paniolo …` — start a fresh `paniolo` on the host, which parses that
+2. `ssh … panio …` — start a fresh `panio` on the host, which parses that
    file and runs the command.
 3. `sftp_rm` — delete the file.
 
@@ -70,12 +70,12 @@ persistent worker needs 4.
 ## Persistent worker design
 
 ```
-harness ──stdio──▶ paniolo mcp (dev machine)
-                     ├── ssh bench1 paniolo worker   ◀─ one long-lived pipe
-                     └── ssh bench2 paniolo worker   ◀─ opened on first use
+harness ──stdio──▶ panio mcp (dev machine)
+                     ├── ssh bench1 panio worker   ◀─ one long-lived pipe
+                     └── ssh bench2 panio worker   ◀─ opened on first use
 ```
 
-- `paniolo mcp` opens `paniolo worker` on a control host the first time a
+- `panio mcp` opens `panio worker` on a control host the first time a
   tool needs that host, and keeps it.
 - The lab slice is sent once, when the worker starts.
 - Each call is one JSON line down the pipe and one JSON line back: one round
@@ -88,7 +88,7 @@ harness ──stdio──▶ paniolo mcp (dev machine)
 
 ### Reconnect
 
-Because `paniolo mcp` owns the `ssh` child, it can restart it.
+Because `panio mcp` owns the `ssh` child, it can restart it.
 
 **Detecting the drop:**
 
@@ -127,14 +127,14 @@ mostly dispatch overhead.
 T=<target>; H=<control host>
 
 # A. Full per-call dispatch: sftp put + ssh exec + sftp rm.
-for i in 1 2 3 4 5 6; do /usr/bin/time -p paniolo video show "$T" >/dev/null; done 2>&1 | grep real
+for i in 1 2 3 4 5 6; do /usr/bin/time -p panio video show "$T" >/dev/null; done 2>&1 | grep real
 
 # B. One bare round trip over the warm ControlMaster (what a worker call costs, minus handler time).
-#    Reuse paniolo's master socket so this matches what dispatch sees.
+#    Reuse panio's master socket so this matches what dispatch sees.
 for i in 1 2 3 4 5 6; do /usr/bin/time -p ssh "$H" true; done 2>&1 | grep real
 
 # C. The command run directly on the control host (handler + process start, no dispatch).
-ssh "$H" "for i in 1 2 3 4 5 6; do /usr/bin/time -p paniolo video show $T >/dev/null; done 2>&1 | grep real"
+ssh "$H" "for i in 1 2 3 4 5 6; do /usr/bin/time -p panio video show $T >/dev/null; done 2>&1 | grep real"
 ```
 
 Drop the first run of each (it may open the ControlMaster). `hyperfine` gives
@@ -143,7 +143,7 @@ cleaner numbers if it is installed.
 Then the same for the loop that matters, with a real screenshot:
 
 ```bash
-for i in 1 2 3 4 5 6; do /usr/bin/time -p paniolo video shot "$T" -o /tmp/s.png; done 2>&1 | grep real
+for i in 1 2 3 4 5 6; do /usr/bin/time -p panio video shot "$T" -o /tmp/s.png; done 2>&1 | grep real
 ls -l /tmp/s.png   # payload size per shot
 ```
 
@@ -162,17 +162,17 @@ across a WAN/VPN.
 #### Step 1 result (2026-10-02)
 
 Measured from the dev machine against one target whose video channel is on a
-Pi 5 control host (`bench1`) on the same LAN (ping RTT 0.26 ms). paniolo 0.6.0
+Pi 5 control host (`bench1`) on the same LAN (ping RTT 0.26 ms). panio 0.6.0
 on both ends. Six runs each, the first dropped; the remaining five were
 identical at the timer's resolution (10 ms for A/B/D, 1 ms for C).
 
 | | Measurement | Median |
 |---|---|---|
-| A | `paniolo video show T` — full per-call dispatch | 0.02 s |
+| A | `panio video show T` — full per-call dispatch | 0.02 s |
 | B | `ssh bench1 true`, fresh connection | 0.12 s |
-| B′ | `ssh bench1 true` through paniolo's ControlMaster socket | < 0.01 s |
-| C | `paniolo video show T` run on `bench1` itself | 0.003 s |
-| D | `paniolo video shot T -o …` (daemon running) | 0.04 s |
+| B′ | `ssh bench1 true` through panio's ControlMaster socket | < 0.01 s |
+| C | `panio video show T` run on `bench1` itself | 0.003 s |
+| D | `panio video shot T -o …` (daemon running) | 0.04 s |
 
 PNG size: 33 KB — but the target had no signal, so that is a blank frame. A
 real desktop frame will be larger and slower to encode.
@@ -200,14 +200,14 @@ Add `ServerAliveInterval=5` and `ServerAliveCountMax=3` to the options in
 it later.
 
 Done 2026-10-02: `ssh::liveness_args` now supplies `ConnectTimeout` and both
-`ServerAlive*` options to every ssh and sftp paniolo starts (`base_args` and
+`ServerAlive*` options to every ssh and sftp panio starts (`base_args` and
 `transfer_args`), so whichever invocation starts the ControlMaster carries
 them. A half-open link now fails as `unreachable` (exit 4) in ~15 s instead of
 hanging.
 
 Hardware check, 2026-10-02 (dev machine → `bench1`, same LAN, no keepalive in
 `~/.ssh/config`). Dead link simulated by `SIGSTOP` on the control host's
-`sshd-session` serving paniolo's ControlMaster, always resumed afterwards.
+`sshd-session` serving panio's ControlMaster, always resumed afterwards.
 Command: `video shot T --changed-since H --timeout 60000` under `timeout 100`.
 
 | Build | Result |
@@ -224,19 +224,19 @@ For whoever repeats it: `-o /dev/null` fails for `video shot` (it writes a
 temp file beside the output path), and unprivileged `ss -p` on the control host
 does not show sshd's pid, so the process has to be found by elimination.
 
-### 3. Spike `paniolo mcp` — built, stop point passed
+### 3. Spike `panio mcp` — built, stop point passed
 
 - New module `cli/src/mcp.rs`, one clap variant `Command::Mcp`.
 - Two tools only: `target_list` and `video_shot` (image + hash).
 - Per-call dispatch or worker, per step 1's decision.
 - Needs a dependency decision: an MCP crate (e.g. `rmcp`) versus a hand-rolled
   JSON-RPC over stdio. AGENTS.md requires discussion before a new dependency.
-- Try it: point Claude Code at `paniolo mcp`, run one look-act-verify cycle
+- Try it: point Claude Code at `panio mcp`, run one look-act-verify cycle
   against a real target.
 
 Built 2026-10-02: hand-written (see *Decisions*), per-call dispatch, tools
 run the CLI as a child. Unit tests drive the server over in-memory
-stdin/stdout, and `video_shot`'s tests execute a fake `paniolo` script to
+stdin/stdout, and `video_shot`'s tests execute a fake `panio` script to
 prove the argv, the closed stdin and the image read-back. An end-to-end run of
 the real binary over a pipe (handshake, `tools/list`, `target_list`, and a
 `video_shot` with no daemon returning a clean tool error) worked. User doc:
@@ -267,7 +267,7 @@ plumbing, not reading a live screen.
 - took 4 turns and 22 s, one of them a `ToolSearch`: Claude Code loads MCP
   tools as deferred, so the model finds them by searching. Tool names and
   descriptions are what that search matches, so they need to say plainly what
-  each tool does (screenshot, serial log, …), not just name the paniolo verb;
+  each tool does (screenshot, serial log, …), not just name the panio verb;
 - described the screenshot correctly: a solid near-black 1920×1080 frame with
   `signal=no_signal`, so nothing was reaching the capture input;
 - listed all the lab's targets correctly.
@@ -290,7 +290,7 @@ The remaining tools from *First tool set*, with the retry rules from
 
 Done 2026-10-02: `video_read`, `serial_log`, `serial_send`, `hid_send`,
 `power_state`, `power_on`, `power_off`, `power_cycle`.
-- Each maps onto one paniolo command through `cli_call()`. A test parses
+- Each maps onto one panio command through `cli_call()`. A test parses
   every resulting argv with the real clap `Cli`, so a tool can't build a
   command line the CLI would reject; that includes text and HID words that
   look like options (`-rf /`, `-30`, `--help`).
@@ -302,7 +302,7 @@ Done 2026-10-02: `video_read`, `serial_log`, `serial_send`, `hid_send`,
   harness that asks before side effects asks.
 - `hid_send` takes `command` as an array of words (`["key", "ENTER"]`), the
   helper's own vocabulary. Its description lists the common verbs and points
-  at `paniolo skill kvm-puppeting` for the rest.
+  at `panio skill kvm-puppeting` for the rest.
 - Checked end to end with the real binary against a lab whose power hooks are
   shell commands: `power_state` and `power_cycle` ran them. `serial_log`,
   `serial_send` and `hid_send` each returned the expected classified error
@@ -318,7 +318,7 @@ if MCP beats the registered skill.
 ### 6. Ship it
 
 Per the AGENTS.md PR checklist: `docs/` page (and `mkdocs.yml` nav),
-`--help` text, `skills/paniolo/SKILL.md`, the AGENTS.md module layout, and a
+`--help` text, `skills/panio/SKILL.md`, the AGENTS.md module layout, and a
 note in `README.md`'s capabilities table.
 
 ## Open questions

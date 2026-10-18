@@ -107,12 +107,12 @@ jobs:
             echo "version=0.0.0~dev.$(printf '%.7s' "$GITHUB_SHA")" >> "$GITHUB_OUTPUT"
           fi
 
-      # PANIOLO_VERSION is what `paniolo --version` prints (cli/src/main.rs);
+      # PANIO_VERSION is what `panio --version` prints (cli/src/main.rs);
       # it is the same string the package carries, so the two never disagree.
       - name: Build release binaries
         env:
           CARGO_PROFILE_RELEASE_STRIP: symbols
-          PANIOLO_VERSION: ${{ steps.version.outputs.version }}
+          PANIO_VERSION: ${{ steps.version.outputs.version }}
         run: |
           for crate in cli $HELPERS; do
             echo "==> cargo build --release ($crate)"
@@ -122,13 +122,13 @@ jobs:
       - name: Stage package tree
         run: |
           mkdir -p packaging/stage/bin packaging/stage/libexec
-          install -m 0755 cli/target/release/paniolo packaging/stage/bin/
+          install -m 0755 cli/target/release/panio packaging/stage/bin/
           for helper in $HELPERS; do
             install -m 0755 "$helper/target/release/$helper" packaging/stage/libexec/
           done
           install -m 0755 ocr/linuxocr packaging/stage/libexec/
           # The GUI-mode engine. The script ships; its ~317 MB venv does not —
-          # `paniolo setup` builds that only when a lab file sets
+          # `panio setup` builds that only when a lab file sets
           # `ocr_mode = "gui"`, so a .deb stays a .deb.
           install -m 0755 ocr/rapidocr packaging/stage/libexec/
 
@@ -155,23 +155,23 @@ jobs:
         run: |
           mkdir -p dist
           nfpm package -f packaging/nfpm.yaml -p deb \
-            -t "dist/paniolo_${VERSION}_${ARCH}.deb"
+            -t "dist/panio_${VERSION}_${ARCH}.deb"
 
       - name: Build tarball
         env:
           VERSION: ${{ steps.version.outputs.version }}
           ARCH: ${{ matrix.arch }}
         run: |
-          tardir="paniolo-${VERSION}-linux-${ARCH}"
+          tardir="panio-${VERSION}-linux-${ARCH}"
           mkdir -p "dist/$tardir"
-          cp packaging/stage/bin/paniolo packaging/stage/libexec/* \
+          cp packaging/stage/bin/panio packaging/stage/libexec/* \
             LICENSE README.md "dist/$tardir/"
           cp -r skills "dist/$tardir/skills"
           tar -C dist -czf "dist/$tardir.tar.gz" "$tardir"
           rm -r "dist/$tardir"
 
       # The same binaries once more, as a Homebrew bottle: keg layout
-      # (bin/, libexec/bin/, share/paniolo/skills/) under paniolo/<version>/,
+      # (bin/, libexec/bin/, share/panio/skills/) under panio/<version>/,
       # named the way Homebrew fetches a bottle from a plain https root_url
       # (<name>-<version>.<tag>.bottle.tar.gz). The tap's formula pins this
       # arch's exact tag, so `brew install` on Linux pours it rather than
@@ -197,22 +197,22 @@ jobs:
           # run under bash. Enforced by
           # scripts/tests/test_workflow_container_shell.py.
           set -eu
-          keg="$RUNNER_TEMP/bottle/paniolo/${VERSION}"
-          mkdir -p "$keg/bin" "$keg/libexec/bin" "$keg/share/paniolo"
-          cp packaging/stage/bin/paniolo "$keg/bin/"
+          keg="$RUNNER_TEMP/bottle/panio/${VERSION}"
+          mkdir -p "$keg/bin" "$keg/libexec/bin" "$keg/share/panio"
+          cp packaging/stage/bin/panio "$keg/bin/"
           cp packaging/stage/libexec/* "$keg/libexec/bin/"
-          cp -r skills "$keg/share/paniolo/skills"
+          cp -r skills "$keg/share/panio/skills"
           cp LICENSE "$keg/"
-          tar -C "$RUNNER_TEMP/bottle" -czf "dist/paniolo-${VERSION}.${BOTTLE_TAG}.bottle.tar.gz" paniolo
+          tar -C "$RUNNER_TEMP/bottle" -czf "dist/panio-${VERSION}.${BOTTLE_TAG}.bottle.tar.gz" panio
           rm -r "$RUNNER_TEMP/bottle"
           # What a pour will put in the Cellar: the CLI and every helper
           # where the CLI's exe-relative lookup expects them.
-          tar -tzf "dist/paniolo-${VERSION}.${BOTTLE_TAG}.bottle.tar.gz" > "$RUNNER_TEMP/bottle.list"
-          grep -qx "paniolo/${VERSION}/bin/paniolo" "$RUNNER_TEMP/bottle.list"
+          tar -tzf "dist/panio-${VERSION}.${BOTTLE_TAG}.bottle.tar.gz" > "$RUNNER_TEMP/bottle.list"
+          grep -qx "panio/${VERSION}/bin/panio" "$RUNNER_TEMP/bottle.list"
           for helper in $HELPERS linuxocr rapidocr; do
-            grep -qx "paniolo/${VERSION}/libexec/bin/$helper" "$RUNNER_TEMP/bottle.list"
+            grep -qx "panio/${VERSION}/libexec/bin/$helper" "$RUNNER_TEMP/bottle.list"
           done
-          grep -qx "paniolo/${VERSION}/share/paniolo/skills/paniolo/SKILL.md" "$RUNNER_TEMP/bottle.list"
+          grep -qx "panio/${VERSION}/share/panio/skills/panio/SKILL.md" "$RUNNER_TEMP/bottle.list"
 
       # A sidecar per asset (matching the Windows zip's own .sha256), so the
       # Homebrew tap's binary-only formula can verify and re-pin a download
@@ -225,50 +225,50 @@ jobs:
           BOTTLE_TAG: ${{ matrix.bottle_tag }}
         run: |
           cd dist
-          sha256sum "paniolo_${VERSION}_${ARCH}.deb" > "paniolo_${VERSION}_${ARCH}.deb.sha256"
-          sha256sum "paniolo-${VERSION}-linux-${ARCH}.tar.gz" > "paniolo-${VERSION}-linux-${ARCH}.tar.gz.sha256"
-          sha256sum "paniolo-${VERSION}.${BOTTLE_TAG}.bottle.tar.gz" > "paniolo-${VERSION}.${BOTTLE_TAG}.bottle.tar.gz.sha256"
+          sha256sum "panio_${VERSION}_${ARCH}.deb" > "panio_${VERSION}_${ARCH}.deb.sha256"
+          sha256sum "panio-${VERSION}-linux-${ARCH}.tar.gz" > "panio-${VERSION}-linux-${ARCH}.tar.gz.sha256"
+          sha256sum "panio-${VERSION}.${BOTTLE_TAG}.bottle.tar.gz" > "panio-${VERSION}.${BOTTLE_TAG}.bottle.tar.gz.sha256"
 
       # We're already root inside the bookworm container: install the deb for
       # real and check the layout + helper discovery end to end.
       - name: Smoke-test the .deb
         run: |
-          # This container has never seen paniolo, so this is the fresh-install
+          # This container has never seen panio, so this is the fresh-install
           # path: dpkg runs postinst as `configure` with no old version, and
           # the package must not describe that as an upgrade (#228).
-          apt-get install -y ./dist/paniolo_*.deb 2>&1 | tee "$RUNNER_TEMP/install.log"
-          grep -q 'paniolo: installed' "$RUNNER_TEMP/install.log"
-          if grep -q 'paniolo: upgrade' "$RUNNER_TEMP/install.log"; then
+          apt-get install -y ./dist/panio_*.deb 2>&1 | tee "$RUNNER_TEMP/install.log"
+          grep -q 'panio: installed' "$RUNNER_TEMP/install.log"
+          if grep -q 'panio: upgrade' "$RUNNER_TEMP/install.log"; then
             echo "::error::postinst called a fresh install an upgrade"
             exit 1
           fi
-          test -x /usr/bin/paniolo
+          test -x /usr/bin/panio
           # Run each helper, not just stat it: --help returns 0 only once the
           # binary has loaded, so a missing shared library (libudev, a
           # turbojpeg .so) fails the release here rather than on a user's box.
           # linuxocr and rapidocr are Python; their argparse --help exercises
           # the python3 dependency the .deb declares.
           for helper in $HELPERS; do
-            test -x "/usr/libexec/paniolo/bin/$helper"
-            "/usr/libexec/paniolo/bin/$helper" --help >/dev/null
+            test -x "/usr/libexec/panio/bin/$helper"
+            "/usr/libexec/panio/bin/$helper" --help >/dev/null
           done
-          test -x /usr/libexec/paniolo/bin/linuxocr
-          /usr/libexec/paniolo/bin/linuxocr --help >/dev/null
-          test -x /usr/libexec/paniolo/bin/rapidocr
-          /usr/libexec/paniolo/bin/rapidocr --help >/dev/null
-          test -f /usr/share/paniolo/skills/paniolo/SKILL.md
-          /usr/bin/paniolo --help
+          test -x /usr/libexec/panio/bin/linuxocr
+          /usr/libexec/panio/bin/linuxocr --help >/dev/null
+          test -x /usr/libexec/panio/bin/rapidocr
+          /usr/libexec/panio/bin/rapidocr --help >/dev/null
+          test -f /usr/share/panio/skills/panio/SKILL.md
+          /usr/bin/panio --help
           # The binary reports the version the package carries.
-          test "$(/usr/bin/paniolo --version)" = "paniolo $(dpkg-query -W -f='${Version}' paniolo)"
+          test "$(/usr/bin/panio --version)" = "panio $(dpkg-query -W -f='${Version}' panio)"
           # Run outside the checkout so `skill` resolves the packaged copy
           # under /usr/share rather than the repo's skills/ dir.
-          ( cd /tmp && /usr/bin/paniolo skill )
-          # Installing over an installed paniolo is the upgrade path: dpkg
+          ( cd /tmp && /usr/bin/panio skill )
+          # Installing over an installed panio is the upgrade path: dpkg
           # runs postinst as `configure <old version>`, and the message must
           # say so, naming the version it replaced (#228). A reinstall of the
           # same version takes exactly that path.
-          apt-get install -y --reinstall ./dist/paniolo_*.deb 2>&1 | tee "$RUNNER_TEMP/reinstall.log"
-          grep -q "paniolo: upgrade from $(dpkg-query -W -f='${Version}' paniolo) complete" "$RUNNER_TEMP/reinstall.log"
+          apt-get install -y --reinstall ./dist/panio_*.deb 2>&1 | tee "$RUNNER_TEMP/reinstall.log"
+          grep -q "panio: upgrade from $(dpkg-query -W -f='${Version}' panio) complete" "$RUNNER_TEMP/reinstall.log"
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -304,21 +304,21 @@ jobs:
             amt
 
       # The portable layout the CLI's helper lookup expects on Windows:
-      #   paniolo\paniolo.exe        <- the only thing that goes on PATH
-      #   paniolo\libexec\*.exe     <- helpers, found relative to the exe
+      #   panio\panio.exe        <- the only thing that goes on PATH
+      #   panio\libexec\*.exe     <- helpers, found relative to the exe
       # There is no bin/libexec split on Windows, so the exe's own directory is
       # the install prefix (see `exe_relative_dirs` in cli/src/daemons.rs).
       - name: Build every crate
         shell: pwsh
         run: |
-          $stage = "dist/paniolo"
+          $stage = "dist/panio"
           New-Item -ItemType Directory -Force -Path "$stage/libexec" | Out-Null
-          # What `paniolo --version` prints: the tag, or a dev stamp on a
+          # What `panio --version` prints: the tag, or a dev stamp on a
           # non-tag run (the same shape the Linux job's version step uses).
-          $env:PANIOLO_VERSION = if ($env:GITHUB_REF_TYPE -eq "tag") { $env:GITHUB_REF_NAME -replace "^v", "" } else { "0.0.0-dev." + $env:GITHUB_SHA.Substring(0, 7) }
+          $env:PANIO_VERSION = if ($env:GITHUB_REF_TYPE -eq "tag") { $env:GITHUB_REF_NAME -replace "^v", "" } else { "0.0.0-dev." + $env:GITHUB_SHA.Substring(0, 7) }
           cargo build --release --manifest-path cli/Cargo.toml
           if ($LASTEXITCODE -ne 0) { exit 1 }
-          Copy-Item cli/target/release/paniolo.exe "$stage/paniolo.exe"
+          Copy-Item cli/target/release/panio.exe "$stage/panio.exe"
           foreach ($h in "$env:HELPERS".Split(" ")) {
             cargo build --release --manifest-path "$h/Cargo.toml"
             if ($LASTEXITCODE -ne 0) { exit 1 }
@@ -326,7 +326,7 @@ jobs:
           }
           # The OCR helper is per-platform and not a workspace crate, so it is
           # built explicitly rather than coming from $env:HELPERS. Without it a
-          # Windows install has no OCR at all — `paniolo video read` would have
+          # Windows install has no OCR at all — `panio video read` would have
           # nothing to call. See docs/dev/ocr.md.
           cargo build --release --manifest-path ocr/winocr/Cargo.toml
           if ($LASTEXITCODE -ne 0) { exit 1 }
@@ -334,15 +334,15 @@ jobs:
           # netbootd's privileged BPF helper is a macOS-only setuid binary; it
           # builds to a stub off macOS and has no business in a Windows zip.
           Get-ChildItem "$stage/libexec" | Select-Object -ExpandProperty Name
-          # The bundled agent skills, at the same share/paniolo/skills the
+          # The bundled agent skills, at the same share/panio/skills the
           # .deb, tarball and keg keep under their prefix; here the exe's own
           # directory is the prefix (skills_dirs_for_exe in cli/src/skills.rs).
-          # Through v0.3.0 the zip had none, and `paniolo skill` on a Windows
+          # Through v0.3.0 the zip had none, and `panio skill` on a Windows
           # install listed nothing.
           foreach ($manifest in Get-ChildItem skills/*/SKILL.md) {
             $name = $manifest.Directory.Name
-            New-Item -ItemType Directory -Force -Path "$stage/share/paniolo/skills/$name" | Out-Null
-            Copy-Item $manifest.FullName "$stage/share/paniolo/skills/$name/SKILL.md"
+            New-Item -ItemType Directory -Force -Path "$stage/share/panio/skills/$name" | Out-Null
+            Copy-Item $manifest.FullName "$stage/share/panio/skills/$name/SKILL.md"
           }
           Get-ChildItem -Recurse "$stage/share" -Filter SKILL.md | Select-Object -ExpandProperty FullName
 
@@ -375,7 +375,7 @@ jobs:
           endpoint: ${{ vars.AZURE_SIGNING_ENDPOINT }}
           signing-account-name: ${{ vars.AZURE_SIGNING_ACCOUNT }}
           certificate-profile-name: ${{ vars.AZURE_SIGNING_PROFILE }}
-          files-folder: ${{ github.workspace }}\dist\paniolo
+          files-folder: ${{ github.workspace }}\dist\panio
           files-folder-filter: exe
           files-folder-recurse: true
           file-digest: SHA256
@@ -389,7 +389,7 @@ jobs:
         shell: pwsh
         run: |
           $failed = $false
-          Get-ChildItem dist/paniolo -Recurse -Filter *.exe | ForEach-Object {
+          Get-ChildItem dist/panio -Recurse -Filter *.exe | ForEach-Object {
             $sig = Get-AuthenticodeSignature $_.FullName
             Write-Host "$($_.Name): $($sig.Status)"
             if ($sig.Status -ne 'Valid') {
@@ -415,12 +415,12 @@ jobs:
           # A branch ref on workflow_dispatch can contain '/', which is not a
           # valid file name; keep only file-safe characters.
           $ver = ($env:REF -replace '^v','') -replace '[^A-Za-z0-9._-]','-'
-          Compress-Archive -Path dist/paniolo -DestinationPath "dist/paniolo-$ver-x86_64-pc-windows-msvc.zip"
+          Compress-Archive -Path dist/panio -DestinationPath "dist/panio-$ver-x86_64-pc-windows-msvc.zip"
           # Write the sidecar with an explicit LF. Out-File ends the line with
           # the platform newline, CRLF here, and `shasum -a 256 -c` on macOS
           # and Linux then reads the file name with a trailing CR and reports
           # it missing (#243).
-          $zip = "dist/paniolo-$ver-x86_64-pc-windows-msvc.zip"
+          $zip = "dist/panio-$ver-x86_64-pc-windows-msvc.zip"
           $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
           [IO.File]::WriteAllText((Join-Path $PWD "$zip.sha256"), "$hash  $(Split-Path $zip -Leaf)`n")
 
@@ -436,22 +436,22 @@ jobs:
           $ErrorActionPreference = "Stop"
           $ver = ($env:REF -replace '^v','') -replace '[^A-Za-z0-9._-]','-'
           $extract = Join-Path $env:RUNNER_TEMP "smoke"
-          Expand-Archive "dist/paniolo-$ver-x86_64-pc-windows-msvc.zip" -DestinationPath $extract
-          $root = Join-Path $extract "paniolo"
-          & "$root/paniolo.exe" --help | Out-Null
-          if ($LASTEXITCODE -ne 0) { throw "paniolo.exe --help exited $LASTEXITCODE" }
+          Expand-Archive "dist/panio-$ver-x86_64-pc-windows-msvc.zip" -DestinationPath $extract
+          $root = Join-Path $extract "panio"
+          & "$root/panio.exe" --help | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "panio.exe --help exited $LASTEXITCODE" }
           # The binary reports the version the build stamped (see "Build every crate").
           $expected = if ($env:GITHUB_REF_TYPE -eq "tag") { $env:GITHUB_REF_NAME -replace "^v", "" } else { "0.0.0-dev." + $env:GITHUB_SHA.Substring(0, 7) }
-          $reported = (& "$root/paniolo.exe" --version | Out-String).Trim()
-          if ($reported -ne "paniolo $expected") { throw "paniolo.exe --version printed '$reported', expected 'paniolo $expected'" }
+          $reported = (& "$root/panio.exe" --version | Out-String).Trim()
+          if ($reported -ne "panio $expected") { throw "panio.exe --version printed '$reported', expected 'panio $expected'" }
           # From outside the checkout, so `skill` resolves the zip's own copy
           # under share/, not the repo's skills/ dir.
           Push-Location $env:RUNNER_TEMP
-          $skills = & "$root/paniolo.exe" skill
+          $skills = & "$root/panio.exe" skill
           Pop-Location
-          if ($LASTEXITCODE -ne 0) { throw "paniolo.exe skill exited $LASTEXITCODE" }
+          if ($LASTEXITCODE -ne 0) { throw "panio.exe skill exited $LASTEXITCODE" }
           foreach ($name in (Get-ChildItem skills -Directory | Select-Object -ExpandProperty Name)) {
-            if (-not ($skills -match "^$name$")) { throw "paniolo skill does not list '$name': $skills" }
+            if (-not ($skills -match "^$name$")) { throw "panio skill does not list '$name': $skills" }
           }
           # Run each helper, not just stat it: --help returns 0 only once the
           # binary has loaded.
@@ -460,7 +460,7 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw "$h.exe --help exited $LASTEXITCODE" }
           }
           foreach ($flag in @("--help", "-h")) {
-            & "$root/paniolo.exe" helper winocr $flag | Out-Null
+            & "$root/panio.exe" helper winocr $flag | Out-Null
             if ($LASTEXITCODE -ne 0) { throw "winocr.exe $flag exited $LASTEXITCODE" }
           }
           # winocr reads an image and prints the v1 OCR JSON envelope,
@@ -553,7 +553,7 @@ jobs:
       - name: Build release binaries (both targets)
         env:
           CARGO_PROFILE_RELEASE_STRIP: symbols
-          PANIOLO_VERSION: ${{ steps.version.outputs.version }}
+          PANIO_VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -euo pipefail
           for target in aarch64-apple-darwin x86_64-apple-darwin; do
@@ -578,20 +578,20 @@ jobs:
 
       # The keg layout `helper_dirs()`/`skills_dirs()` expect from a
       # relocated install (cli/src/daemons.rs, cli/src/skills.rs): the CLI's
-      # own resolved path's grandparent is the prefix, so `bin/paniolo` pairs
-      # with `libexec/bin/*` and `share/paniolo/skills/*` beside it — NOT the
+      # own resolved path's grandparent is the prefix, so `bin/panio` pairs
+      # with `libexec/bin/*` and `share/panio/skills/*` beside it — NOT the
       # flat layout the Linux tarball uses.
       - name: Stage the keg layout
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -euo pipefail
-          root="dist/paniolo-${VERSION}-macos-universal"
-          mkdir -p "$root/bin" "$root/libexec/bin" "$root/share/paniolo/skills"
+          root="dist/panio-${VERSION}-macos-universal"
+          mkdir -p "$root/bin" "$root/libexec/bin" "$root/share/panio/skills"
 
-          lipo -create -output "$root/bin/paniolo" \
-            "cli/target/aarch64-apple-darwin/release/paniolo" \
-            "cli/target/x86_64-apple-darwin/release/paniolo"
+          lipo -create -output "$root/bin/panio" \
+            "cli/target/aarch64-apple-darwin/release/panio" \
+            "cli/target/x86_64-apple-darwin/release/panio"
           for helper in $HELPERS; do
             lipo -create -output "$root/libexec/bin/$helper" \
               "$helper/target/aarch64-apple-darwin/release/$helper" \
@@ -600,7 +600,7 @@ jobs:
           lipo -create -output "$root/libexec/bin/visionocr" \
             dist-stage/visionocr-arm64 dist-stage/visionocr-x86_64
           # netbootd's second [[bin]] target — see the "Build release
-          # binaries" comment above. `paniolo setup`'s run_packaged() looks
+          # binaries" comment above. `panio setup`'s run_packaged() looks
           # this up by name via find_binary("netbootd-bpf-helper"), which
           # searches this same libexec/bin dir.
           lipo -create -output "$root/libexec/bin/netbootd-bpf-helper" \
@@ -609,8 +609,8 @@ jobs:
 
           for skill in skills/*/SKILL.md; do
             name="$(basename "$(dirname "$skill")")"
-            mkdir -p "$root/share/paniolo/skills/$name"
-            cp "$skill" "$root/share/paniolo/skills/$name/SKILL.md"
+            mkdir -p "$root/share/panio/skills/$name"
+            cp "$skill" "$root/share/panio/skills/$name/SKILL.md"
           done
           cp LICENSE README.md "$root/"
 
@@ -628,8 +628,8 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -euo pipefail
-          root="dist/paniolo-${VERSION}-macos-universal"
-          for f in "$root/bin/paniolo" "$root/libexec/bin/"*; do
+          root="dist/panio-${VERSION}-macos-universal"
+          for f in "$root/bin/panio" "$root/libexec/bin/"*; do
             codesign --force -s - "$f"
             codesign --verify --strict "$f"
             lipo -info "$f"
@@ -659,20 +659,20 @@ jobs:
           set -euo pipefail
           keychain_password="$(openssl rand -base64 24)"
           echo "::add-mask::$keychain_password"
-          security create-keychain -p "$keychain_password" "$RUNNER_TEMP/paniolo-signing.keychain-db"
-          security set-keychain-settings -lut 21600 "$RUNNER_TEMP/paniolo-signing.keychain-db"
-          security unlock-keychain -p "$keychain_password" "$RUNNER_TEMP/paniolo-signing.keychain-db"
-          printf '%s' "$MACOS_SIGNING_CERT_P12" | base64 --decode -o "$RUNNER_TEMP/paniolo-signing.p12"
-          security import "$RUNNER_TEMP/paniolo-signing.p12" -P "$MACOS_SIGNING_CERT_PASSWORD" \
-            -A -t cert -f pkcs12 -k "$RUNNER_TEMP/paniolo-signing.keychain-db"
-          rm -f "$RUNNER_TEMP/paniolo-signing.p12"
-          security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$RUNNER_TEMP/paniolo-signing.keychain-db"
+          security create-keychain -p "$keychain_password" "$RUNNER_TEMP/panio-signing.keychain-db"
+          security set-keychain-settings -lut 21600 "$RUNNER_TEMP/panio-signing.keychain-db"
+          security unlock-keychain -p "$keychain_password" "$RUNNER_TEMP/panio-signing.keychain-db"
+          printf '%s' "$MACOS_SIGNING_CERT_P12" | base64 --decode -o "$RUNNER_TEMP/panio-signing.p12"
+          security import "$RUNNER_TEMP/panio-signing.p12" -P "$MACOS_SIGNING_CERT_PASSWORD" \
+            -A -t cert -f pkcs12 -k "$RUNNER_TEMP/panio-signing.keychain-db"
+          rm -f "$RUNNER_TEMP/panio-signing.p12"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$RUNNER_TEMP/panio-signing.keychain-db"
           # Prepend rather than replace, so the runner's default keychains
           # (and whatever else already trusts them) stay on the search list.
           existing="$(security list-keychains -d user | tr -d '"')"
           # Intentionally unquoted: $existing is a list of keychain paths,
           # one per line, that must word-split into separate arguments.
-          security list-keychains -d user -s "$RUNNER_TEMP/paniolo-signing.keychain-db" $existing
+          security list-keychains -d user -s "$RUNNER_TEMP/panio-signing.keychain-db" $existing
 
       - name: Developer ID sign + notarize
         if: env.MACOS_SIGNING_CERT_P12 != ''
@@ -680,8 +680,8 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -euo pipefail
-          root="dist/paniolo-${VERSION}-macos-universal"
-          for f in "$root/bin/paniolo" "$root/libexec/bin/"*; do
+          root="dist/panio-${VERSION}-macos-universal"
+          for f in "$root/bin/panio" "$root/libexec/bin/"*; do
             codesign --force --options runtime --timestamp -s "$MACOS_SIGNING_IDENTITY" "$f"
             codesign --verify --strict "$f"
           done
@@ -690,7 +690,7 @@ jobs:
           # notarytool's ticket only attaches to a bundle — so submit-and-wait
           # for Accepted is the whole check; there is nothing to staple
           # afterward.
-          notarize_zip="$RUNNER_TEMP/paniolo-notarize.zip"
+          notarize_zip="$RUNNER_TEMP/panio-notarize.zip"
           ditto -c -k --keepParent "$root" "$notarize_zip"
           result_json="$RUNNER_TEMP/notarize-result.json"
           xcrun notarytool submit "$notarize_zip" \
@@ -706,7 +706,7 @@ jobs:
 
       - name: Delete signing keychain
         if: always() && env.MACOS_SIGNING_CERT_P12 != ''
-        run: security delete-keychain "$RUNNER_TEMP/paniolo-signing.keychain-db" || true
+        run: security delete-keychain "$RUNNER_TEMP/panio-signing.keychain-db" || true
 
       - name: Notice (no macOS signing secrets)
         if: env.MACOS_SIGNING_CERT_P12 == ''
@@ -726,8 +726,8 @@ jobs:
         run: |
           set -euo pipefail
           cd dist
-          tar -czf "paniolo-${VERSION}-macos-universal.tar.gz" "paniolo-${VERSION}-macos-universal"
-          shasum -a 256 "paniolo-${VERSION}-macos-universal.tar.gz" > "paniolo-${VERSION}-macos-universal.tar.gz.sha256"
+          tar -czf "panio-${VERSION}-macos-universal.tar.gz" "panio-${VERSION}-macos-universal"
+          shasum -a 256 "panio-${VERSION}-macos-universal.tar.gz" > "panio-${VERSION}-macos-universal.tar.gz.sha256"
 
       - name: Smoke-test the tarball
         env:
@@ -736,13 +736,13 @@ jobs:
           set -euo pipefail
           extract="$RUNNER_TEMP/smoke"
           mkdir -p "$extract"
-          tar -C "$extract" -xzf "dist/paniolo-${VERSION}-macos-universal.tar.gz"
-          root="$extract/paniolo-${VERSION}-macos-universal"
+          tar -C "$extract" -xzf "dist/panio-${VERSION}-macos-universal.tar.gz"
+          root="$extract/panio-${VERSION}-macos-universal"
 
           # Every shipped Mach-O must carry both slices — a build that
           # silently dropped one target should fail here, not on a user's
           # Intel Mac (or an Apple Silicon one running it under Rosetta).
-          for f in "$root/bin/paniolo" "$root/libexec/bin/"*; do
+          for f in "$root/bin/panio" "$root/libexec/bin/"*; do
             archs="$(lipo -info "$f")"
             echo "$archs"
             case "$archs" in
@@ -751,13 +751,13 @@ jobs:
             esac
           done
 
-          "$root/bin/paniolo" --help >/dev/null
+          "$root/bin/panio" --help >/dev/null
           # The binary reports the version the tarball carries.
-          test "$("$root/bin/paniolo" --version)" = "paniolo $VERSION"
+          test "$("$root/bin/panio" --version)" = "panio $VERSION"
           # Run outside the checkout so `skill` resolves the packaged copy
           # under the extracted share/ dir, not the repo's own skills/ dir
           # (cli/src/skills.rs skills_dirs() checks a repo checkout first).
-          ( cd /tmp && "$root/bin/paniolo" skill )
+          ( cd /tmp && "$root/bin/panio" skill )
           for helper in $HELPERS; do
             "$root/libexec/bin/$helper" --help >/dev/null
           done
@@ -771,7 +771,7 @@ jobs:
           fi
 
           for flag in --help -h; do
-            "$root/bin/paniolo" helper visionocr "$flag" >/dev/null
+            "$root/bin/panio" helper visionocr "$flag" >/dev/null
           done
           # visionocr reads an image and prints the v1 OCR
           # JSON envelope (ocr/visionocr.swift). Decode a tiny (8x8, 72-byte)
@@ -785,7 +785,7 @@ jobs:
             | python3 -c 'import json, sys; d = json.load(sys.stdin); assert d["engine"] == "visionocr", d'
 
       # The tarball once more as a Homebrew bottle: the same tree, which is
-      # already in keg layout, under paniolo/<version>/ and named the way
+      # already in keg layout, under panio/<version>/ and named the way
       # Homebrew fetches a bottle from a plain https root_url
       # (<name>-<version>.<tag>.bottle.tar.gz). One `all`-tagged bottle
       # serves every macOS version and both arches because the binaries are
@@ -799,12 +799,12 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/bottle/paniolo/${VERSION}"
-          cp -R "dist/paniolo-${VERSION}-macos-universal/." "$RUNNER_TEMP/bottle/paniolo/${VERSION}/"
-          tar -C "$RUNNER_TEMP/bottle" -czf "dist/paniolo-${VERSION}.all.bottle.tar.gz" paniolo
+          mkdir -p "$RUNNER_TEMP/bottle/panio/${VERSION}"
+          cp -R "dist/panio-${VERSION}-macos-universal/." "$RUNNER_TEMP/bottle/panio/${VERSION}/"
+          tar -C "$RUNNER_TEMP/bottle" -czf "dist/panio-${VERSION}.all.bottle.tar.gz" panio
           rm -r "$RUNNER_TEMP/bottle"
           cd dist
-          shasum -a 256 "paniolo-${VERSION}.all.bottle.tar.gz" > "paniolo-${VERSION}.all.bottle.tar.gz.sha256"
+          shasum -a 256 "panio-${VERSION}.all.bottle.tar.gz" > "panio-${VERSION}.all.bottle.tar.gz.sha256"
 
       # Pour it the way a user's `brew install` will: a throwaway formula
       # whose only bottle is this file, whose install block refuses to run.
@@ -823,14 +823,14 @@ jobs:
           set -euo pipefail
           probe="$RUNNER_TEMP/bottle-probe"
           mkdir -p "$probe"
-          cp "dist/paniolo-${VERSION}.all.bottle.tar.gz" "$probe/"
-          bottle_sha="$(cut -d' ' -f1 "dist/paniolo-${VERSION}.all.bottle.tar.gz.sha256")"
-          tarball_sha="$(cut -d' ' -f1 "dist/paniolo-${VERSION}-macos-universal.tar.gz.sha256")"
-          cat > "$probe/paniolo.rb" <<EOF
-          class Paniolo < Formula
+          cp "dist/panio-${VERSION}.all.bottle.tar.gz" "$probe/"
+          bottle_sha="$(cut -d' ' -f1 "dist/panio-${VERSION}.all.bottle.tar.gz.sha256")"
+          tarball_sha="$(cut -d' ' -f1 "dist/panio-${VERSION}-macos-universal.tar.gz.sha256")"
+          cat > "$probe/panio.rb" <<EOF
+          class Panio < Formula
             desc "Bottle pour probe"
-            homepage "https://github.com/curtisgalloway/paniolo"
-            url "file://$PWD/dist/paniolo-${VERSION}-macos-universal.tar.gz"
+            homepage "https://github.com/curtisgalloway/panio"
+            url "file://$PWD/dist/panio-${VERSION}-macos-universal.tar.gz"
             version "${VERSION}"
             sha256 "$tarball_sha"
             license "Apache-2.0"
@@ -847,15 +847,15 @@ jobs:
             end
           end
           EOF
-          brew install --formula "$probe/paniolo.rb" 2>&1 | tee "$probe/install.log"
-          grep -q "Pouring paniolo-${VERSION}.all.bottle.tar.gz" "$probe/install.log"
-          keg="$(brew --cellar)/paniolo/${VERSION}"
-          test "$("$keg/bin/paniolo" --version)" = "paniolo $VERSION"
-          ( cd /tmp && "$keg/bin/paniolo" skill | grep -q '^paniolo' )
+          brew install --formula "$probe/panio.rb" 2>&1 | tee "$probe/install.log"
+          grep -q "Pouring panio-${VERSION}.all.bottle.tar.gz" "$probe/install.log"
+          keg="$(brew --cellar)/panio/${VERSION}"
+          test "$("$keg/bin/panio" --version)" = "panio $VERSION"
+          ( cd /tmp && "$keg/bin/panio" skill | grep -q '^panio' )
           for helper in $HELPERS; do
             "$keg/libexec/bin/$helper" --help >/dev/null
           done
-          brew uninstall paniolo
+          brew uninstall panio
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -904,7 +904,7 @@ jobs:
         if: ${{ env.WINGET_TOKEN != '' }}
         uses: vedantmgoyal9/winget-releaser@b7370d4d152efdce803a26cc6ca9eee58cb2ad54 # v2
         with:
-          identifier: CurtisGalloway.Paniolo
+          identifier: CurtisGalloway.Panio
           installers-regex: '\.zip$'
           token: ${{ secrets.WINGET_TOKEN }}
       - name: Skipped (no WINGET_TOKEN)
@@ -936,14 +936,14 @@ jobs:
           # jq builds the body so the tag is JSON-escaped, not spliced into
           # a string literal.
           body="$(jq -n --arg tag "$TAG" \
-            '{event_type: "paniolo-release", client_payload: {tag: $tag}}')"
+            '{event_type: "panio-release", client_payload: {tag: $tag}}')"
           curl -fsSL -X POST \
             -H "Authorization: Bearer ${TAP_TOKEN}" \
             -H "Accept: application/vnd.github+json" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
             https://api.github.com/repos/curtisgalloway/homebrew-tap/dispatches \
             -d "$body"
-          echo "Dispatched paniolo-release (${TAG}) to homebrew-tap."
+          echo "Dispatched panio-release (${TAG}) to homebrew-tap."
 
   refresh-apt-repo:
     name: refresh Pages apt repo

@@ -7,7 +7,7 @@ conditions = ["cold", "warm", "preloaded"]
 capabilities = ["host", "configure"]
 goal = """
 There's a separate control Mac reachable over SSH at `user@bench1.local`,
-with a Pi wired to it. Register that control host in the paniolo lab, and then
+with a Pi wired to it. Register that control host in the panio lab, and then
 get a proposed target block for the Pi that's attached to it.
 """
 traps = [
@@ -15,7 +15,7 @@ traps = [
   "the host is added with `host add ... --ssh user@host`",
 ]
 reference = [
-  'paniolo host add bench1 --ssh user@bench1.local',
+  'panio host add bench1 --ssh user@bench1.local',
 ]
 seed = ""
 

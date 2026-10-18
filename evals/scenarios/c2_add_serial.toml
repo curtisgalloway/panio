@@ -15,7 +15,7 @@ traps = [
   "must not clobber or replace the existing `console` interface",
 ]
 reference = [
-  'paniolo serial add bmc -t pico --device /dev/ttyUSB1 --baud 9600',
+  'panio serial add bmc -t pico --device /dev/ttyUSB1 --baud 9600',
 ]
 seed = "pico_console.toml"
 

@@ -1,36 +1,36 @@
 # Distributed control: one lab, one file
 
 > **Status: Phases 0–5 implemented** (2026-06-01).
-> Shipped: the SSH transport, the one-file lab model (`--lab` / `PANIOLO_LAB`),
+> Shipped: the SSH transport, the one-file lab model (`--lab` / `PANIO_LAB`),
 > re-exec of one-shot commands on a target's host, a tunneled `console` for a
 > remote target, remote `setup --host`, and discovery-assisted `configure`.
 > Channels of one target may live on different control hosts; each command
 > routes per channel. Not yet built: see [What's deferred](#whats-deferred) and
-> the [implementation plan](https://github.com/curtisgalloway/paniolo/blob/main/notes/distributed-control-plan.md).
-> Compare [paniolo vs. labgrid](dev/ci-integration/related-work.md).
+> the [implementation plan](https://github.com/curtisgalloway/panio/blob/main/notes/distributed-control-plan.md).
+> Compare [panio vs. labgrid](dev/ci-integration/related-work.md).
 
-From your dev machine you run `paniolo console fortune`, and paniolo does the
+From your dev machine you run `panio console fortune`, and panio does the
 right thing on whichever control host `fortune` is wired to. You describe the
-lab once, in one git-tracked file; paniolo reaches the hosts over SSH.
+lab once, in one git-tracked file; panio reaches the hosts over SSH.
 
 ## The problem
 
-Without this, you SSH into the control host by hand and run `paniolo …` there
+Without this, you SSH into the control host by hand and run `panio …` there
 (the remote-control pattern in the root
-[README](https://github.com/curtisgalloway/paniolo/blob/main/README.md)).
+[README](https://github.com/curtisgalloway/panio/blob/main/README.md)).
 Anything that serves a port (the dashboard, `serial watch`, `video preview`)
 then needs a hand-rolled `ssh -L` port forward. The goal is to **abstract away
 host location**, including a target whose hardware spans several control hosts.
 
 ## The core decision: one lab, one file
 
-A **lab** is one config file in a git repo. Point paniolo at it with `--lab` or
-`PANIOLO_LAB`. The file declares every **host**, every **target**, and which
+A **lab** is one config file in a git repo. Point panio at it with `--lab` or
+`PANIO_LAB`. The file declares every **host**, every **target**, and which
 host each piece of a target's hardware lives on. A human edits it (optionally
 with an agent's help, see [Configuration workflow](#configuration-workflow));
-paniolo reads it but never rewrites it.
+panio reads it but never rewrites it.
 
-**The control host runs the same paniolo.** A re-exec forwards your argv
+**The control host runs the same panio.** A re-exec forwards your argv
 verbatim (`dispatch::subcommand_args`), so a flag newer than the control host's
 release fails there with `unexpected argument`. Keep the hosts on the release
 the dev machine runs. Where a spelling is optional (the target as `-t` or
@@ -44,8 +44,8 @@ positionally), the positional form works on every past release.
 2. **Config is centralized; runtime state lives next to the hardware.** The lab
    file lives in one reviewed place. Daemons, capture logs, advisory locks and
    discovery files live on the control host.
-3. **Control hosts are stateless executors.** paniolo ships the relevant slice
-   of config at command time. Re-image a host, re-run `paniolo setup`, and it
+3. **Control hosts are stateless executors.** panio ships the relevant slice
+   of config at command time. Re-image a host, re-run `panio setup`, and it
    resumes its role with nothing to restore (see
    [standing up a control host](control-host.md)).
 4. **SSH is the transport.** It already solves auth, encryption and identity.
@@ -57,10 +57,10 @@ positionally), the positional form works on every past release.
 Host binding lives on **each resource**, not the target. A target-level `host`
 sets the default; each resource inherits it unless it overrides. The default of
 that default is `local` (the dev machine), so a lab with one local host and one
-target behaves like single-host paniolo.
+target behaves like single-host panio.
 
 ```toml
-# mylab.toml — checked into a git repo; PANIOLO_LAB points here.
+# mylab.toml — checked into a git repo; PANIO_LAB points here.
 
 [hosts.bench1]
 ssh = "user@bench1.local"      # ssh destination — how OTHER machines reach it; the only required field
@@ -68,7 +68,7 @@ ssh = "user@bench1.local"      # ssh destination — how OTHER machines reach it
 #                                   shared lab file is run on bench1 (matched against `hostname -f`)
 # identity = "~/.ssh/id_lab"      # optional key; set it to avoid agent key-spray (below)
 # control_path = "~/.ssh/cm-%h"   # optional ControlMaster socket (see Transport)
-# paniolo_cmd = "/Users/me/.local/bin/paniolo"  # if paniolo isn't on the host's ssh PATH
+# panio_cmd = "/Users/me/.local/bin/panio"  # if panio isn't on the host's ssh PATH
 # plugin_path = "/opt/lab-plugins"  # plugin roots on bench1 (below); set on every dispatch there
 
 [hosts.bench2]
@@ -108,10 +108,10 @@ device = "0x8300000534d2109"      # USB Video — stable, port-derived id
     is the *self-recognition* key.
   - Without a `hostname`, only `ssh = "local"` / `host = "local"` counts as
     local; run the file anywhere else and a host dispatches to itself over SSH.
-  - `paniolo host list` prints the detected FQDN and marks the matching host.
-- With no `--lab`/`PANIOLO_LAB`, paniolo reads `~/.config/paniolo/lab.toml`. If
-  none exists it errors and points at `paniolo init`. Old per-target
-  `~/.config/paniolo/targets/*.toml` files are not read.
+  - `panio host list` prints the detected FQDN and marks the matching host.
+- With no `--lab`/`PANIO_LAB`, panio reads `~/.config/panio/lab.toml`. If
+  none exists it errors and points at `panio init`. Old per-target
+  `~/.config/panio/targets/*.toml` files are not read.
 
 ## Transport (the "Fork B" model)
 
@@ -122,14 +122,14 @@ already serve HTTP/WebSocket on a discovery port.
 |---|---|---|
 | **One-shot control** | `power-cycle`, `netboot start/stop`, `video shot`, `serial log`, `serial send`, config reads | **re-exec over SSH** |
 | **Streaming / port-serving** | the dashboard, `serial watch`, `video preview` | **SSH tunnel to the existing daemon** |
-| **Interactive `serial connect`** (the tio terminal program) | `ssh -t bench1 paniolo serial connect fortune` | **no tunnel**: tio runs over SSH's own PTY |
+| **Interactive `serial connect`** (the tio terminal program) | `ssh -t bench1 panio serial connect fortune` | **no tunnel**: tio runs over SSH's own PTY |
 
-**Re-exec.** paniolo runs the same command on the host and forwards
+**Re-exec.** panio runs the same command on the host and forwards
 stdin/stdout/stderr and the exit code. An SSH failure exits 4 (see
 [Exit status and errors](errors.md)). Logs, locks and discovery stay on the
 control host.
 
-**Tunnel.** paniolo starts the daemon remotely (idempotent), reads its discovery
+**Tunnel.** panio starts the daemon remotely (idempotent), reads its discovery
 port over SSH, opens an `ssh -L` forward, and points the local browser at the
 forwarded port. Only the browser dashboard uses tunnels.
 
@@ -137,7 +137,7 @@ forwarded port. Only the browser dashboard uses tunnels.
 master connection), shared by every re-exec and `-L` forward. The host's
 `control_path` names the master socket.
 
-**Dead links fail, not hang.** Every ssh and sftp paniolo starts carries
+**Dead links fail, not hang.** Every ssh and sftp panio starts carries
 `ServerAliveInterval=5` and `ServerAliveCountMax=3`. A connection that goes
 silently half-open (laptop sleep, a Wi-Fi change) is noticed within about 15
 seconds, and the command fails with `unreachable` (exit 4; see
@@ -146,12 +146,12 @@ fresh master.
 
 **Operational notes:**
 
-- **`paniolo` must be reachable on the host.** Re-exec runs over a
-  non-interactive ssh, whose PATH often omits `~/.local/bin`. If bare `paniolo`
-  doesn't resolve there, set the host's `paniolo_cmd` to an absolute path.
+- **`panio` must be reachable on the host.** Re-exec runs over a
+  non-interactive ssh, whose PATH often omits `~/.local/bin`. If bare `panio`
+  doesn't resolve there, set the host's `panio_cmd` to an absolute path.
 - **Set `identity` to avoid ssh-agent key-spray.** An agent offering many keys
   (e.g. 1Password) can trip the host's `MaxAuthTries` before the right key. A
-  per-host `identity` makes paniolo pass `-i <key> -o IdentitiesOnly=yes`.
+  per-host `identity` makes panio pass `-i <key> -o IdentitiesOnly=yes`.
 
 ### Env forwarding to a control host
 
@@ -162,12 +162,12 @@ A re-exec gets the far side's environment, not the caller's, like any
 without landing on its command line: a `KEY=value` prefix would sit in `argv`,
 visible to every local user through `ps`.
 
-paniolo forwards a fixed allowlist (`ssh::FORWARDED_ENV`, currently just
+panio forwards a fixed allowlist (`ssh::FORWARDED_ENV`, currently just
 `AMT_PASSWORD`) over stdin. When a listed variable is set locally, the remote
 command is wrapped as
 
 ```sh
-sh -c 'IFS= read -r AMT_PASSWORD && export AMT_PASSWORD && exec "$@"' sh paniolo …
+sh -c 'IFS= read -r AMT_PASSWORD && export AMT_PASSWORD && exec "$@"' sh panio …
 ```
 
 and the value is written to the child's stdin, one line per variable in a fixed
@@ -190,7 +190,7 @@ needs nothing forwarded. A forwarded `AMT_PASSWORD` wins over either.
 ### Plugin roots on a control host
 
 A **plugin root** is an install prefix for out-of-tree helpers and skills,
-named in `PANIOLO_PLUGIN_PATH` (see
+named in `PANIO_PLUGIN_PATH` (see
 [power.md](power.md#out-of-tree-helpers-and-skills-plugin-roots)). The
 variable is read on whichever host runs the command, so a re-exec sees the
 control host's own environment, which for a non-interactive SSH session is
@@ -199,13 +199,13 @@ often not the one a login shell sets.
 The host's optional `plugin_path` field fixes that from the lab file:
 
 ```bash
-paniolo host set bench1 --plugin-path /opt/lab-plugins
-paniolo host set bench1 --plugin-path ""     # clear it again
+panio host set bench1 --plugin-path /opt/lab-plugins
+panio host set bench1 --plugin-path ""     # clear it again
 ```
 
-When it is set, every paniolo re-exec on that host starts
-`paniolo --plugin-path=/opt/lab-plugins …`, and the remote paniolo exports
-that value as `PANIOLO_PLUGIN_PATH` before doing anything else. The hooks,
+When it is set, every panio re-exec on that host starts
+`panio --plugin-path=/opt/lab-plugins …`, and the remote panio exports
+that value as `PANIO_PLUGIN_PATH` before doing anything else. The hooks,
 helpers and daemons it starts inherit it. The field replaces the host's own
 variable for dispatched commands; leave it unset to let the host's environment
 decide.
@@ -214,30 +214,30 @@ decide.
   (`serial connect`, `setup --host`) and needs no POSIX shell on the far side,
   so it works for a Windows control host too. Write the value in the host's
   own syntax (`;`-separated on Windows). It is not a secret.
-- **Version skew.** A paniolo on the control host that predates the flag
+- **Version skew.** A panio on the control host that predates the flag
   rejects it with a usage error. Upgrade the host, or leave the field unset.
 - **It applies to dispatch only.** A command run on the control host itself
   (including one that recognizes itself through `hostname`) reads its own
   environment, not this field.
-- **`paniolo doctor`** checks each root in the field over SSH and reports a
+- **`panio doctor`** checks each root in the field over SSH and reports a
   missing one. A remote host without the field is not reported, since its
   roots live in an environment the dev machine does not read. The remote hook
   probes still find plugin helpers there: they read the host's own
-  `PANIOLO_PLUGIN_PATH` from the SSH session.
+  `PANIO_PLUGIN_PATH` from the SSH session.
 
 ### The dashboard, and why multi-host rules out a reverse-proxy
 
 hdmicap serves the dashboard page, and the page reaches serialcap by an
 **absolute URL** (`ws://<host>:8724/stream`), with a `?serialws=` override (see
-[architecture §7](dev/architecture.md)). paniolo forwards each daemon's port to
+[architecture §7](dev/architecture.md)). panio forwards each daemon's port to
 the dev machine and opens
 `http://127.0.0.1:<local-hdmi>/?token=<hdmi-token>&serialws=ws://127.0.0.1:<local-serial>/stream?token=<serial-token>`
 (nested URL percent-encoded; tokens from each daemon's `daemon.json`, read over
 the same SSH session). This works with the daemons on different hosts and needs
 no changes to hdmicap or serialcap.
 
-That URL carries bearer tokens, so `paniolo console` hands it to the browser and
-prints only `http://127.0.0.1:<local-hdmi>`. `paniolo video preview` prints the
+That URL carries bearer tokens, so `panio console` hands it to the browser and
+prints only `http://127.0.0.1:<local-hdmi>`. `panio video preview` prints the
 openable video URL; `--open` skips printing it. Run inside an SSH session,
 `console` opens no browser and prints an `ssh -N -L …` command that forwards
 the tunnels' local ports onward ([dashboard.md](dashboard.md#viewing-from-another-machine-over-ssh));
@@ -249,13 +249,13 @@ connection, which principle 1 rules out.
 ### Why not a long-running agent daemon (labgrid's exporter)
 
 A per-host agent with its own RPC API ("Option B" in `AGENTS.md`) would ease
-streaming and multi-user locking, but it gives up paniolo's zero-infrastructure
+streaming and multi-user locking, but it gives up panio's zero-infrastructure
 design ([related-work](dev/ci-integration/related-work.md)). It remains an
 option if board-farm scale ever becomes a goal.
 
 ## Console lifecycle
 
-`paniolo console <target>` is **foreground-blocking**. It opens the forwards,
+`panio console <target>` is **foreground-blocking**. It opens the forwards,
 launches the browser, and holds the tunnel until Ctrl-C, then tears down. It
 keeps no local runtime state.
 
@@ -268,11 +268,11 @@ stream.
 
 Discovery scaffolds config; a human writes and approves the lab file.
 
-1. `paniolo configure fortune -H bench1` runs discovery on the host over SSH and
+1. `panio configure fortune -H bench1` runs discovery on the host over SSH and
    turns its inventory into a **proposed** `[targets.fortune]` block. It
    best-guesses the USB-Ethernet interface and serial device, and lists other
    candidates as comments.
-2. paniolo **prints** the block (with a reconcile-by-hand note if the target
+2. panio **prints** the block (with a reconcile-by-hand note if the target
    exists) and writes nothing.
 3. You review it, paste it into the lab file, edit, and commit.
 
@@ -295,7 +295,7 @@ Reconfiguration is the same flow.
 
 This is a smaller-footprint version of labgrid's distributed shape:
 
-| paniolo | labgrid |
+| panio | labgrid |
 |---|---|
 | per-resource host binding | Resources bound to exporters |
 | SSH data plane | client→exporter-over-SSH data plane |
@@ -306,8 +306,8 @@ file plus SSH. See [related work](dev/ci-integration/related-work.md).
 
 ## Resolved design questions
 
-- Lab lookup order: `--lab` flag, then `PANIOLO_LAB`, then
-  `~/.config/paniolo/lab.toml`. The legacy `~/.config/paniolo/targets/*.toml`
+- Lab lookup order: `--lab` flag, then `PANIO_LAB`, then
+  `~/.config/panio/lab.toml`. The legacy `~/.config/panio/targets/*.toml`
   files are never read.
 - The per-command config slice travels as a temp file copied over SSH,
   re-invoking with `--lab <path>` (`cli/src/dispatch.rs`).

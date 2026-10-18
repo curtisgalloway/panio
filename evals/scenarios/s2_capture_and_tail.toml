@@ -7,7 +7,7 @@ conditions = ["cold", "warm", "preloaded"]
 capabilities = ["serial"]
 goal = """
 Start capturing `dut`'s serial console and show me the last 30 lines of what
-has scrolled past during boot. List the exact paniolo commands you would run,
+has scrolled past during boot. List the exact panio commands you would run,
 in order.
 """
 traps = [
@@ -16,8 +16,8 @@ traps = [
   "`serial log` reads the on-disk capture log, so it works even after the daemon stops",
 ]
 reference = [
-  'paniolo serial watch dut        # start the capture daemon (owns the port)',
-  'paniolo serial log dut --tail 30',
+  'panio serial watch dut        # start the capture daemon (owns the port)',
+  'panio serial log dut --tail 30',
 ]
 seed = "dut_console.toml"
 

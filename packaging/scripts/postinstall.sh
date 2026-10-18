@@ -14,13 +14,13 @@ set -e
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Advisory only — never reaps daemons. paniolo's daemons (serialcap, hdmicap,
+# Advisory only — never reaps daemons. panio's daemons (serialcap, hdmicap,
 # netbootd) are per-user processes, not packaged system services, so a root
 # maintainer script can't reliably stop another user's running daemons (their
 # state lives under per-user runtime dirs, and killing an in-flight netboot on
 # a routine upgrade would be surprising). After an upgrade, any daemon still
 # running keeps executing the OLD binary until restarted. The CLI detects this
-# (`paniolo daemons` flags such daemons "stale") and heals it on demand.
+# (`panio daemons` flags such daemons "stale") and heals it on demand.
 #
 # dpkg runs this as `postinst configure <previously-configured-version>`, and
 # that second argument is empty on a fresh install (Debian Policy 6.5). It is
@@ -32,13 +32,13 @@ set -e
 case "$1" in
   configure)
     if [ -n "${2:-}" ]; then
-      echo "paniolo: upgrade from $2 complete. Any capture daemons already running still use the"
-      echo "         previous binary — restart them with: paniolo daemons restart --stale"
-      echo "         (netbootd: restart via 'paniolo netboot start' when convenient)."
+      echo "panio: upgrade from $2 complete. Any capture daemons already running still use the"
+      echo "         previous binary — restart them with: panio daemons restart --stale"
+      echo "         (netbootd: restart via 'panio netboot start' when convenient)."
     else
-      echo "paniolo: installed. Run 'paniolo setup' once (group membership for serial and USB"
-      echo "         devices, the optional zigplug helper), then 'paniolo --help' to start;"
-      echo "         'paniolo skill' prints the bundled agent instructions."
+      echo "panio: installed. Run 'panio setup' once (group membership for serial and USB"
+      echo "         devices, the optional zigplug helper), then 'panio --help' to start;"
+      echo "         'panio skill' prints the bundled agent instructions."
     fi
     ;;
 esac

@@ -37,7 +37,7 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SRC="$(cd "$SCRIPT_DIR/.." && pwd)"
-DST="${PANIOLO_CI_DIR:-$HOME/.cache/paniolo-ci-src}"
+DST="${PANIO_CI_DIR:-$HOME/.cache/panio-ci-src}"
 export DEBIAN_FRONTEND=noninteractive
 
 echo "### [setup] system deps"
@@ -95,9 +95,9 @@ echo "### toolchain: $(cargo --version) | $(uv --version 2>/dev/null || echo 'uv
 echo "### [setup] copy working tree to local disk ($DST)"
 # rsync --delete erases whatever else is in $DST, so refuse unless it is
 # clearly ours: absent, empty, or carrying the marker this script leaves
-# behind after its first sync. A PANIOLO_CI_DIR typo that lands on a real
+# behind after its first sync. A PANIO_CI_DIR typo that lands on a real
 # directory then fails loudly instead of emptying it.
-MARKER=".paniolo-ci-local"
+MARKER=".panio-ci-local"
 if [ -e "$DST" ]; then
   if [ ! -d "$DST" ]; then
     echo "FATAL: $DST exists and is not a directory; aborting." >&2
@@ -105,7 +105,7 @@ if [ -e "$DST" ]; then
   fi
   if [ -n "$(ls -A "$DST")" ] && [ ! -f "$DST/$MARKER" ]; then
     echo "FATAL: $DST is not empty and has no $MARKER marker; refusing to" >&2
-    echo "       rsync --delete into it. Point PANIOLO_CI_DIR at an empty or" >&2
+    echo "       rsync --delete into it. Point PANIO_CI_DIR at an empty or" >&2
     echo "       previously synced directory, or clear this one by hand." >&2
     exit 2
   fi
@@ -125,8 +125,8 @@ declare -A RES
 # official tarball under $HOME when `go` is missing.
 ensure_go () {
   if command -v go >/dev/null 2>&1; then return 0; fi
-  if [ -x "$HOME/.cache/paniolo-go/go/bin/go" ]; then
-    export PATH="$HOME/.cache/paniolo-go/go/bin:$PATH"
+  if [ -x "$HOME/.cache/panio-go/go/bin/go" ]; then
+    export PATH="$HOME/.cache/panio-go/go/bin:$PATH"
     return 0
   fi
   echo "### [setup] go"
@@ -137,9 +137,9 @@ ensure_go () {
     *) echo "unsupported architecture for the Go install" >&2; return 1 ;;
   esac
   fetch_installer "https://go.dev/dl/go1.24.7.linux-$arch.tar.gz" go.tar.gz || return 1
-  mkdir -p "$HOME/.cache/paniolo-go" \
-    && tar -C "$HOME/.cache/paniolo-go" -xzf "$INSTALLERS/go.tar.gz" || return 1
-  export PATH="$HOME/.cache/paniolo-go/go/bin:$PATH"
+  mkdir -p "$HOME/.cache/panio-go" \
+    && tar -C "$HOME/.cache/panio-go" -xzf "$INSTALLERS/go.tar.gz" || return 1
+  export PATH="$HOME/.cache/panio-go/go/bin:$PATH"
 }
 
 go_job () {

@@ -14,7 +14,7 @@
 
 //! Per-channel transparent dispatch (see docs/config-redesign.md "Dispatch
 //! design"). A location-transparent command resolves the host of the channel it
-//! touches; if that's the dev machine it runs locally, otherwise paniolo re-execs
+//! touches; if that's the dev machine it runs locally, otherwise panio re-execs
 //! the same command on the control host over SSH against a shipped single-host
 //! **slice** of the lab. Because the slice's channels carry no `host`, the remote
 //! resolves them as local and never re-dispatches.
@@ -197,7 +197,7 @@ pub fn subcommand_args() -> Vec<String> {
 /// This used to run a POSIX shell script (`f=$(mktemp …) && cat > "$f"`) to
 /// create the file and echo its path. That works on a Unix control host and is
 /// not a command at all on a Windows one, whose OpenSSH answers with PowerShell
-/// — which is what stopped paniolo dispatching to a Windows host. SFTP is a
+/// — which is what stopped panio dispatching to a Windows host. SFTP is a
 /// protocol rather than a shell, so it behaves the same on both.
 ///
 /// The returned name is **relative**, and the remote `--lab` depends on that:
@@ -223,7 +223,7 @@ pub fn ship_slice(
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    let remote = format!(".paniolo-lab-{}-{stamp}.toml", std::process::id());
+    let remote = format!(".panio-lab-{}-{stamp}.toml", std::process::id());
 
     // The local copy only has to survive long enough for the SFTP put below;
     // `tempfile` picks a private, collision-free name in the system temp dir
@@ -237,7 +237,7 @@ pub fn ship_slice(
         .context("writing the local lab slice")?;
     ssh::sftp_put(host, local.path(), &remote).map_err(|e| {
         let err = if e.kind() == std::io::ErrorKind::NotFound {
-            crate::error::PanioloError::not_configured(format!(
+            crate::error::PanioError::not_configured(format!(
                 "sftp not found — cannot ship the lab slice to '{host_name}': {e}"
             ))
         } else {
@@ -289,7 +289,7 @@ pub fn dispatch(
 /// `unreachable` (exit 4) instead of being passed on. OpenSSH exits 255 when
 /// the connection fails (it has already printed why) but also when the remote
 /// command is killed by a signal, and a passthrough child on the far side may
-/// exit 255 itself; a remote paniolo never does under the error contract. So
+/// exit 255 itself; a remote panio never does under the error contract. So
 /// the message says the outcome is unknown: check state before retrying a
 /// mutation.
 fn transport_checked(code: i32, host_name: &str, target: &str) -> anyhow::Result<i32> {
@@ -304,11 +304,11 @@ fn transport_checked(code: i32, host_name: &str, target: &str) -> anyhow::Result
     Ok(code)
 }
 
-/// The remote paniolo's argv for a user-facing dispatch: `paniolo
-/// [--plugin-path=…] --lab <slice>` (see [`crate::model::Host::paniolo_argv`]),
+/// The remote panio's argv for a user-facing dispatch: `panio
+/// [--plugin-path=…] --lab <slice>` (see [`crate::model::Host::panio_argv`]),
 /// then `--json-errors` when requested here, then `sub_argv`.
 fn remote_argv(host: &crate::model::Host, remote_path: &str, sub_argv: &[String]) -> Vec<String> {
-    let mut argv = host.paniolo_argv();
+    let mut argv = host.panio_argv();
     argv.extend(["--lab".to_string(), remote_path.to_string()]);
     argv.extend(json_errors_arg(crate::error::json_requested()));
     argv.extend(sub_argv.iter().cloned());
@@ -316,7 +316,7 @@ fn remote_argv(host: &crate::model::Host, remote_path: &str, sub_argv: &[String]
 }
 
 /// `--json-errors` for the remote argv when the error contract's JSON object
-/// was requested here (by the flag or `PANIOLO_JSON_ERRORS`). Added even when
+/// was requested here (by the flag or `PANIO_JSON_ERRORS`). Added even when
 /// `sub_argv` already has one: the flag accepts repeats, and scanning argv
 /// for it cannot tell an option from a payload token of the same spelling.
 /// An argument rather than a forwarded variable: the variable prelude needs a
@@ -327,7 +327,7 @@ fn json_errors_arg(requested: bool) -> Option<String> {
     requested.then(|| "--json-errors".to_string())
 }
 
-/// Run a paniolo subcommand on `host_name` against a shipped slice, captured.
+/// Run a panio subcommand on `host_name` against a shipped slice, captured.
 /// Used by composite commands (e.g. `console`) to drive helper commands on the
 /// host before tunnelling to its daemons. Never passes `--json-errors`: the
 /// output is read by this process, which reports any failure itself.
@@ -340,7 +340,7 @@ pub fn run_subcommand(
     let host = lab.host(host_name);
     let slice = build_slice(lab, target, host_name)?;
     let remote_path = ship_slice(&host, host_name, target, &slice)?;
-    let mut argv = host.paniolo_argv();
+    let mut argv = host.panio_argv();
     argv.extend(["--lab".to_string(), remote_path.clone()]);
     argv.extend(subargs.iter().map(|s| s.to_string()));
     let out = ssh::run(&host, &argv, None, &ssh::forwarded_env()?);
@@ -363,7 +363,7 @@ pub fn run_subcommand(
     Ok(out)
 }
 
-const CAPTURE_TMP_PREFIX: &str = ".paniolo-capture-";
+const CAPTURE_TMP_PREFIX: &str = ".panio-capture-";
 const CAPTURE_TMP_SUFFIX: &str = ".tmp";
 
 /// How old a capture temp file must be before [`sweep_stale_captures`]
@@ -494,7 +494,7 @@ pub fn remote_daemon_endpoint(
     subdir: &str,
 ) -> Option<crate::daemons::Endpoint> {
     let script = format!(
-        "cat \"${{PANIOLO_RUNTIME_BASE:-/tmp}}/paniolo-$(id -u)/{subdir}/daemon.json\" 2>/dev/null"
+        "cat \"${{PANIO_RUNTIME_BASE:-/tmp}}/panio-$(id -u)/{subdir}/daemon.json\" 2>/dev/null"
     );
     let out = ssh::run(
         host,
@@ -509,7 +509,7 @@ pub fn remote_daemon_endpoint(
     crate::daemons::Endpoint::from_json(out.stdout.trim())
 }
 
-/// Where `paniolo helper` should run (#300): the lab host named by `--host`,
+/// Where `panio helper` should run (#300): the lab host named by `--host`,
 /// the host of `target`'s `channel` (`-t T --channel K`, with `interface`
 /// picking a serial interface), or, with `-t` alone, the one host all of the
 /// target's channels share. Neither flag means local, unchanged.
@@ -523,14 +523,14 @@ pub fn helper_host(
     target: Option<&str>,
     channel: Option<&str>,
     interface: Option<&str>,
-) -> Result<String, crate::error::PanioloError> {
-    use crate::error::{channel_missing, Kind, PanioloError};
+) -> Result<String, crate::error::PanioError> {
+    use crate::error::{channel_missing, Kind, PanioError};
     if let Some(h) = host {
         if h == crate::model::LOCAL || lab.hosts.contains_key(h) {
             return Ok(h.to_string());
         }
         let declared: Vec<&str> = lab.hosts.keys().map(String::as_str).collect();
-        return Err(PanioloError::not_configured(format!(
+        return Err(PanioError::not_configured(format!(
             "no host '{h}' in lab (declared: {})",
             if declared.is_empty() {
                 "none".to_string()
@@ -551,7 +551,7 @@ pub fn helper_host(
         if hosts.len() == 1 {
             return Ok(hosts[0].clone());
         }
-        return Err(PanioloError::new(
+        return Err(PanioError::new(
             Kind::Usage,
             format!(
                 "target '{target}' has channels on several hosts ({}); \
@@ -563,7 +563,7 @@ pub fn helper_host(
     };
     let kind = ChannelKind::from_name(channel).ok_or_else(|| {
         let valid: Vec<&str> = ChannelKind::ALL.iter().map(|k| k.as_str()).collect();
-        PanioloError::new(
+        PanioError::new(
             Kind::Usage,
             format!("unknown channel '{channel}' (valid: {})", valid.join(", ")),
         )
@@ -578,12 +578,12 @@ pub fn helper_host(
     crate::model::channel_host(&rt, kind, interface)
 }
 
-/// Run `sub_argv` (a paniolo subcommand that needs no lab, such as `helper`)
+/// Run `sub_argv` (a panio subcommand that needs no lab, such as `helper`)
 /// on `host_name` with stdio passed through, and return its exit code. No lab
 /// slice is shipped. ssh's own 255 becomes `unreachable`, as in [`dispatch`].
 pub fn run_on_host(lab: &Lab, host_name: &str, sub_argv: &[String]) -> anyhow::Result<i32> {
     let host = lab.host(host_name);
-    let mut argv = host.paniolo_argv();
+    let mut argv = host.panio_argv();
     argv.extend(json_errors_arg(crate::error::json_requested()));
     argv.extend(sub_argv.iter().cloned());
     let code = ssh::run_passthrough(&host, &argv, &ssh::forwarded_env()?)?;
@@ -658,8 +658,8 @@ mod tests {
     #[test]
     fn capture_to_file_sweeps_stale_temp_files() {
         let dir = tempfile::tempdir().unwrap();
-        let old = dir.path().join(".paniolo-capture-old.tmp");
-        let fresh = dir.path().join(".paniolo-capture-fresh.tmp");
+        let old = dir.path().join(".panio-capture-old.tmp");
+        let fresh = dir.path().join(".panio-capture-fresh.tmp");
         let other = dir.path().join("notes.tmp");
         for p in [&old, &fresh, &other] {
             std::fs::write(p, b"x").unwrap();
@@ -686,7 +686,7 @@ mod tests {
         names.sort();
         assert_eq!(
             names,
-            vec![".paniolo-capture-fresh.tmp", "notes.tmp", "shot.png"],
+            vec![".panio-capture-fresh.tmp", "notes.tmp", "shot.png"],
             "{names:?}"
         );
     }
@@ -736,7 +736,7 @@ mod tests {
         assert_eq!(names, vec!["shot.png"], "{names:?}");
     }
 
-    /// `paniolo helper`'s host resolution (#300) against the fixture lab:
+    /// `panio helper`'s host resolution (#300) against the fixture lab:
     /// fortune's video and hid live on bench2, everything else on bench1.
     #[test]
     fn helper_host_follows_the_named_channel() {
@@ -988,7 +988,7 @@ mod tests {
 
     /// The helper doctor opt-in (#304) on every channel that has one. A
     /// dropped flag would leave a doctor run *on* the control host — e.g.
-    /// `paniolo doctor` dispatched there by a future verb — silently skipping
+    /// `panio doctor` dispatched there by a future verb — silently skipping
     /// the check the lab asked for.
     #[test]
     fn slice_carries_the_doctor_opt_in() {
@@ -1046,7 +1046,7 @@ mod tests {
     }
 
     /// A host's lab `plugin_path` rides on the re-exec as `--plugin-path=…`
-    /// ahead of the subcommand, where the remote paniolo's real parser takes
+    /// ahead of the subcommand, where the remote panio's real parser takes
     /// it; a host without one adds nothing.
     #[test]
     fn the_reexec_carries_the_hosts_plugin_path() {
@@ -1058,7 +1058,7 @@ mod tests {
         };
         let sub = vec!["helper".to_string()];
         let argv = remote_argv(&host, ".slice.toml", &sub);
-        assert_eq!(argv[0], "paniolo");
+        assert_eq!(argv[0], "panio");
         assert_eq!(argv[1], "--plugin-path=/opt/lab-plugins:/srv/more");
         assert_eq!(&argv[2..4], ["--lab", ".slice.toml"]);
         let cli = crate::Cli::try_parse_from(&argv).expect("the remote parser accepts it");

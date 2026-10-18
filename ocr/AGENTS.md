@@ -11,24 +11,24 @@ This file holds the internals of this component, moved out of the root AGENTS.md
 
 ```
 ocr/             OCR helpers (compiled/installed binaries are gitignored):
-                   visionocr.swift  Apple Vision OCR (macOS); built by paniolo setup via swiftc
-                   linuxocr         Tesseract OCR wrapper (Linux); copied by paniolo setup
+                   visionocr.swift  Apple Vision OCR (macOS); built by panio setup via swiftc
+                   linuxocr         Tesseract OCR wrapper (Linux); copied by panio setup
 ```
 
 ## OCR
 
 Two entry points feed the same warm frame:
-- **`paniolo video read [target] [--stable]`** wraps the daemon's `GET /ocr`.
-- **Dashboard button + hdmicap `GET /ocr`**: the daemon PNG-encodes the current frame, pipes it to the OCR tool (`tokio::process`) and returns the text. It finds the tool via `PANIOLO_VISIONOCR` (the installed path, set by `paniolo video watch` so a stale PATH hit is never used), then a `visionocr`/`linuxocr` sibling of its own executable (libexec dir), then bare PATH. If absent, `/ocr` returns 501 and the button shows an error.
+- **`panio video read [target] [--stable]`** wraps the daemon's `GET /ocr`.
+- **Dashboard button + hdmicap `GET /ocr`**: the daemon PNG-encodes the current frame, pipes it to the OCR tool (`tokio::process`) and returns the text. It finds the tool via `PANIO_VISIONOCR` (the installed path, set by `panio video watch` so a stale PATH hit is never used), then a `visionocr`/`linuxocr` sibling of its own executable (libexec dir), then bare PATH. If absent, `/ocr` returns 501 and the button shows an error.
 
-`paniolo setup` installs the platform-appropriate tool. Every OCR helper accepts `--help` and `-h` without reading image input; `paniolo helper <name> --help` prints its options and exits 0.
+`panio setup` installs the platform-appropriate tool. Every OCR helper accepts `--help` and `-h` without reading image input; `panio helper <name> --help` prints its options and exits 0.
 
-**macOS: `ocr/visionocr.swift`** (`VNRecognizeTextRequest`, Apple Vision) runs on-device with no network or model download. `paniolo setup` compiles it with `swiftc` into the libexec dir (`~/.local/libexec/paniolo/bin`). Tuning that matters for small console text:
+**macOS: `ocr/visionocr.swift`** (`VNRecognizeTextRequest`, Apple Vision) runs on-device with no network or model download. `panio setup` compiles it with `swiftc` into the libexec dir (`~/.local/libexec/panio/bin`). Tuning that matters for small console text:
 - `recognitionLevel = .accurate` is the default; `--fast` selects `.fast`. Measured on `evals/ocr/dataset`, `.accurate` is better or equal on every frame, console text included, while `.fast` garbles BIOS menus and reads MAC zeros as the letter O (see the comment at `recognitionLevel`).
 - The tool 2×-upscales and black-pads the frame before recognition (fixes colon misreads and first-character clipping at the edge).
 - `minimumTextHeight` is lowered (it is a fraction of image height; the default 1/32 skips ~16px console text).
 
-**Linux: `ocr/linuxocr`** (Tesseract) is copied into the libexec dir by `paniolo setup`. It needs `sudo apt-get install tesseract-ocr`; Pillow (`pip install Pillow`) is optional and enables the same 2×-upscale + black-pad preprocessing.
+**Linux: `ocr/linuxocr`** (Tesseract) is copied into the libexec dir by `panio setup`. It needs `sudo apt-get install tesseract-ocr`; Pillow (`pip install Pillow`) is optional and enables the same 2×-upscale + black-pad preprocessing.
 
 ## Gotchas
 

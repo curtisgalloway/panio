@@ -118,7 +118,7 @@ enum Cmd {
     /// Ask the running daemon to shut down using its authentication token.
     ///
     /// Older daemons without the shutdown endpoint must be stopped with
-    /// `paniolo daemons stop hdmicap` before starting the updated daemon.
+    /// `panio daemons stop hdmicap` before starting the updated daemon.
     Stop,
 }
 
@@ -128,7 +128,7 @@ fn main() -> Result<()> {
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| "hdmicap=info".into()),
         )
-        // Log to stderr: the paniolo CLI redirects a daemon's stderr into its
+        // Log to stderr: the panio CLI redirects a daemon's stderr into its
         // daemon.log and discards stdout, so logging to stdout left every managed
         // daemon's log file empty.
         .with_writer(std::io::stderr)
@@ -303,18 +303,18 @@ fn cmd_stop() -> Result<()> {
 /// whenever it did not exit cleanly, and once the kernel reuses that PID the
 /// record names an unrelated process; only the token proves the request
 /// reached the daemon that wrote the file. A daemon too old to have the
-/// endpoint answers 404 and must be stopped by the paniolo CLI, which checks
+/// endpoint answers 404 and must be stopped by the panio CLI, which checks
 /// the process identity before it signals anything.
 fn request_stop(d: &daemon::Discovery) -> Result<()> {
     let token = d.token.as_deref().filter(|t| !t.is_empty()).context(
-        "daemon has no token; use `paniolo daemons stop hdmicap` to stop the older daemon",
+        "daemon has no token; use `panio daemons stop hdmicap` to stop the older daemon",
     )?;
     ureq::post(&format!("http://127.0.0.1:{}/stop", d.port))
         .set("Authorization", &format!("Bearer {token}"))
         .timeout(std::time::Duration::from_secs(5))
         .send_bytes(&[])
         .context(
-            "authenticated shutdown failed; for an older daemon use `paniolo daemons stop hdmicap`",
+            "authenticated shutdown failed; for an older daemon use `panio daemons stop hdmicap`",
         )?;
     Ok(())
 }

@@ -14,15 +14,15 @@ See the License for the specific language governing permissions and
 limitations under the License.
 -->
 
-# paniolo agent-eval suite
+# panio agent-eval suite
 
 Runnable fixtures for the eval design in
 [`docs/dev/agent-evals.md`](../docs/dev/agent-evals.md): can a *naive* agent go from a
-plain-language goal to the correct paniolo command via the CLI's self-describing
-surface (`paniolo --help` → `paniolo skill` → docs), without inventing commands?
+plain-language goal to the correct panio command via the CLI's self-describing
+surface (`panio --help` → `panio skill` → docs), without inventing commands?
 
 **No hardware.** Every scenario is either **T1** (config-only — the agent really
-runs paniolo against a throwaway lab file, graded by inspecting the resulting
+runs panio against a throwaway lab file, graded by inspecting the resulting
 `lab.toml`) or **T0** (stated-commands — the agent says what it would run, graded
 by an LLM judge). Stdlib-only **Python 3.11+** (uses `tomllib`); no
 `pip`/`uv`/network needed. Agent mode also needs the `claude` CLI on PATH.
@@ -41,7 +41,7 @@ Wake-on-LAN carrier wrinkle, and `netif down-hard` for a real carrier drop); the
 silently rotting the references); the `run.py` orchestrator (sandbox, three
 discovery conditions, reference/agent modes); `serial_loopback.py`. Two agent
 CLIs are wired: `claude` (`-p`, prompt on stdin) and `agy` (`-p`, prompt as
-argument). The judge supports both and injects paniolo's real `--help` tree as
+argument). The judge supports both and injects panio's real `--help` tree as
 the COMMAND REFERENCE so invent-resistance is graded against ground truth; it
 also evaluates each scenario trap explicitly and applies a concrete weighted
 pass rule (not a holistic "looks adequate"). The T1 graders for c3/c7 assert the
@@ -61,7 +61,7 @@ just the headline command.
 ran `netif mode ffx` blocked on `sudo`); per-scenario 360 s timeout that's caught
 (one hang ≠ dead batch); `stdin=DEVNULL`; per-scenario `try/except` + incremental
 result save; a `daemons stop --all` sweep after each agent run (scoped to the
-sandbox's own `PANIOLO_RUNTIME_BASE`, so it never touches the operator's
+sandbox's own `PANIO_RUNTIME_BASE`, so it never touches the operator's
 daemons).
 
 **Known platform limits:** `--isolation home` needs valid creds (macOS Keychain `.credentials.json`
@@ -110,7 +110,7 @@ python3.12 graders/t1_config.py /path/to/lab.toml scenarios/c1_provision_target.
 `run.py` drives `claude` headless (`claude -p`, prompt on stdin) in a sandbox:
 
 ```bash
-# config scenario, agent must discover + use paniolo from cold:
+# config scenario, agent must discover + use panio from cold:
 python3.12 run.py --scenario c1 --condition cold --agent claude --isolation home
 
 # runtime scenario, warm condition, with an LLM judge:
@@ -127,11 +127,11 @@ stdin-reading judge (works with `claude -p`), so T0 judging isn't wired for
 `agy -p` (prompt-as-argument) yet.
 
 The runner, per scenario:
-1. makes a temp sandbox: throwaway `lab.toml`, a `paniolo` **shim** that logs
+1. makes a temp sandbox: throwaway `lab.toml`, a `panio` **shim** that logs
    every invoked argv (for the T1-safe allowlist check) then execs the real CLI,
    and per-condition skill state;
 2. runs the reference commands or the agent (goal piped on stdin, `cwd` = sandbox
-   project dir, `PANIOLO_LAB` = sandbox lab);
+   project dir, `PANIO_LAB` = sandbox lab);
 3. grades: `t1_config` for T1, the judge prompt for T0;
 4. writes a summary to `results/` and leaves the sandbox for inspection on
    failure.
@@ -140,19 +140,19 @@ The runner, per scenario:
 
 | Condition | How it's realized | Tests |
 |---|---|---|
-| `cold` | nothing pushed; the agent must pull guidance via `paniolo --help`/`paniolo skill` | the self-describing surface |
-| `warm` | the `paniolo` skill is copied into the sandbox `cwd`'s `.claude/skills/` so it's registered | the "invoke the skill" decision + usage |
+| `cold` | nothing pushed; the agent must pull guidance via `panio --help`/`panio skill` | the self-describing surface |
+| `warm` | the `panio` skill is copied into the sandbox `cwd`'s `.claude/skills/` so it's registered | the "invoke the skill" decision + usage |
 | `preloaded` | the full `SKILL.md` is injected with `--append-system-prompt` | usage only (ceiling) |
 
 ### ⚠️ Run a clean agent
 
-Results are only meaningful if the agent doesn't already know paniolo from its
+Results are only meaningful if the agent doesn't already know panio from its
 environment. The maintainer's own machine is the most contaminated possible
-(user `CLAUDE.md`, auto-memory naming paniolo + bench hosts, prior sessions).
+(user `CLAUDE.md`, auto-memory naming panio + bench hosts, prior sessions).
 Use `--isolation home` to run with a sandbox `HOME` (no user `CLAUDE.md`/memory).
 `--isolation light` (default) keeps your `HOME` for auth and only skips user
 *settings* — fine for smoke-testing the harness, **not** for real Cold numbers
-(your user memory loads, and if it names paniolo the agent isn't naive).
+(your user memory loads, and if it names panio the agent isn't naive).
 
 **Auth under `home` isolation.** The runner symlinks `~/.claude/.credentials.json`
 into the sandbox `HOME` for the duration of the run (a token refresh lands in
@@ -166,7 +166,7 @@ mint a fresh token into the sandbox home before the run. See
 
 ## Serial — the operating workhorse
 
-Driving the serial console is most of how agents use paniolo, so it has a
+Driving the serial console is most of how agents use panio, so it has a
 dedicated cluster (`s1`–`s11`): `s1` is config (T1, scripted); `s2`–`s11` are
 *operating* scenarios — start capture, tail, poll new output with `--since`,
 send a command and read its response, pace a slow polled console, pick one of
@@ -198,7 +198,7 @@ Drop a `scenarios/<id>.toml` (see any existing one). T1 scenarios set
 `targets.x.serial[name=bmc].baud`. Keep the `reference` list executable for T1
 (it's the golden self-test) and descriptive for T0. Keep references in sync with
 the CLI surface — they're the judge's source of truth. Run `python3.12 run.py
---check` after editing: it validates every `paniolo …` reference line (subcommand
+--check` after editing: it validates every `panio …` reference line (subcommand
 paths + flags) and the T1-safe allowlist against the live `--help` tree. It skips
 multi-line prose references (m1/m2/s8-style) and honors shell quoting and
 pass-through args (`helper <name> …`), so only genuine drift trips it.

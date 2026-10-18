@@ -12,11 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! `paniolo skill` — discover and read the agent-facing skills paniolo ships.
+//! `panio skill` — discover and read the agent-facing skills panio ships.
 //!
 //! A *skill* is a markdown guide (`<dir>/<name>/SKILL.md`, with a `name:` +
-//! `description:` YAML frontmatter) that teaches an agent how to drive paniolo:
-//! the `paniolo` usage skill and the `kvm-puppeting` GUI doctrine
+//! `description:` YAML frontmatter) that teaches an agent how to drive panio:
+//! the `panio` usage skill and the `kvm-puppeting` GUI doctrine
 //! power skill. They live in the source tree under `skills/` and install
 //! alongside the CLI; this command is how an agent finds and reads them without
 //! the harness having them pre-loaded.
@@ -25,42 +25,42 @@
 //! [`crate::daemons::helper_dirs`] but under `share/` instead of `libexec/`:
 //! the in-repo `skills/` when run from a checkout (so an author's edits show up
 //! immediately), then the per-user data dir
-//! (`~/.local/share/paniolo/skills`), then dirs relative to the running CLI
+//! (`~/.local/share/panio/skills`), then dirs relative to the running CLI
 //! (Homebrew keg / prefix install), then the system package dir
-//! (`/usr/share/paniolo/skills`), and last the plugin roots'
-//! `<root>/share/paniolo/skills` (`PANIOLO_PLUGIN_PATH`, GitHub #303), which
+//! (`/usr/share/panio/skills`), and last the plugin roots'
+//! `<root>/share/panio/skills` (`PANIO_PLUGIN_PATH`, GitHub #303), which
 //! can add skills but never shadow a bundled one. The command mirrors
-//! `paniolo helper`: no NAME lists every skill, a NAME prints that skill's
+//! `panio helper`: no NAME lists every skill, a NAME prints that skill's
 //! `SKILL.md`.
 
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Result};
 
-/// Per-user skills dir: `~/.local/share/paniolo/skills`. The install target
-/// for `paniolo setup`; the first installed location [`skills_dirs`] searches.
+/// Per-user skills dir: `~/.local/share/panio/skills`. The install target
+/// for `panio setup`; the first installed location [`skills_dirs`] searches.
 pub fn user_skills_dir() -> Option<PathBuf> {
-    dirs::home_dir().map(|h| h.join(".local/share/paniolo/skills"))
+    dirs::home_dir().map(|h| h.join(".local/share/panio/skills"))
 }
 
-/// Skills dir of a system package (.deb/tarball): `/usr/share/paniolo/skills`.
+/// Skills dir of a system package (.deb/tarball): `/usr/share/panio/skills`.
 /// Always present in the search path, so [`skills_dirs`] is never empty.
 fn system_skills_dir() -> PathBuf {
-    PathBuf::from("/usr/share/paniolo/skills")
+    PathBuf::from("/usr/share/panio/skills")
 }
 
 /// Skills dir relative to the running CLI, after resolving symlinks — the
 /// `share/` analogue of [`crate::daemons`]'s libexec lookup. Homebrew links
-/// `<prefix>/bin/paniolo` into the versioned keg, so `<keg>/share/paniolo/skills`
+/// `<prefix>/bin/panio` into the versioned keg, so `<keg>/share/panio/skills`
 /// is the keg's bundled skills; an FHS-style prefix install resolves the same
 /// way. A relocated install thus finds its skills without enumerating package
 /// managers.
 ///
-/// On Windows the portable zip has no `bin/` level: `paniolo\paniolo.exe` sits
+/// On Windows the portable zip has no `bin/` level: `panio\panio.exe` sits
 /// in the install prefix itself, next to `libexec\` (see
-/// [`crate::daemons`]'s `exe_relative_dirs`), so `<exe dir>\share\paniolo\skills`
+/// [`crate::daemons`]'s `exe_relative_dirs`), so `<exe dir>\share\panio\skills`
 /// is searched there too. Without it a zip install found no skills at all
-/// (`paniolo skill` on Windows was empty through v0.3.0).
+/// (`panio skill` on Windows was empty through v0.3.0).
 fn exe_relative_skills_dirs() -> Vec<PathBuf> {
     let Ok(exe) = std::env::current_exe() else {
         return Vec::new();
@@ -76,11 +76,11 @@ fn exe_relative_skills_dirs() -> Vec<PathBuf> {
 fn skills_dirs_for_exe(exe: &Path) -> Vec<PathBuf> {
     let mut dirs = Vec::new();
     if let Some(prefix) = exe.parent().and_then(|d| d.parent()) {
-        dirs.push(prefix.join("share/paniolo/skills"));
+        dirs.push(prefix.join("share/panio/skills"));
     }
     if cfg!(windows) {
         if let Some(exe_dir) = exe.parent() {
-            dirs.push(exe_dir.join("share/paniolo/skills"));
+            dirs.push(exe_dir.join("share/panio/skills"));
         }
     }
     dirs
@@ -102,9 +102,9 @@ pub fn skills_dirs() -> Vec<PathBuf> {
     dirs
 }
 
-/// A plugin root's skills dir: `<root>/share/paniolo/skills`.
+/// A plugin root's skills dir: `<root>/share/panio/skills`.
 fn plugin_skills_dir(root: &Path) -> PathBuf {
-    root.join("share/paniolo/skills")
+    root.join("share/panio/skills")
 }
 
 /// One directory on the skill search path, and the plugin root it belongs to
@@ -115,7 +115,7 @@ struct SearchDir {
 }
 
 /// The full skill search path: every bundled dir first, then each plugin
-/// root's skills dir, in `PANIOLO_PLUGIN_PATH` order. Pure, so the order
+/// root's skills dir, in `PANIO_PLUGIN_PATH` order. Pure, so the order
 /// (plugins last, so they cannot shadow a bundled skill) is testable.
 fn search_path(bundled: Vec<PathBuf>, plugin_roots: &[PathBuf]) -> Vec<SearchDir> {
     let mut path: Vec<SearchDir> = bundled
@@ -228,7 +228,7 @@ fn read_description(path: &Path) -> String {
     parts.join(" ")
 }
 
-/// `paniolo skill [NAME] [--path]`: list every bundled skill, or print one.
+/// `panio skill [NAME] [--path]`: list every bundled skill, or print one.
 pub fn run(name: Option<&str>, path: bool) -> Result<()> {
     match name {
         None => list(),
@@ -247,8 +247,8 @@ fn list() -> Result<()> {
             .collect::<Vec<_>>()
             .join(", ");
         println!(
-            "No skills found (searched {searched}) — install the paniolo package \
-             or run `paniolo setup` from a source checkout."
+            "No skills found (searched {searched}) — install the panio package \
+             or run `panio setup` from a source checkout."
         );
         return Ok(());
     }
@@ -259,13 +259,13 @@ fn list() -> Result<()> {
         }
         println!();
     }
-    println!("Read one with `paniolo skill <name>` (or --path for its file path).");
+    println!("Read one with `panio skill <name>` (or --path for its file path).");
     Ok(())
 }
 
 /// A skill's heading line in the list: its bare name when bundled, or the
 /// name, a tab, and `plugin: <root>` when it came from a plugin root, the same
-/// annotation `paniolo helper` uses. The name stays the first field.
+/// annotation `panio helper` uses. The name stays the first field.
 fn list_heading(s: &Skill) -> String {
     match &s.plugin_root {
         None => s.name.clone(),
@@ -280,7 +280,7 @@ fn show(name: &str, path: bool) -> Result<()> {
     let skill = skills.iter().find(|s| s.name == name).ok_or_else(|| {
         let have: Vec<&str> = skills.iter().map(|s| s.name.as_str()).collect();
         anyhow!(
-            "skill '{name}' not found (skills: {}). List them with `paniolo skill`.",
+            "skill '{name}' not found (skills: {}). List them with `panio skill`.",
             if have.is_empty() {
                 "(none)".to_string()
             } else {
@@ -299,7 +299,7 @@ fn show(name: &str, path: bool) -> Result<()> {
 }
 
 /// Install the skills bundled in a source checkout into the per-user data dir,
-/// so `paniolo skill` finds them when the installed CLI runs outside the tree.
+/// so `panio skill` finds them when the installed CLI runs outside the tree.
 /// Copies each `skills/<name>/SKILL.md`; returns how many were installed.
 pub fn install_bundled(repo: &Path) -> Result<usize> {
     let src = repo.join("skills");
@@ -341,17 +341,12 @@ mod tests {
         exe
     }
 
-    /// The prefix layout every platform ships (`bin/paniolo` beside
-    /// `share/paniolo/skills`): the keg, the FHS prefix, the tarball.
+    /// The prefix layout every platform ships (`bin/panio` beside
+    /// `share/panio/skills`): the keg, the FHS prefix, the tarball.
     #[test]
     fn a_prefix_install_finds_its_skills_one_level_up() {
         let tmp = tempfile::tempdir().unwrap();
-        let exe = layout(
-            tmp.path(),
-            "bin/paniolo",
-            "share/paniolo/skills",
-            "prefixed",
-        );
+        let exe = layout(tmp.path(), "bin/panio", "share/panio/skills", "prefixed");
         let found = discover_in(&search_path(skills_dirs_for_exe(&exe), &[]));
         assert_eq!(
             found.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(),
@@ -360,19 +355,19 @@ mod tests {
         assert_eq!(found[0].description, "a test skill");
     }
 
-    /// The portable Windows zip: `paniolo\paniolo.exe` with `share\` beside
+    /// The portable Windows zip: `panio\panio.exe` with `share\` beside
     /// it, the exe's own directory being the prefix. This is the layout that
     /// listed nothing through v0.3.0, because only the level-up dir was
     /// searched; the assertion is platform-conditional because that extra
-    /// dir is deliberately Windows-only (a Unix `~/.cargo/bin/paniolo` must
+    /// dir is deliberately Windows-only (a Unix `~/.cargo/bin/panio` must
     /// not start scanning `~/.cargo/bin/share`).
     #[test]
     fn the_windows_zip_layout_is_found_only_on_windows() {
         let tmp = tempfile::tempdir().unwrap();
         let exe = layout(
             tmp.path(),
-            "paniolo/paniolo.exe",
-            "paniolo/share/paniolo/skills",
+            "panio/panio.exe",
+            "panio/share/panio/skills",
             "zipped",
         );
         let names: Vec<String> = discover_in(&search_path(skills_dirs_for_exe(&exe), &[]))
@@ -421,8 +416,8 @@ mod tests {
             vec![
                 bundled[0].clone(),
                 bundled[1].clone(),
-                roots[0].join("share/paniolo/skills"),
-                roots[1].join("share/paniolo/skills"),
+                roots[0].join("share/panio/skills"),
+                roots[1].join("share/panio/skills"),
             ]
         );
         assert!(path[..2].iter().all(|d| d.plugin_root.is_none()));
@@ -445,8 +440,8 @@ mod tests {
             )
             .unwrap();
         };
-        write(&bundled, "paniolo", "bundled");
-        write(&plugin_skills_dir(&root), "paniolo", "plugin copy");
+        write(&bundled, "panio", "bundled");
+        write(&plugin_skills_dir(&root), "panio", "plugin copy");
         write(&plugin_skills_dir(&root), "lab-targets", "our lab");
 
         let found = discover_in(&search_path(vec![bundled], std::slice::from_ref(&root)));
@@ -464,13 +459,13 @@ mod tests {
             got,
             vec![
                 ("lab-targets", "our lab", Some(root.as_path())),
-                ("paniolo", "bundled", None),
+                ("panio", "bundled", None),
             ]
         );
         assert_eq!(
             list_heading(&found[0]),
             format!("lab-targets\tplugin: {}", root.display())
         );
-        assert_eq!(list_heading(&found[1]), "paniolo");
+        assert_eq!(list_heading(&found[1]), "panio");
     }
 }

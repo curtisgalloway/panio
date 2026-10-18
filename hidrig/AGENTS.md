@@ -9,7 +9,7 @@ This file holds the internals of hidrig/, moved out of the root AGENTS.md to kee
 
 ## Overview
 
-`hidrig/` is the host side (Rust CLI + daemon) of a DIY USB HID injector: the dual-board "dumb pipe" KB2040 rig. It is one of several HID injectors paniolo supports. The CircuitPython 9.x firmware lives in the paniolo-hardware repo (https://github.com/curtisgalloway/paniolo-hardware, `hidrig-kb2040/firmware/`), not here.
+`hidrig/` is the host side (Rust CLI + daemon) of a DIY USB HID injector: the dual-board "dumb pipe" KB2040 rig. It is one of several HID injectors panio supports. The CircuitPython 9.x firmware lives in the paniolo-hardware repo (https://github.com/curtisgalloway/paniolo-hardware, `hidrig-kb2040/firmware/`), not here.
 
 ```
 [control host]
@@ -68,7 +68,7 @@ This file holds the internals of hidrig/, moved out of the root AGENTS.md to kee
                    lifetime. Without it the slave sits at cooked defaults
                    (ECHO|ICANON) until a reader attaches, and bytes written to
                    the master in that window echo back and get framed to the
-                   DUT UART as if typed. paniolo's serial channel opens a
+                   DUT UART as if typed. panio's serial channel opens a
                    second, separate handle via the stable symlink
   src/server.rs    axum: GET /hid + POST /send (message/body sized to one full
                    `type` line, MAX_TYPE_CHARS + the `type ` verb, so the
@@ -80,8 +80,8 @@ This file holds the internals of hidrig/, moved out of the root AGENTS.md to kee
   src/auth.rs      token + loopback Host/Origin layer; byte-identical copy in
                    serialcap/hdmicap/ch9329
   src/daemon.rs    advisory lock; discovery file at
-                   /tmp/paniolo-<uid>/hid/<target>/ (channel name, not
-                   "hidrig", so paniolo finds it without knowing the helper).
+                   /tmp/panio-<uid>/hid/<target>/ (channel name, not
+                   "hidrig", so panio finds it without knowing the helper).
                    Brings up the console PTY (removing a stale `console`
                    symlink first) and publishes the stable symlink (`console`,
                    falls back to the raw path if the link can't be made) and
@@ -96,20 +96,20 @@ This file holds the internals of hidrig/, moved out of the root AGENTS.md to kee
 
 ## hid daemon + KVM (`hidrig serve`)
 
-The control link has one owner, so KVM streaming and CLI injection cannot both open it. `hidrig serve` owns the link and re-exposes the vocabulary over `GET /hid` (WebSocket) and `POST /send`. Every command, from a browser, `paniolo hid send` or a script, goes through the one `mpsc` queue in `uart.rs`, one in flight; that single queue makes events intermix correctly.
+The control link has one owner, so KVM streaming and CLI injection cannot both open it. `hidrig serve` owns the link and re-exposes the vocabulary over `GET /hid` (WebSocket) and `POST /send`. Every command, from a browser, `panio hid send` or a script, goes through the one `mpsc` queue in `uart.rs`, one in flight; that single queue makes events intermix correctly.
 
-- `paniolo console` starts the daemon when the target has a `hid` channel (local `?hid=PORT`; remote an SSH-tunnelled `?hidws=` URL).
+- `panio console` starts the daemon when the target has a `hid` channel (local `?hid=PORT`; remote an SSH-tunnelled `?hidws=` URL).
 - In the default noVNC view, key and pointer events reach this daemon through hdmicap (`/rfb` -> hid_link.rs), not from the page. `video watch`, `console` and `daemons restart` start the local hid daemon for every video device (only `rfb+hid:` errors if it will not start), so starting video on a USB-capture target with a hid channel also makes the hid daemon own the injector.
 - In MJPEG mode the `⌨ Capture input` overlay button toggles capture (no click-to-grab, no host-key release); engaged, the page streams `down`/`up`/`moveabs`/`scroll`. The mouse is absolute, so the cursor follows the pointer; the local cursor stays visible as a crosshair (no Pointer Lock, deliberately). Mouse listeners live on the `<img>` so overlay buttons never inject; window blur releases.
-- paniolo finds the daemon by channel name (`daemons::daemon_port("hid")`), staying agnostic to the helper.
+- panio finds the daemon by channel name (`daemons::daemon_port("hid")`), staying agnostic to the helper.
 
 Latency: HID frames are fire-and-forget over USB-CDC (no per-frame round trip, no baud negotiation). The dashboard coalesces mouse moves to one `moveabs` per `requestAnimationFrame`. The floor is the target board's USB interrupt `bInterval` (~8 ms per report). Only `0x02` control frames draw a reply; macOS drops the `IOSSDATALAT` read timer on open to keep those round trips prompt.
 
-## paniolo integration
+## panio integration
 
-`paniolo hid set -t <target> --cmd "hidrig -d <uart>"` stores an opaque command prefix in the lab file's `[targets.<name>.hid]` channel (no device-specific code in `cli/`). `paniolo hid send -t <target> <args...>` shell-quotes the args, appends them and runs the result via `sh -c` on the channel's host (SSH dispatch via `ChannelKind::Hid`). `paniolo doctor` probes absolute-path helpers with `test -e`.
+`panio hid set -t <target> --cmd "hidrig -d <uart>"` stores an opaque command prefix in the lab file's `[targets.<name>.hid]` channel (no device-specific code in `cli/`). `panio hid send -t <target> <args...>` shell-quotes the args, appends them and runs the result via `sh -c` on the channel's host (SSH dispatch via `ChannelKind::Hid`). `panio doctor` probes absolute-path helpers with `test -e`.
 
-`move` and `scroll` take negative numbers (`hidrig move 50 -30`, `hidrig scroll -3`) via `allow_hyphen_values`, with no `--` needed. Same for `paniolo hid send`'s trailing args; keep `-t` before them.
+`move` and `scroll` take negative numbers (`hidrig move 50 -30`, `hidrig scroll -3`) via `allow_hyphen_values`, with no `--` needed. Same for `panio hid send`'s trailing args; keep `-t` before them.
 
 ## Host testing tool (`hidrig/host/`)
 

@@ -13,7 +13,7 @@
 # limitations under the License.
 """Drift check: do the eval suite's references still match the live CLI?
 
-The whole suite leans on the scenario `reference` lists being *real* paniolo
+The whole suite leans on the scenario `reference` lists being *real* panio
 commands — they are the golden T1 self-test and the judge's ground truth for D4
 (invent-resistance). If the CLI renames a subcommand or drops a flag, those
 references silently rot: the judge keeps "verifying" against a stale surface and
@@ -23,7 +23,7 @@ references match the CLI" into a deterministic check that fails loudly.
 It parses the recursive `--help` surface (the same text the judge gets as its
 COMMAND REFERENCE) into a map of `path -> {flags, subcommands}`, then asserts:
 
-  * every `paniolo <subcommand-path>` in every scenario's `reference` exists;
+  * every `panio <subcommand-path>` in every scenario's `reference` exists;
   * every `--flag`/`-x` on those lines is valid for that subcommand-path;
   * every group/action in the T1-safe allowlist (graders/t1_config.SAFE) is a
     real group/subcommand.
@@ -51,11 +51,11 @@ def parse_surface(text: str) -> dict[tuple[str, ...], dict[str, set[str]]]:
     """Parse the recursive --help dump into {path: {flags, subs}}.
 
     The surface is a concatenation of blocks, each headed by a literal
-    `$ paniolo <path> --help` line, followed by clap's standard
+    `$ panio <path> --help` line, followed by clap's standard
     Usage/Arguments/Options/Commands sections.
     """
     paths: dict[tuple[str, ...], dict[str, set[str]]] = {}
-    for chunk in text.split("$ paniolo "):
+    for chunk in text.split("$ panio "):
         first, _, body = chunk.partition("\n")
         first = first.strip()
         if not first.endswith("--help"):
@@ -71,7 +71,7 @@ def parse_surface(text: str) -> dict[tuple[str, ...], dict[str, set[str]]]:
             if s.startswith("Usage:"):
                 # A trailing `[ARGS]...` means this command passes its tail
                 # through verbatim (e.g. `helper <name> <helper-args>`), so any
-                # flags after it are opaque, not paniolo flags.
+                # flags after it are opaque, not panio flags.
                 variadic = "..." in s
                 section = None
                 continue
@@ -114,18 +114,18 @@ def _match_path(lead: list[str], paths: dict) -> tuple[str, ...] | None:
 def check_line(line: str, paths: dict) -> list[str]:
     """Validate one `reference` line against the parsed surface.
 
-    Non-`paniolo` lines (shell like `cp ...`, prose) are skipped. Returns a
+    Non-`panio` lines (shell like `cp ...`, prose) are skipped. Returns a
     list of human-readable problems (empty == clean).
     """
     # strip a trailing ` # comment` (whitespace-hash), not a `#` inside a token.
     line = re.split(r"\s#", line, maxsplit=1)[0].strip()
     try:
         # shlex respects quoting, so a `-d` inside `"shellyplug -d ... cycle"`
-        # is one token, not a stray paniolo short flag.
+        # is one token, not a stray panio short flag.
         toks = shlex.split(line)
     except ValueError:
         toks = line.split()
-    if not toks or toks[0] != "paniolo":
+    if not toks or toks[0] != "panio":
         return []
     rest = toks[1:]
     lead: list[str] = []
@@ -135,7 +135,7 @@ def check_line(line: str, paths: dict) -> list[str]:
         lead.append(t)
     path = _match_path(lead, paths)
     if path is None:
-        return [f"unknown command: `paniolo {lead[0]}`"]
+        return [f"unknown command: `panio {lead[0]}`"]
     problems: list[str] = []
     # If the matched path is a *group* (has subcommands) and a leading token
     # remains, that token had to be a subcommand — and since `_match_path`
@@ -146,14 +146,14 @@ def check_line(line: str, paths: dict) -> list[str]:
     subs = paths.get(path, {}).get("subs", set())
     if subs and len(lead) > len(path):
         nxt = lead[len(path)]
-        where_g = f"`paniolo {' '.join(path)}`" if path else "paniolo"
+        where_g = f"`panio {' '.join(path)}`" if path else "panio"
         problems.append(f"unknown subcommand `{nxt}` of {where_g}")
         return problems
     if paths.get(path, {}).get("variadic"):
         # trailing args are passed through verbatim — their flags aren't ours.
         return problems
     valid = paths.get(path, {}).get("flags", set()) | GLOBAL_FLAGS
-    where = f"`paniolo {' '.join(path)}`" if path else "`paniolo`"
+    where = f"`panio {' '.join(path)}`" if path else "`panio`"
     for t in rest:
         if t.startswith("--"):
             fl = t.split("=", 1)[0]
@@ -174,10 +174,10 @@ def check_scenarios(scenarios: dict, paths: dict) -> list[dict]:
             ref = [ref]
         problems = []
         for entry in ref:
-            # A command reference is a single-line element (`paniolo serial
+            # A command reference is a single-line element (`panio serial
             # watch dut`). A multi-line element is a PROSE block (the meta/
             # discovery scenarios describe the ideal answer in sentences that
-            # legitimately contain the word "paniolo") — not a command list, so
+            # legitimately contain the word "panio") — not a command list, so
             # don't try to parse it.
             lines = [ln for ln in str(entry).splitlines() if ln.strip()]
             if len(lines) != 1:
@@ -193,7 +193,7 @@ def check_allowlist(safe: dict, paths: dict) -> list[str]:
     problems = []
     for group, actions in safe.items():
         if (group,) not in paths:
-            problems.append(f"allowlist group `{group}` is not a real paniolo command")
+            problems.append(f"allowlist group `{group}` is not a real panio command")
             continue
         if not actions:
             continue

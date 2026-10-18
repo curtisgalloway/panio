@@ -11,13 +11,13 @@ This file holds the internals of cambrionix/, moved out of the root AGENTS.md to
 
 ```
 cambrionix/      Rust crate: standalone helper binary for Cambrionix USB hub control
-                 (control UART, 115200 8N1); wired into paniolo via generic power hooks.
+                 (control UART, 115200 8N1); wired into panio via generic power hooks.
                  Commands: `state [port]`, `on <port>`, `off <port>`, `cycle <port>`
-                 `state <port>` prints exactly `on` or `off` (matches paniolo state_cmd
+                 `state <port>` prints exactly `on` or `off` (matches panio state_cmd
                  contract; C/S/I → on, O → off, any other mode letter is an error).
                  `on`/`off`/`cycle` confirm every transition by re-reading the port
                  table (C, S or I confirms on, O confirms off). Responses are
                  bounded (3 s, 64 KiB) and hub error lines fail
-                 the command. Built/installed by `make install` / `paniolo setup`.
+                 the command. Built/installed by `make install` / `panio setup`.
 
 ```

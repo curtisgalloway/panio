@@ -8,7 +8,7 @@ capabilities = ["power", "video", "ocr"]
 goal = """
 The Pi `pico` seems hung after my last change. Power-cycle it, wait for the
 boot screen to come up, and tell me what it says on screen. List the exact
-paniolo commands you would run, in order.
+panio commands you would run, in order.
 """
 traps = [
   "use `--stable` after a reboot so OCR/capture waits for a steady frame",
@@ -16,9 +16,9 @@ traps = [
   "DO NOT change the target's console font to improve OCR — other agents rely on it",
 ]
 reference = [
-  'paniolo power-cycle pico',
-  'paniolo video watch pico            # start the capture daemon',
-  'paniolo video read pico --stable    # OCR the steady boot screen',
+  'panio power-cycle pico',
+  'panio video watch pico            # start the capture daemon',
+  'panio video read pico --stable    # OCR the steady boot screen',
 ]
 
 seed = "bench.toml"

@@ -30,12 +30,12 @@ the daemon restarts. Both properties are deliberate — ephemeral tokens limit
 the blast radius of the leak in #196 — and together they mean no browser
 bookmark, no pinned `ssh -L`, no reconnecting tab.
 
-**2. One terminal per device.** `paniolo console <target>` is a foreground
+**2. One terminal per device.** `panio console <target>` is a foreground
 process holding SSH tunnels and printing *"Tunnels to <host> open. Press Ctrl-C
 to close."* Two targets means two terminals held open for as long as you want
 to watch.
 
-**3. The inventory is text.** `paniolo target list` prints name, host and
+**3. The inventory is text.** `panio target list` prints name, host and
 channels for all six targets. It tells you what *exists*, never what is
 *happening* — no power state, no whether a daemon is up, no picture. Finding
 "the box sitting at the BIOS menu" means opening three dashboards.
@@ -46,7 +46,7 @@ The third is new here, and it is the one an app is uniquely good at.
 
 ## Why an app rather than that note's Phase C daemon
 
-The front-door design's Phase C is a persistent `paniolo consoled` serving a
+The front-door design's Phase C is a persistent `panio consoled` serving a
 landing page that lists every target and lazily brings up tunnels. That is the
 same component this note proposes. The difference is only what hosts it — and
 the note flagged the cost of hosting it as a daemon:
@@ -108,17 +108,17 @@ unmodified, and `hdmicap` needs no changes at all to support the app.
 ### Finding 2: the app drives the CLI, which forces a gap closed
 
 `cli/` is a bin-only crate — there is no `lib.rs` — so the app either grows it a
-library target or shells out to `paniolo`. **Shell out.** It keeps the CLI as
+library target or shells out to `panio`. **Shell out.** It keeps the CLI as
 the single control plane, which is already the project's stated position, and it
 means the app cannot drift from what the CLI does.
 
-The catch: `paniolo target list --json` does not exist. Across
+The catch: `panio target list --json` does not exist. Across
 `cli/src/main.rs` only two call sites pass `--json` at all, both to helpers.
 
 This is a feature of the plan rather than a snag. The app's data needs — target
 inventory, per-target daemon status, power state — are **exactly the `--json`
 surface the `cli-conventions` skill says this CLI should already have**, and
-agents driving paniolo want it at least as much as the app does. Building the
+agents driving panio want it at least as much as the app does. Building the
 app pushes the CLI toward its own documented conventions instead of around
 them.
 
@@ -237,11 +237,11 @@ Verified in this session, on this machine and on waldo:
 
 - `hdmicap/src/auth.rs:150` rejects a non-loopback `Origin`; `index()` sets
   `frame-ancestors 'none'` and `X-Frame-Options: DENY`.
-- `cli/` has no `lib.rs`; `paniolo target list --json` fails with
+- `cli/` has no `lib.rs`; `panio target list --json` fails with
   `unexpected argument '--json' found`; only two `--json` call sites exist in
   `cli/src/main.rs`.
 - Daemons are started with `--port 0` and write port + token into a per-target
-  discovery file under `<runtime>/paniolo-<uid>/hdmicap/<target>/daemon.json`.
+  discovery file under `<runtime>/panio-<uid>/hdmicap/<target>/daemon.json`.
 - `assets/index.html` is 28,871 bytes and contains the string `preview` exactly
   once — the video pane is one `<img>` and one assignment; the rest is power,
   OCR, serial and the pointer→HID mapping.

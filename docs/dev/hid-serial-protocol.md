@@ -16,13 +16,13 @@ device-side framing is historical: it describes the retired single-board rig.
 On the **default rig, the dual-board KB2040 "dumb pipe"**
 ([hid-dual-board-design.md](hid-dual-board-design.md); KB2040 is an Adafruit
 RP2040 board), this vocabulary is the external interface: the `hidrig` CLI,
-`paniolo hid send`, and the daemon's WebSocket carrier (§1). `hidrig`
+`panio hid send`, and the daemon's WebSocket carrier (§1). `hidrig`
 **composes** commands into HID report bytes and sends **binary frames** to the
 boards; the line protocol does not travel on the device wire.
 
 Two **rig-specific** `hidrig` features sit outside this vocabulary: DUT
 **power** control (`hidrig power off|on|cycle`) and a **serial-console**
-bridge. They use paniolo's `power` and `serial` channels, not `hid`, so other
+bridge. They use panio's `power` and `serial` channels, not `hid`, so other
 HID backends need not implement them. See
 [hid-dual-board-design.md](hid-dual-board-design.md) §6–§7.
 
@@ -31,9 +31,9 @@ HID backends need not implement them. See
 | `hidrig` CLI / `serve` daemon (`hidrig/src/`) | Reference host implementation — composes the vocabulary into HID reports |
 | [`hidrig-kb2040/firmware/`](https://github.com/curtisgalloway/paniolo-hardware/tree/main/hidrig-kb2040/firmware) (paniolo-hardware repo) — dual-board | Default rig: relays report bytes, does **not** parse this protocol |
 | [`hidrig-kb2040/firmware/single-board/`](https://github.com/curtisgalloway/paniolo-hardware/tree/main/hidrig-kb2040/firmware/single-board) (paniolo-hardware repo) — single-board firmware | **Retired** reference device implementation (over a UART) |
-| WCH CH9329 bridge (serial-to-USB-HID chip; see [ch9329-spec.md](https://github.com/curtisgalloway/paniolo/blob/main/notes/ch9329-spec.md)) | Implemented — the host-side [`ch9329`](https://github.com/curtisgalloway/paniolo/blob/main/ch9329/README.md) crate (one-shot CLI + `serve` daemon), a helper backend for the same `hid` channel |
+| WCH CH9329 bridge (serial-to-USB-HID chip; see [ch9329-spec.md](https://github.com/curtisgalloway/panio/blob/main/notes/ch9329-spec.md)) | Implemented — the host-side [`ch9329`](https://github.com/curtisgalloway/panio/blob/main/ch9329/README.md) crate (one-shot CLI + `serve` daemon), a helper backend for the same `hid` channel |
 
-Above `hidrig`, paniolo and the dashboard speak only this vocabulary, so any
+Above `hidrig`, panio and the dashboard speak only this vocabulary, so any
 injector behind the generic `hid` channel works unchanged.
 
 ---

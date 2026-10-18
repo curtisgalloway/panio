@@ -1,11 +1,11 @@
 ---
-name: paniolo
-description: Control a physical target machine (SBC, e.g. a Raspberry Pi) with the paniolo CLI during low-level bring-up — netboot it over a direct USB-Ethernet link, watch and OCR its HDMI screen, drive its serial console, power-cycle it, switch the link between netboot and ffx, and drive targets on remote control hosts transparently via a single git-tracked lab file over SSH. Use when you need to boot, observe, type into, screenshot, read the screen of, power, or remotely control a target/board through paniolo — including across multiple control hosts.
+name: panio
+description: Control a physical target machine (SBC, e.g. a Raspberry Pi) with the panio CLI during low-level bring-up — netboot it over a direct USB-Ethernet link, watch and OCR its HDMI screen, drive its serial console, power-cycle it, switch the link between netboot and ffx, and drive targets on remote control hosts transparently via a single git-tracked lab file over SSH. Use when you need to boot, observe, type into, screenshot, read the screen of, power, or remotely control a target/board through panio — including across multiple control hosts.
 ---
 
-# Paniolo — controlling a target machine
+# Panio — controlling a target machine
 
-Paniolo drives a physical target machine (a single-board computer such as a
+Panio drives a physical target machine (a single-board computer such as a
 Raspberry Pi) during firmware/OS bring-up. It runs on the control host that is
 physically wired to the target (USB-Ethernet for netboot, an HDMI capture
 dongle for video, a USB-serial adapter for the console, a smart plug for power).
@@ -13,38 +13,38 @@ dongle for video, a USB-serial adapter for the console, a smart plug for power).
 Almost every command operates on a named **target**. If exactly one target is
 configured, the name can be omitted.
 
-## Drive through paniolo — don't touch its devices directly
+## Drive through panio — don't touch its devices directly
 
-Paniolo owns the hardware it's configured for, and a background **daemon** holds
+Panio owns the hardware it's configured for, and a background **daemon** holds
 most of it open: netbootd (the netboot interface + DHCP/TFTP), serialcap (each
 serial port), hdmicap (the capture device), the hid injector. Those daemons
 track state, and the netif/netboot commands assume they're the only ones
-touching the link and ports. So **always go through paniolo commands; never
-reconfigure or open a paniolo-managed device by hand**:
+touching the link and ports. So **always go through panio commands; never
+reconfigure or open a panio-managed device by hand**:
 
 - **Don't** run `ifconfig` / `ip` / `networksetup` / `ethtool` on the netboot
-  interface — use `paniolo netif mode …` (and `paniolo netboot start/stop`). A
-  stray address or an admin-down behind paniolo's back desyncs what `netif
+  interface — use `panio netif mode …` (and `panio netboot start/stop`). A
+  stray address or an admin-down behind panio's back desyncs what `netif
   status` reports and can silently break DHCP/TFTP.
 - **Don't** open a serial port with `screen` / `tio` / `minicom` while a
-  `serial watch` daemon holds it (the port is exclusive) — read with `paniolo
-  serial log` and write with `paniolo serial send`.
-- **Don't** `kill` a daemon or its helper by PID — use `paniolo daemons stop`
+  `serial watch` daemon holds it (the port is exclusive) — read with `panio
+  serial log` and write with `panio serial send`.
+- **Don't** `kill` a daemon or its helper by PID — use `panio daemons stop`
   (or the per-subsystem `stop`).
 - **Don't** rewrite the lab config to "fix" a mismatch you didn't create —
   neither by editing the lab file nor via `… set`/`… rm` config commands. The
-  lab file is the user's reviewed source of truth, and `paniolo doctor` is a
+  lab file is the user's reviewed source of truth, and `panio doctor` is a
   hint, not ground truth: when doctor flags a channel, **try the channel
   first** (`hid send … ping`, `serial log`, `video shot`). If it works, the
   config is right — report the doctor discrepancy to the user instead of
   "repairing" it.
 - **Don't** reach around a remote control host. A remote target is driven by
-  the same paniolo commands from where you are (the lab file routes them over
+  the same panio commands from where you are (the lab file routes them over
   SSH) — don't ssh over to run helper binaries against its devices, curl a
   daemon's local port, or read `/dev/video*`/serial devices directly; the
   daemons there hold the same exclusive locks.
 
-If a paniolo command for what you want doesn't seem to exist, run `paniolo
+If a panio command for what you want doesn't seem to exist, run `panio
 --help` or re-read this skill before reaching for the raw device — it almost
 certainly does (e.g. `netif mode link`/`off` to toggle the bare link, `daemons`
 to find and clear a stuck port).
@@ -52,16 +52,16 @@ to find and clear a stuck port).
 ## When a command fails — read the exit status
 
 The exit status names the kind of failure; branch on it, not on the message
-text. `paniolo --help` prints the table.
+text. `panio --help` prints the table.
 
 | Code | Kind | What to do |
 |---|---|---|
 | 1 | — | Only `doctor`: it found problems (not an error) |
 | 2 | `usage` | Fix the command line (`<cmd> --help`) |
-| 3 | `not_configured` | Wrong target/channel/interface name, required configuration missing, or a hook/helper missing. Don't retry; check `paniolo config show`, and don't edit the lab to fix it — report it |
+| 3 | `not_configured` | Wrong target/channel/interface name, required configuration missing, or a hook/helper missing. Don't retry; check `panio config show`, and don't edit the lab to fix it — report it |
 | 4 | `unreachable` | The control host did not answer over SSH; the command may or may not have run |
 | 22 | `timeout` | Outcome unknown: check state (`power-state`, `serial log`, `video shot`) before repeating a power cycle or other mutation |
-| 100 | `daemon_down` | Start the daemon (`serial watch`, `video watch`); `paniolo daemons` lists what is running |
+| 100 | `daemon_down` | Start the daemon (`serial watch`, `video watch`); `panio daemons` lists what is running |
 | 101 | `helper_failed` | The hook/helper/daemon ran and failed; its message (and its own code in `child_exit`) says why. On Windows a *missing* hook also lands here (`cmd.exe` exits 1 for it) |
 | 109 | `internal` | Unclassified; read the message |
 
@@ -69,22 +69,22 @@ Piping into a reader that quits early (`| head`, `| grep -q`) exits 0; before
 0.9.1 it exited 101 with a "failed printing to stdout" panic, which is not a
 helper failure.
 
-For a machine-readable reason, set `PANIOLO_JSON_ERRORS=1` (or put
-`--json-errors` right after `paniolo`, before any trailing arguments: after
+For a machine-readable reason, set `PANIO_JSON_ERRORS=1` (or put
+`--json-errors` right after `panio`, before any trailing arguments: after
 `hid send …` or `adb run …` it is taken as part of the payload): the **last line of stderr** is then one JSON object,
 `{"error": {"kind", "code", "message", "target", "channel", "host",
 "child_exit"}}`. Passthroughs (`helper`, `config edit`, `video shot`/`devices`,
 `adb run`/`input`/`devices`, `setup --host`, and the consoles `serial connect`
 and `adb shell`) exit with their program's own status instead. `serial log` still reads a stopped daemon's file, with a
 `warning:` on stderr; add `--require-live` to get exit 100 instead of stale
-output. A control host on paniolo 0.4.x or older exits 1 for every error and
+output. A control host on panio 0.4.x or older exits 1 for every error and
 rejects `--json-errors`.
 
 ## First-time setup
 
 ```
-cd ~/src/paniolo
-make install               # cargo-installs the `paniolo` CLI, then `paniolo setup`
+cd ~/src/panio
+make install               # cargo-installs the `panio` CLI, then `panio setup`
                            # builds/installs the helper binaries (hdmicap, serialcap,
                            # netbootd, cambrionix, hidrig, ch9329, shellyplug,
                            # amt), the OCR helper, zigplug, and the bundled skills;
@@ -93,45 +93,45 @@ make install               # cargo-installs the `paniolo` CLI, then `paniolo set
 ```
 
 Run once per machine; re-run after pulling or editing (it's a full rebuild).
-Only the `paniolo` CLI lands in `~/.cargo/bin` — make sure that's on `PATH`.
+Only the `panio` CLI lands in `~/.cargo/bin` — make sure that's on `PATH`.
 The helpers (hdmicap, serialcap, netbootd, cambrionix, hidrig, ch9329,
 shellyplug, amt, jetkvm (needs Go), zigplug, the
-OCR tool) live in the private libexec dir `~/.local/libexec/paniolo/bin`,
-off PATH; paniolo resolves them itself, and `paniolo helper [NAME] [ARGS…]`
-lists or runs one directly. If a different `paniolo` shadows the CLI on PATH
+OCR tool) live in the private libexec dir `~/.local/libexec/panio/bin`,
+off PATH; panio resolves them itself, and `panio helper [NAME] [ARGS…]`
+lists or runs one directly. If a different `panio` shadows the CLI on PATH
 (e.g. a Homebrew keg from the tap winning over `~/.cargo/bin`), put
 `~/.cargo/bin` first or remove the other copy; `make install` warns when it
 detects a shadow.
 
 The OCR helpers also accept `--help` and `-h` without an image:
-`paniolo helper visionocr --help` on macOS or `paniolo helper winocr --help`
+`panio helper visionocr --help` on macOS or `panio helper winocr --help`
 on Windows lists their input and output options.
 
-Discover installed helpers with `paniolo helper`. Everything after the
-helper name goes to the helper, so `paniolo helper serialcap --help` is the
-helper's own help (`paniolo helper --help` is paniolo's). Listing helpers and
+Discover installed helpers with `panio helper`. Everything after the
+helper name goes to the helper, so `panio helper serialcap --help` is the
+helper's own help (`panio helper --help` is panio's). Listing helpers and
 reading a bundled helper's help do not open hardware or start a daemon; use
 these to discover its commands before invoking one.
 
 A helper runs **locally** unless told otherwise, and the hardware is usually
 on a control host. Put the placement flags before the helper name:
-`paniolo helper -t <target> --channel power cambrionix -d <dev> state` runs
+`panio helper -t <target> --channel power cambrionix -d <dev> state` runs
 on the host the lab binds that channel to (`-i <iface>` for a serial
 interface; `-t` alone when the target has one host), and
-`paniolo helper --host <labhost> zigplug -d <dev> list` names a host
-directly. Prefer these over `ssh <host> paniolo helper …`.
+`panio helper --host <labhost> zigplug -d <dev> list` names a host
+directly. Prefer these over `ssh <host> panio helper …`.
 
 A lab can add its own helpers and skills through **plugin roots**: prefixes in
-`PANIOLO_PLUGIN_PATH` (`:`-separated; a control host gets its lab
-`plugin_path`) holding `libexec/paniolo/bin/<helper>` and
-`share/paniolo/skills/<name>/SKILL.md`. In `paniolo helper` and `paniolo
+`PANIO_PLUGIN_PATH` (`:`-separated; a control host gets its lab
+`plugin_path`) holding `libexec/panio/bin/<helper>` and
+`share/panio/skills/<name>/SKILL.md`. In `panio helper` and `panio
 skill` output a plugin entry reads `<name><TAB>plugin: <root>`; take the
 first field as the name. Hooks can name a plugin helper bare. A plugin never
 replaces a bundled helper or skill of the same name.
 
 ## Bounded fresh serial acquisition
 
-Use `paniolo serial wait <target> [-i console] --epoch E --since N` (MCP:
+Use `panio serial wait <target> [-i console] --epoch E --since N` (MCP:
 `serial_wait`) with `health.epoch` and `health.last_rx_seq` saved before input.
 These are RX chunk counters, not line-log sequence numbers. A healthy journal
 that lags the saved live cursor is allowed to catch up within the wait deadline;
@@ -164,7 +164,7 @@ quiet/disconnected target; verify the task-specific response yourself.
 
 ## Serial health evidence
 
-Read `paniolo serial status <target> [-i console]` (MCP: `serial_status`) before
+Read `panio serial status <target> [-i console]` (MCP: `serial_status`) before
 and after an action. It emits JSON without opening devices or starting a daemon:
 `configured` is the lab identity; `active` is the daemon identity; `process_live`
 and `daemon_state` separate stopped/untracked/unreachable/reachable processes.
@@ -178,7 +178,7 @@ not a disk durability acknowledgment. TX acceptance and new RX are evidence,
 not proof of target command execution; read the task-specific response separately.
 Never automatically restart, reset, or resend based on quiet traffic alone.
 
-For immutable raw received chunks use `paniolo serial evidence <target>
+For immutable raw received chunks use `panio serial evidence <target>
 [-i console] [--epoch E] [--since RX_SEQ] [--max-bytes N]` (MCP:
 `serial_evidence`). Each JSON record preserves exact integer-array bytes,
 original `rx_at_ms`, `captured_at_ms`, epoch, RX sequence and connection
@@ -201,19 +201,19 @@ too: an offline journal cannot establish that storage saved every RX byte.
 
 ## Configure a target
 
-Config lives in one CLI-managed **lab file** (`~/.config/paniolo/lab.toml`, or
-`--lab`/`PANIOLO_LAB`). A target's hardware is described as *channels*:
+Config lives in one CLI-managed **lab file** (`~/.config/panio/lab.toml`, or
+`--lab`/`PANIO_LAB`). A target's hardware is described as *channels*:
 
 ```
-paniolo target add <name> [--host <labhost>] [--description <text>]
-paniolo netboot set -t <name> --interface <iface> [--tftp-root <dir>] [--host-ip <ip>] [--boot-file grubaa64.efi] [--http-port 80] [--content-type <mime>]
-paniolo serial add console -t <name> --device <path> [--baud 115200] [--sense cts] [--power-button] [--port N]
-paniolo power set -t <name> [--cycle-cmd C] [--on-cmd C] [--off-cmd C] [--state-cmd C] [--serial-interface console]
-paniolo power set -t <name> --level hard [--cycle-cmd C] [--on-cmd C] [--off-cmd C] [--state-cmd C]   # a named power level
-paniolo video set -t <name> --device "<capture id or name>" [--ocr-mode text|gui] [--change-threshold N] [--port N]
-paniolo hid set -t <name> --cmd "hidrig -d <uart>" [--port N]   # USB HID injection helper
-paniolo usb set -t <name> --cmd "ch9329 -d <uart>"   # switchable USB media (KVM-Go microSD)
-paniolo adb set -t <name> [--serial <adb-id>] [--adb <path>]  # an Android DUT over adb
+panio target add <name> [--host <labhost>] [--description <text>]
+panio netboot set -t <name> --interface <iface> [--tftp-root <dir>] [--host-ip <ip>] [--boot-file grubaa64.efi] [--http-port 80] [--content-type <mime>]
+panio serial add console -t <name> --device <path> [--baud 115200] [--sense cts] [--power-button] [--port N]
+panio power set -t <name> [--cycle-cmd C] [--on-cmd C] [--off-cmd C] [--state-cmd C] [--serial-interface console]
+panio power set -t <name> --level hard [--cycle-cmd C] [--on-cmd C] [--off-cmd C] [--state-cmd C]   # a named power level
+panio video set -t <name> --device "<capture id or name>" [--ocr-mode text|gui] [--change-threshold N] [--port N]
+panio hid set -t <name> --cmd "hidrig -d <uart>" [--port N]   # USB HID injection helper
+panio usb set -t <name> --cmd "ch9329 -d <uart>"   # switchable USB media (KVM-Go microSD)
+panio adb set -t <name> [--serial <adb-id>] [--adb <path>]  # an Android DUT over adb
 ```
 
 `--port N` pins a daemon's port (video, hid, and serialcap — set on any one
@@ -226,7 +226,7 @@ channel to a remote control host (see the lab section below).
 - **Concurrent netboot links work on macOS and Linux**, with one adapter and
   /24 per link. macOS netbootd locks its interface even when invoked directly;
   stop older daemons before using concurrent links after an upgrade. Never
-  delete its `/tmp/paniolo-netboot-interface-<index>.lock` file while running.
+  delete its `/tmp/panio-netboot-interface-<index>.lock` file while running.
 - **One subnet per link.** The default `--host-ip` (`192.168.99.1`) is for
   the *first* netboot link on a host. Every further link on that host needs
   its own /24 (`--host-ip 192.168.100.1`, `…101.1`, …) or every route to a
@@ -236,31 +236,31 @@ channel to a remote control host (see the lab section below).
   addresses and the configured one is not among them: the lab file says only
   where the link should be, and netbootd re-applies that address only while its
   daemon runs, so a stopped link drifts silently. Fix it with
-  `paniolo netif mode link <target>` (or `netboot start`), which assigns the
+  `panio netif mode link <target>` (or `netboot start`), which assigns the
   configured address and drops the others — not by editing the lab file to
   match what drifted. An interface holding no IPv4 address (as in `mode off`
   or IPv6-only `mode ffx`) is not drift, locally or over SSH.
-  Check with `paniolo target show <name>`: the host IP is always
+  Check with `panio target show <name>`: the host IP is always
   printed, marked `(default)` when unset. Never record the intended subnet in a
   lab-file comment alone; the field is what runs.
-- `paniolo netboot devices` lists candidate USB-Ethernet interfaces (the
-  primary NIC is excluded); `paniolo discover` (`--json` for machines) lists
+- `panio netboot devices` lists candidate USB-Ethernet interfaces (the
+  primary NIC is excluded); `panio discover` (`--json` for machines) lists
   all lab-relevant hardware;
-  `paniolo configure <name> -H <host>` proposes a whole block to paste in.
-- Hosts: `paniolo host add <name> --ssh <dest>` (plus `--description`,
-  `--hostname`, `--identity`, `--paniolo-cmd`, `--control-path`) manages the `[hosts.*]`
+  `panio configure <name> -H <host>` proposes a whole block to paste in.
+- Hosts: `panio host add <name> --ssh <dest>` (plus `--description`,
+  `--hostname`, `--identity`, `--panio-cmd`, `--control-path`) manages the `[hosts.*]`
   entries from the CLI; `host list` / `host show <name>` / `host set` /
   `host rm` round it out.
-- Inspect: `paniolo config show` (whole lab; `config path` prints the file,
-  `config edit` opens it) / `paniolo target list` / `paniolo target show
-  <name>`; `paniolo target set <name>` updates its `--host`/`--description`.
-- Remove: `paniolo target rm <name>`, or per channel (`netboot rm`,
+- Inspect: `panio config show` (whole lab; `config path` prints the file,
+  `config edit` opens it) / `panio target list` / `panio target show
+  <name>`; `panio target set <name>` updates its `--host`/`--description`.
+- Remove: `panio target rm <name>`, or per channel (`netboot rm`,
   `serial rm <iface> -t <name>`, `power rm`, `video rm`, `hid rm`, `usb rm`,
   `adb rm`).
-- Rename: `paniolo target rename <old> <new>` carries all channels (and your
+- Rename: `panio target rename <old> <new>` carries all channels (and your
   lab-file comments) to the new name. Config-only — running daemons keep the
   old name, so `stop` and re-`watch`/`serve` them under the new one.
-- `paniolo doctor` probes every configured channel against reality (devices
+- `panio doctor` probes every configured channel against reality (devices
   exist, netboot interfaces hold the address they are configured for, over SSH
   for remote hosts); `doctor [target]` checks one target,
   `doctor --host <name>` only channels on that host.
@@ -280,18 +280,18 @@ channel to a remote control host (see the lab section below).
 Boot a board over the direct USB-Ethernet link:
 
 ```
-paniolo netboot start [target]            # serve DHCP + TFTP + HTTP (netbootd)
-paniolo netboot tftp-root [target]        # print where to drop boot files
-paniolo netboot status [target]
-paniolo netboot logs -f [target]          # follow the combined log (-n N for last N lines)
-paniolo netboot stop [target]
+panio netboot start [target]            # serve DHCP + TFTP + HTTP (netbootd)
+panio netboot tftp-root [target]        # print where to drop boot files
+panio netboot status [target]
+panio netboot logs -f [target]          # follow the combined log (-n N for last N lines)
+panio netboot stop [target]
 ```
 
 **Naming the target.** Every *runtime* verb takes it either way — positionally
-(`paniolo netboot stop pi5`) or as `-t/--target` (`paniolo netboot stop -t
+(`panio netboot stop pi5`) or as `-t/--target` (`panio netboot stop -t
 pi5`) — and both at once is refused. Omit it when the lab has one target. The
 *config* verbs (`set`, `add`, `rm`) require `-t` and do not take a positional.
-`paniolo doctor [target]` is positional-only: with no target it checks them all.
+`panio doctor [target]` is positional-only: with no target it checks them all.
 
 An unset or empty `tftp_root` makes `tftp-root`, `start`, and `netif mode netboot`
 exit 3 (`not_configured`), with target/channel/host in the JSON error.
@@ -310,7 +310,7 @@ port in use, an interface it cannot pin), `start` fails and quotes the last
 lines of the log — read them, do not just retry. Netboot is served by the
 single-binary `netbootd` (Rust), which listens only on the netboot interface. On
 macOS its BPF send path uses the setuid `netbootd-bpf-helper` installed by
-`paniolo setup`. If only the HTTP port is taken, netbootd keeps serving DHCP +
+`panio setup`. If only the HTTP port is taken, netbootd keeps serving DHCP +
 TFTP and logs a warning; HTTP Boot is then unavailable until `--http-port` is
 changed.
 
@@ -331,7 +331,7 @@ the first device that DHCPs on the link for as long as it keeps running; a
 *second* device plugged into the same netboot link is silently ignored (no
 DHCP reply at all — check `netboot logs` for the rate-limited warning if a
 board that should be netbooting stays dark). There is no way to switch which
-device it answers short of `paniolo netboot stop` then `start` again — that
+device it answers short of `panio netboot stop` then `start` again — that
 restart is the "release the lock" operation. TFTP separately only answers the
 one leased IP and caps itself at a handful of concurrent transfers, which is
 invisible in normal use (a boot flow never needs more than that) but means a
@@ -339,17 +339,17 @@ misbehaving client flooding RRQs gets dropped rather than served.
 
 ## Link mode — netboot · link · ffx · off
 
-`paniolo netif` owns the host side of the USB-Ethernet link and puts it in one of
+`panio netif` owns the host side of the USB-Ethernet link and puts it in one of
 four mutually-exclusive modes. Use it to flip between them atomically instead of
 configuring the interface by hand:
 
 ```
-paniolo netif mode netboot [target]        # IPv4 + DHCP + TFTP (= netboot start)
-paniolo netif mode link [target]           # bare link UP: host IP only, no daemon
-paniolo netif mode ffx [target]            # stop netboot, add host fe80::1/64 for ffx
-paniolo netif mode off [target]            # soft DOWN: release host IP (+ ffx LL)
-paniolo netif down-hard [target]           # hard DOWN: also kill WoL + admin-down the iface
-paniolo netif status [target]              # mode, carrier, addresses, ffx peer
+panio netif mode netboot [target]        # IPv4 + DHCP + TFTP (= netboot start)
+panio netif mode link [target]           # bare link UP: host IP only, no daemon
+panio netif mode ffx [target]            # stop netboot, add host fe80::1/64 for ffx
+panio netif mode off [target]            # soft DOWN: release host IP (+ ffx LL)
+panio netif down-hard [target]           # hard DOWN: also kill WoL + admin-down the iface
+panio netif status [target]              # mode, carrier, addresses, ffx peer
 ```
 
 
@@ -357,10 +357,10 @@ paniolo netif status [target]              # mode, carrier, addresses, ffx peer
 without serving anything — toggle `link` ↔ `off` and read `netif status`:
 
 ```
-paniolo netif mode link [target]    # up:   host IP assigned, no DHCP/TFTP
-paniolo netif status [target]       #       mode=link, carrier up
-paniolo netif mode off [target]     # down: host IP released
-paniolo netif status [target]       #       mode=off
+panio netif mode link [target]    # up:   host IP assigned, no DHCP/TFTP
+panio netif status [target]       #       mode=link, carrier up
+panio netif mode off [target]     # down: host IP released
+panio netif status [target]       #       mode=off
 ```
 
 Caveat — **soft "down" (`mode off`) only releases the host IP; it does not force
@@ -368,7 +368,7 @@ the carrier down.** `netif status` shows `carrier` separately from `mode` becaus
 a NIC with **Wake-on-LAN** enabled keeps the PHY energized even when the
 interface is down, so the peer's link LED stays lit and `carrier` can still read
 `up` in `off` mode. **When you need the target to actually *detect* link loss,
-use `paniolo netif down-hard`** — it does `mode off` and then disables WoL
+use `panio netif down-hard`** — it does `mode off` and then disables WoL
 (`ethtool -s <iface> wol d` on Linux) and admin-downs the interface, so the peer
 sees carrier go away. Bring the link back with `netif mode link` (or `netboot`);
 WoL stays off until you re-enable it (`ethtool -s <iface> wol g`) or replug the
@@ -385,30 +385,30 @@ admin-down; unplugging the cable is always the unambiguous drop.)
   ready-to-paste `ffx target add fe80::…%<iface>` for the discovered device. If
   no peer shows, power-cycle the target and wait for it to finish SLAAC.
 
-Typical ffx hand-off: `paniolo netif mode ffx fortune` → `paniolo power-cycle
-fortune` → `paniolo netif status fortune` (grab the address) → `ffx target list`.
-Go back to TFTP bring-up with `paniolo netif mode netboot fortune`. Same
+Typical ffx hand-off: `panio netif mode ffx fortune` → `panio power-cycle
+fortune` → `panio netif status fortune` (grab the address) → `ffx target list`.
+Go back to TFTP bring-up with `panio netif mode netboot fortune`. Same
 passwordless `sudo` requirement as netboot (`ip` on Linux, `ifconfig` on macOS).
 
 ## Video — capture, preview, OCR
 
 ```
-paniolo video devices                 # list capture devices (with stable ids)
-paniolo video set -t <target> --device "<id-or-name>" [--ocr-mode text|gui] [--change-threshold N] [--port N]  # configure the video channel
+panio video devices                 # list capture devices (with stable ids)
+panio video set -t <target> --device "<id-or-name>" [--ocr-mode text|gui] [--change-threshold N] [--port N]  # configure the video channel
                                            #   --ocr-mode gui is a Linux-only accuracy switch
                                            #   for GUI screens (unset = platform default)
                                            #   --device rfb+hid: = the RFB video feed of this target's own
                                            #   hid daemon (a JetKVM; set the hid channel first), or
                                            #   rfb://HOST:PORT for a plain network RFB source (no password)
-paniolo video watch [target] [--restart]   # start the capture daemon (background);
+panio video watch [target] [--restart]   # start the capture daemon (background);
                                            #   --restart force-restarts a stalled one
-paniolo video preview [--open]        # print the daemon's dashboard URL (--open: hand it to a browser instead)
-paniolo video shot [target] [--stable] [--out frame.png]   # one lossless PNG
-paniolo video shot --changed-since <hex-hash> --timeout <ms>   # block until the
+panio video preview [--open]        # print the daemon's dashboard URL (--open: hand it to a browser instead)
+panio video shot [target] [--stable] [--out frame.png]   # one lossless PNG
+panio video shot --changed-since <hex-hash> --timeout <ms>   # block until the
                                            #   frame differs from a previous shot's hash
-paniolo video read [target] [--stable]   # OCR the current screen, print text
-paniolo video show [target]           # device + daemon status
-paniolo video stop [target]           # stop the daemon (on the target's host)
+panio video read [target] [--stable]   # OCR the current screen, print text
+panio video show [target]           # device + daemon status
+panio video stop [target]           # stop the daemon (on the target's host)
 ```
 
 - The **dashboard** (the video daemon's URL — ports are OS-assigned, and the
@@ -420,16 +420,16 @@ paniolo video stop [target]           # stop the daemon (on the target's host)
   video; the **⌨ Capture input** button exists only in MJPEG mode; see HID injection below).
 - **The token in that URL is a live credential — keep it out of your
   transcript.** Every command prints the token-free
-  `http://127.0.0.1:<port>`; `paniolo video preview` is the only one that
+  `http://127.0.0.1:<port>`; `panio video preview` is the only one that
   prints the openable form, and it exists for a human about to paste it into a
   browser. Never paste a `?token=` URL into an issue, a commit message, or a
   chat.
-- **Opening a browser is a human's job, not yours.** `paniolo video preview
+- **Opening a browser is a human's job, not yours.** `panio video preview
   --open` only works on a machine with a desktop session, and it is refused
   outright when the video channel is on another host. On a headless control
   host — where you usually are — it writes the URL to a `0600` file and prints
   that path instead of opening anything, so it is not a way to get a browser
-  open. Hand the human `paniolo console <target>` and let them run it.
+  open. Hand the human `panio console <target>` and let them run it.
 - The `device` may be a **stable id** (preferred — `video devices` prints
   `id=…`: the AVFoundation uniqueID on macOS, the `/dev/v4l/by-path` symlink on
   Linux), a name substring, or a `/dev/video*` path. Ids are derived from USB
@@ -443,7 +443,7 @@ paniolo video stop [target]           # stop the daemon (on the target's host)
 - `shot --out <path>` always writes on the **invoking machine**, even when the
   video channel lives on a remote control host (the PNG streams back over SSH;
   no copy step). `video devices` hides SoC-internal video nodes (Pi pipeline
-  stages, codecs) — pass `--all` through `paniolo helper hdmicap devices --all`
+  stages, codecs) — pass `--all` through `panio helper hdmicap devices --all`
   if you truly need them.
 - **OCR** (`video read`, which wraps the daemon's `GET /ocr`; also the
   dashboard button) is on-device (Apple Vision on macOS, Tesseract on Linux).
@@ -462,24 +462,24 @@ at once. (Each target gets its own daemon, so several targets capture concurrent
 on one host.)
 
 ```
-paniolo serial add console -t <target> --device <path>   # add a named interface
-paniolo serial add bmc -t <target> --device /dev/ttyUSB1 --baud 9600
-paniolo serial set console -t <target> --sense cts        # update fields
-paniolo serial rm <name> -t <target>                      # drop a named interface
-paniolo serial connect [target] [-i name]      # interactive terminal (tio) in your shell
-paniolo serial watch [target]                  # run the daemon for ALL interfaces;
+panio serial add console -t <target> --device <path>   # add a named interface
+panio serial add bmc -t <target> --device /dev/ttyUSB1 --baud 9600
+panio serial set console -t <target> --sense cts        # update fields
+panio serial rm <name> -t <target>                      # drop a named interface
+panio serial connect [target] [-i name]      # interactive terminal (tio) in your shell
+panio serial watch [target]                  # run the daemon for ALL interfaces;
                                                #   they appear in the dashboard pane
-paniolo serial send [target] "text"            # send one line of input through
+panio serial send [target] "text"            # send one line of input through
                                                #   the running daemon (see below)
-paniolo serial transact -t <target> [-i name] --until 'OK' -- "cmd"
+panio serial transact -t <target> [-i name] --until 'OK' -- "cmd"
                                                # send + wait for the reply, locked
-paniolo serial log [target] [-i name] [options] # print captured output (timestamped)
-paniolo serial evidence [target] [-i name] [--epoch E] [--since N] [--max-bytes N]
-paniolo serial show [target]                   # list interfaces + daemon status
-paniolo serial stop [target]                   # release the ports (on the target's host)
-paniolo serial devices                         # list serial devices on the host
-paniolo serial dtr [target] [-i name] [--ms N] # pulse DTR line (J2 power button header)
-paniolo serial reset [target] [-i name]        # soft reset via brief DTR pulse
+panio serial log [target] [-i name] [options] # print captured output (timestamped)
+panio serial evidence [target] [-i name] [--epoch E] [--since N] [--max-bytes N]
+panio serial show [target]                   # list interfaces + daemon status
+panio serial stop [target]                   # release the ports (on the target's host)
+panio serial devices                         # list serial devices on the host
+panio serial dtr [target] [-i name] [--ms N] # pulse DTR line (J2 power button header)
+panio serial reset [target] [-i name]        # soft reset via brief DTR pulse
 ```
 
 **Argument convention:** every runtime command takes the target as an
@@ -499,9 +499,9 @@ start one, or `stop`/close the other first.
 ### Updating an older serialcap, hdmicap, ch9329, hidrig, or zigplug daemon
 
 If `serial stop`, `video stop`, or `hid stop` reports that authenticated
-shutdown is unavailable, use `paniolo daemons stop <name>` (`serialcap`,
+shutdown is unavailable, use `panio daemons stop <name>` (`serialcap`,
 `hdmicap`, or `hid`) and start capture again. A standalone `zigplug stop`
-that cannot make the daemon exit reports the same thing — use `paniolo
+that cannot make the daemon exit reports the same thing — use `panio
 daemons stop zigplug`. New `serialcap stop`, `hdmicap stop`, `ch9329 stop`,
 `hidrig stop`, and `zigplug stop` all use the daemon token and never signal a
 discovery-file PID.
@@ -525,13 +525,13 @@ it even after `stop`). The live view stays in the dashboard; use `serial log` wh
 you want to *read back* what scrolled past:
 
 ```
-paniolo serial log                    # most recent ~200 lines (sole interface)
-paniolo serial log -i bmc --tail 50   # most recent 50 lines of the 'bmc' interface
-paniolo serial log --since 1840       # only lines after sequence #1840 (polling)
-paniolo serial log --from 1800 --to 1860   # a specific line range
-paniolo serial log --json             # JSON Lines (seq, ts_ms, text) for parsing
-paniolo serial log --raw              # keep ANSI colors / control bytes
-paniolo serial log --no-pending       # omit the current unterminated line
+panio serial log                    # most recent ~200 lines (sole interface)
+panio serial log -i bmc --tail 50   # most recent 50 lines of the 'bmc' interface
+panio serial log --since 1840       # only lines after sequence #1840 (polling)
+panio serial log --from 1800 --to 1860   # a specific line range
+panio serial log --json             # JSON Lines (seq, ts_ms, text) for parsing
+panio serial log --raw              # keep ANSI colors / control bytes
+panio serial log --no-pending       # omit the current unterminated line
 ```
 
 With more than one interface configured, pass `-i <name>` to choose one (omitting
@@ -544,15 +544,15 @@ marks the current unterminated line (e.g. a `login:` prompt with no newline yet)
 
 ### Sending input
 
-`paniolo serial send` injects one line through the **running daemon** (start
+`panio serial send` injects one line through the **running daemon** (start
 `watch` first), so input coexists with capture — what you send and what the
 target echoes both land in the log:
 
 ```
-paniolo serial send <target> "reboot"                # CR appended by default
-paniolo serial send "reboot"                         # sole-target lab: text only
-paniolo serial send --no-newline "partial input"     # suppress the CR
-paniolo serial send --pace-ms 8 "long command"       # per-byte pacing for slow
+panio serial send <target> "reboot"                # CR appended by default
+panio serial send "reboot"                         # sole-target lab: text only
+panio serial send --no-newline "partial input"     # suppress the CR
+panio serial send --pace-ms 8 "long command"       # per-byte pacing for slow
                                                      #   polled consoles
 ```
 
@@ -566,8 +566,8 @@ console), `serial transact` (MCP: `serial_transact`) sends one command and
 waits for its reply under the interface's transaction lock:
 
 ```
-paniolo serial transact -t <target> -i console --until '=> ' -- "printenv bootcmd"
-paniolo serial transact -t <target> --until 'OK' --timeout-ms 5000 -- "AT"
+panio serial transact -t <target> -i console --until '=> ' -- "printenv bootcmd"
+panio serial transact -t <target> --until 'OK' --timeout-ms 5000 -- "AT"
 ```
 
 - It records the receive boundary **before** sending, so the reply holds only
@@ -586,12 +586,12 @@ paniolo serial transact -t <target> --until 'OK' --timeout-ms 5000 -- "AT"
 ## RAM-only USB fastboot staging
 
 Use the contract in `docs/fastboot.md` for an existing device-scoped,
-download-only client. Paniolo has no fastboot channel or bundled guarded
-runner; `paniolo usb` switches media and `adb` is a different protocol.
+download-only client. Panio has no fastboot channel or bundled guarded
+runner; `panio usb` switches media and `adb` is a different protocol.
 A board-specific runner must make these guards inseparable from each send:
 
 - Hold one external ownership reservation over serial input, power/reset and
-  USB for the whole run. Paniolo's transaction and action locks cover shorter
+  USB for the whole run. Panio's transaction and action locks cover shorter
   operations; they do not reserve the entire target workflow.
 - Before **each artifact**, enter the firmware service and validate its
   complete fresh response through `serial transact` and raw evidence. Exit 0,
@@ -616,47 +616,47 @@ Do not improvise raw sender calls when the guarded runner is unavailable.
 
 When the target is an Android device, the `adb` channel gives you console,
 screen, and input over one transport (see `docs/adb.md`). adb runs
-on the control host the device is plugged into; paniolo routes per-channel like
+on the control host the device is plugged into; panio routes per-channel like
 any other.
 
 ```
-paniolo adb devices [-H <host>]          # list attached devices (their serials)
-paniolo adb set -t <target> [--serial <id>]   # bind a device (omit --serial = sole device)
-paniolo adb show [target]                # config + live device state
-paniolo adb shell [target]               # interactive `adb shell` in your terminal
-paniolo adb run -t <target> <cmd...>     # one-shot command, output captured (agent path)
-paniolo adb screencap [target] [-o frame.png]   # one PNG (exec-out screencap; -o - = stdout)
-paniolo adb input -t <target> <args...>  # adb shell input: keyevent/text/tap/swipe
+panio adb devices [-H <host>]          # list attached devices (their serials)
+panio adb set -t <target> [--serial <id>]   # bind a device (omit --serial = sole device)
+panio adb show [target]                # config + live device state
+panio adb shell [target]               # interactive `adb shell` in your terminal
+panio adb run -t <target> <cmd...>     # one-shot command, output captured (agent path)
+panio adb screencap [target] [-o frame.png]   # one PNG (exec-out screencap; -o - = stdout)
+panio adb input -t <target> <args...>  # adb shell input: keyevent/text/tap/swipe
 ```
 
 - `run`/`input` take `-t` (not a positional) because their tail is free-form;
   put `-t` first and use `--` before a leading-dash argument
-  (`paniolo adb run -t pixel -- logcat -d -t 50`).
+  (`panio adb run -t pixel -- logcat -d -t 50`).
 - `adb run -t <t> getprop ro.product.model` is the read workhorse for agents;
   `-o <path>` on `screencap` always means *this* machine's filesystem — it
   works the same whether the adb channel is local or on a remote control host
   (like `video shot`), so `-o frame.png` and `-o -` (stdout) are equally safe
   to use against a remote target.
 - Reboot/power: no adb-specific command — wire `adb reboot` through the power
-  hooks (`paniolo power set -t <t> --cycle-cmd "adb -s <id> reboot"`).
+  hooks (`panio power set -t <t> --cycle-cmd "adb -s <id> reboot"`).
 - The device must be authorized (`adb devices` shows it as `device`, not
-  `unauthorized`/`offline`); paniolo does not manage pairing.
+  `unauthorized`/`offline`); panio does not manage pairing.
 
 ## Power control
 
 ```
-paniolo power on  [target] [--level L] # run on_cmd hook (error with hint if unset)
-paniolo power off [target] [--level L] # run off_cmd hook (error with hint if unset)
-paniolo power-cycle [target] [--level L]  # run cycle_cmd hook
-paniolo power-state [target] [--level L]  # state_cmd stdout ("on"/"off") or serial sense-line
-paniolo serial dtr [target] [--ms N]   # pulse DTR line on J2 header (opt-in; see below)
-paniolo serial reset [target]          # soft reset via brief DTR pulse (opt-in)
+panio power on  [target] [--level L] # run on_cmd hook (error with hint if unset)
+panio power off [target] [--level L] # run off_cmd hook (error with hint if unset)
+panio power-cycle [target] [--level L]  # run cycle_cmd hook
+panio power-state [target] [--level L]  # state_cmd stdout ("on"/"off") or serial sense-line
+panio serial dtr [target] [--ms N]   # pulse DTR line on J2 header (opt-in; see below)
+panio serial reset [target]          # soft reset via brief DTR pulse (opt-in)
 ```
 
-Configure hooks with `paniolo power set`:
+Configure hooks with `panio power set`:
 
 ```
-paniolo power set -t <name> \
+panio power set -t <name> \
     [--cycle-cmd <cmd>] [--on-cmd <cmd>] [--off-cmd <cmd>] [--state-cmd <cmd>] \
     [--serial-interface console]   # default DTR interface when several opt in
 ```
@@ -668,7 +668,7 @@ the serial sense-line otherwise.
 **Power levels (soft vs hard).** A target with more than one power layer (a
 board MCU or PMIC switch, and a mains/DC cut behind it) may define named
 levels beside the default hooks: `[targets.<t>.power.levels.hard]`, set with
-`paniolo power set -t <t> --level hard …`, removed with `paniolo power rm -t
+`panio power set -t <t> --level hard …`, removed with `panio power rm -t
 <t> --level hard`. `target show` lists them (`levels=hard`).
 
 - No `--level` = the default hooks, exactly as before. `--level default` says
@@ -689,14 +689,14 @@ levels beside the default hooks: `[targets.<t>.power.levels.hard]`, set with
 share the word "serial/reset":
 
 - **Console reboot (software):** type `reboot` into a logged-in console with
-  `paniolo serial send <target> "reboot"`. This is what "use serial to reboot"
-  almost always means. If you can't log in, use `paniolo power-cycle <target>`.
-- **DTR reset (hardware):** `paniolo serial dtr` / `serial reset` toggle the
+  `panio serial send <target> "reboot"`. This is what "use serial to reboot"
+  almost always means. If you can't log in, use `panio power-cycle <target>`.
+- **DTR reset (hardware):** `panio serial dtr` / `serial reset` toggle the
   FTDI DTR line wired to the board's J2 power button. A ≤500 ms pulse is a soft
   button event; ≥3000 ms is a hard PMIC power-off.
 
 DTR is **opt-in per interface** — it works only where the interface declares
-`power_button = true` (`paniolo serial set <iface> -t <name> --power-button`),
+`power_button = true` (`panio serial set <iface> -t <name> --power-button`),
 because DTR-to-J2 wiring is rare. On a target that hasn't opted in, `serial dtr`
 / `serial reset` **error** with a hint (they never toggle a lone console blindly).
 So: unless DTR wiring is explicitly declared, reboot via the console `reboot` or
@@ -708,7 +708,7 @@ The `cambrionix` helper binary drives a Cambrionix USB hub's control UART and
 satisfies the `state_cmd` contract (`state <port>` prints `on` or `off`):
 
 ```
-paniolo power set -t pi5 \
+panio power set -t pi5 \
     --cycle-cmd "cambrionix -d /dev/cu.usbserial-AA00BB11 cycle 4" \
     --on-cmd    "cambrionix -d /dev/cu.usbserial-AA00BB11 on 4" \
     --off-cmd   "cambrionix -d /dev/cu.usbserial-AA00BB11 off 4" \
@@ -724,7 +724,7 @@ Engine — no plug hardware — and gives **true power-state readback** (the ME
 answers with the host on, off, or bare-metal):
 
 ```
-paniolo power set -t optiplex \
+panio power set -t optiplex \
     --cycle-cmd "amt cycle -d amt-host.example -u admin --delay-ms 5000" \
     --on-cmd    "amt on -d amt-host.example -u admin" \
     --off-cmd   "amt off -d amt-host.example -u admin" \
@@ -737,28 +737,28 @@ first set of: the `AMT_PASSWORD` environment variable, `--password-file
 that carries its own source needs nothing in the environment, e.g.
 `--state-cmd "amt state -d amt-host.example --password-command 'op read op://lab/amt/password'"`;
 look at the existing hooks before composing a fetch by hand. Otherwise run
-`paniolo power …` with `AMT_PASSWORD` set, e.g.
-`op run --env-file .env -- bash -c 'paniolo power-cycle optiplex'` (single
+`panio power …` with `AMT_PASSWORD` set, e.g.
+`op run --env-file .env -- bash -c 'panio power-cycle optiplex'` (single
 quotes — the parent shell must not expand it). A file path or command in a
 hook is resolved on the host where the hook runs (the control host for a
 remote power channel); `AMT_PASSWORD` set where *you* run the command is
-carried to a remote control host by paniolo's own dispatch, over the remote
+carried to a remote control host by panio's own dispatch, over the remote
 command's stdin, never its argv, and wins over the hook's file or command.
 See "Setting up the credential source" in `docs/power.md` for the patterns.
 
 AMT uses **verified HTTPS on 16993 by default**, with no HTTP fallback.
 Use the certificate's name. For a private CA (certificate authority), add
-`--tls-ca-file /etc/paniolo/amt-ca.pem` to all four hooks; it adds trust to
+`--tls-ca-file /etc/panio/amt-ca.pem` to all four hooks; it adds trust to
 built-in public roots and does not bypass name or validity checks. The flag
 wins over `AMT_TLS_CA_FILE`. The file and fallback are read on the execution
-host; paniolo does not forward `AMT_TLS_CA_FILE` to remote hosts.
+host; panio does not forward `AMT_TLS_CA_FILE` to remote hosts.
 
 For deliberately retained legacy HTTP only, add `--allow-insecure-http` to
 **all four hooks**, for example `amt --allow-insecure-http -d
 http://amt-host.example state`. Bare addresses with that flag also mean
 HTTP/16992. Explicit HTTPS plus the flag, or HTTP plus a CA file, is rejected.
 A port alone never chooses HTTP: bare `host:16992` requests TLS on 16992.
-HTTP warnings remain on stderr, including successful `paniolo power-state`.
+HTTP warnings remain on stderr, including successful `panio power-state`.
 Do not retry TLS errors with HTTP or disable verification. TLS 1.2 alone is
 not enough if firmware only supports obsolete algorithms. KVM settings gain
 TLS; the separate RFB screen session does not. See `docs/power.md` and the
@@ -769,11 +769,11 @@ TLS; the separate RFB screen session does not. See `docs/power.md` and the
 A target may define **named actions** for controls that are not power:
 
 ```
-paniolo action list [-t target]          # name, description, (requires power on|off)
-paniolo action run -t <target> <name>    # run one; -t only, the positional is the name
-paniolo action set -t <target> <name> --cmd <cmd> [--description <text>] \
+panio action list [-t target]          # name, description, (requires power on|off)
+panio action run -t <target> <name>    # run one; -t only, the positional is the name
+panio action set -t <target> <name> --cmd <cmd> [--description <text>] \
     [--requires-power on|off|none] [--host <labhost>]
-paniolo action rm -t <target> <name>
+panio action rm -t <target> <name>
 ```
 
 - **Check `action list` before a power cycle.** If the target defines
@@ -781,7 +781,7 @@ paniolo action rm -t <target> <name>
   wedged SoC without dropping attached debug hardware. `recovery` and
   `warm-reset` are the other conventional names.
 - An action marked `requires_power off` is refused (exit 2, `usage`) while the
-  target is on. Run `paniolo power off` first; never edit the lab to drop the
+  target is on. Run `panio power off` first; never edit the lab to drop the
   requirement.
 - Action and power hooks for one target run one at a time; a hook that waits
   more than 120 s for another fails with `timeout` (exit 22, outcome unknown).
@@ -798,9 +798,9 @@ serial port as its `hid` channel (setting both channels to the same `--cmd`
 is normal).
 
 ```
-paniolo usb state         -t <name>   # -> host | target
-paniolo usb attach-host   -t <name>   # route the card to the control host
-paniolo usb attach-target -t <name>   # hand it to the target
+panio usb state         -t <name>   # -> host | target
+panio usb attach-host   -t <name>   # route the card to the control host
+panio usb attach-target -t <name>   # hand it to the target
 ```
 
 The use case is hands-free *physical* boot media: image the card host-side,
@@ -811,7 +811,7 @@ Four rules, all of which will bite you otherwise:
 
 - **Unmount before switching.** The switch physically detaches the device from
   whichever side has it; a mounted filesystem there is a surprise removal.
-  paniolo cannot see mount state and will not stop you. On macOS use
+  panio cannot see mount state and will not stop you. On macOS use
   `diskutil unmount force` — plain `unmount` usually loses to Spotlight.
 - **Exit 0 means the mux moved, not that the media is ready.** The USB device
   still has to enumerate on the receiving side, which takes seconds. Poll for
@@ -827,7 +827,7 @@ Full guide: `docs/usb.md`. Protocol: `notes/openterface-usb-mux-spec.md`.
 ## HID injection — type and click into the target
 
 Three bundled injector helpers speak the same command vocabulary; the `hid`
-channel stores an opaque helper command and `paniolo hid send` appends its
+channel stores an opaque helper command and `panio hid send` appends its
 arguments to it and runs it on the channel's host:
 
 - **`hidrig`** — the dual-board KB2040 "dumb pipe": the host-side CLI
@@ -835,7 +835,7 @@ arguments to it and runs it on the channel's host:
   USB-CDC port, which relays them over I2C1 to the **target** board that
   presents a USB keyboard + mouse to the DUT.
 - **`ch9329`** — the client for CH9329-based KVM devices (Openterface
-  Mini-KVM and KVM-Go, Sipeed NanoKVM-USB): `paniolo hid set -t <name> --cmd
+  Mini-KVM and KVM-Go, Sipeed NanoKVM-USB): `panio hid set -t <name> --cmd
   "ch9329 -d <uart>"`. Same commands; it autodetects the link baud (115200 /
   57600 / 9600) and adds `info` (target USB enumeration + lock LEDs).
   On Linux, failed connections to `1a86:fe0c` include a startup compatibility
@@ -845,7 +845,7 @@ arguments to it and runs it on the channel's host:
   it. The direct-USB drain workaround requires explicit device selection,
   stopping port users, and restoring drivers: follow `docs/hid.md` →
   "Openterface CDC on Linux" and `notes/openterface-v2-linux-serial.md`.
-- **`jetkvm`** — the JetKVM network KVM (Go helper): `paniolo hid set -t <name>
+- **`jetkvm`** — the JetKVM network KVM (Go helper): `panio hid set -t <name>
   --cmd "jetkvm -d <host>"`; the password comes from `JETKVM_PASSWORD`,
   `--password-file` or `--password-command`, never a flag. Same commands; its
   `info` prints the device's USB, video and keyboard-LED state; its daemon also serves the screen (`video set --device rfb+hid:`). **The JetKVM
@@ -854,25 +854,25 @@ arguments to it and runs it on the channel's host:
   firmware says success even if the target's USB is not up — check `info`).
 
 ```
-paniolo hid set -t <name> --cmd "hidrig -d /dev/cu.usbmodemXXXX" [--host <labhost>]
-paniolo hid send -t <name> type hello world   # type a string
-paniolo hid send -t <name> key ENTER          # tap a key (adafruit_hid Keycode names)
-paniolo hid send -t <name> combo LEFT_CONTROL C
-paniolo hid send -t <name> move 300 -50       # relative mouse move (negatives OK; keep -t first)
-paniolo hid send -t <name> click left | scroll -3 | releaseall
-paniolo hid send -t <name> ping               # injector liveness check
+panio hid set -t <name> --cmd "hidrig -d /dev/cu.usbmodemXXXX" [--host <labhost>]
+panio hid send -t <name> type hello world   # type a string
+panio hid send -t <name> key ENTER          # tap a key (adafruit_hid Keycode names)
+panio hid send -t <name> combo LEFT_CONTROL C
+panio hid send -t <name> move 300 -50       # relative mouse move (negatives OK; keep -t first)
+panio hid send -t <name> click left | scroll -3 | releaseall
+panio hid send -t <name> ping               # injector liveness check
 ```
 
 The same dual-board control board can also back this target's **serial** and
 **power** channels: when `hidrig serve` runs it bridges the DUT's serial console
 and re-exports it as a PTY (the hid daemon is per-target, so point a `serial`
-channel's `device =` at `/tmp/paniolo-<uid>/hid/<target>/console`), and `hidrig
+channel's `device =` at `/tmp/panio-<uid>/hid/<target>/console`), and `hidrig
 power off|on|cycle` switches DUT
 power via a relay (behind the `power` hook) — one USB device for HID, console,
 and power. (The relay/power path is hardware-verified, incl. state persistence
 across a control-board reset; the console bridge is new and not yet verified.)
 
-Absolute mouse (click-where-you-point): `paniolo hid send -t <name> moveabs
+Absolute mouse (click-where-you-point): `panio hid send -t <name> moveabs
 <x> <y>` positions the cursor in a 0..32767 logical space the OS maps across
 the screen (the KB2040 firmware advertises the `moveabs` capability).
 
@@ -884,14 +884,14 @@ host-powered and independent. Command vocabulary:
 `docs/dev/hid-serial-protocol.md`; dual-board design + frame format:
 `docs/dev/hid-dual-board-design.md`.
 
-**KVM in the console.** `paniolo console <name>` shows the video as a noVNC view; when the target
+**KVM in the console.** `panio console <name>` shows the video as a noVNC view; when the target
 has a `hid` channel, click into it to drive the target with your own keyboard + mouse (absolute —
 the cursor follows where you point; F13-F24 and exotic keysyms are dropped). In the MJPEG view
 (toggle) a **⌨ Capture input** button does the same. `video watch`/`console` start the hid daemon
 for any video device, so it owns the injector from then on. It auto-starts the hid daemon (`hidrig serve`), which owns the control
-link and re-exposes the command vocabulary over a WebSocket; `paniolo hid send` injections intermix
-with what you type in the browser. Manual daemon control: `paniolo hid
-serve [target]` / `paniolo hid stop [target]` (positional target — only
+link and re-exposes the command vocabulary over a WebSocket; `panio hid send` injections intermix
+with what you type in the browser. Manual daemon control: `panio hid
+serve [target]` / `panio hid stop [target]` (positional target — only
 `hid send` and `hid set/rm` use `-t`). When the target also has a `power` channel, the overlay
 adds an on/off toggle switch + a separate cycle button (each confirms first).
 `hid stop` waits for the daemon to exit before returning successfully, so it is
@@ -900,22 +900,22 @@ safe to follow immediately with `console` or `video watch`.
 For *operating a GUI* through the `video` + `hid` channels — clicking, typing,
 and navigating a desktop/app/installer/BIOS you can only see over the capture
 and only touch through emulated HID — read the companion **`kvm-puppeting`**
-skill (the look-act-settle-verify discipline): `paniolo skill kvm-puppeting`.
+skill (the look-act-settle-verify discipline): `panio skill kvm-puppeting`.
 
 ## Companion skills
 
-Paniolo ships its own agent skills; list them and read any one from the CLI,
+Panio ships its own agent skills; list them and read any one from the CLI,
 even on a packaged install:
 
 ```
-paniolo skill                  # list bundled skills with their descriptions
-paniolo skill kvm-puppeting    # print a skill's SKILL.md (e.g. GUI puppeting)
-paniolo skill paniolo --path   # the file path, to open or Read it
+panio skill                  # list bundled skills with their descriptions
+panio skill kvm-puppeting    # print a skill's SKILL.md (e.g. GUI puppeting)
+panio skill panio --path   # the file path, to open or Read it
 ```
 
 ## MCP tools (experimental)
 
-If your harness has a `paniolo` MCP server configured (`paniolo mcp`), its
+If your harness has a `panio` MCP server configured (`panio mcp`), its
 tools are the runtime verbs above: `target_list`, `video_shot`, `video_read`,
 `serial_log`, `serial_send`, `hid_send` (`command` is an array of words, e.g.
 `["key", "ENTER"]`), `action_list`, `action_run`, `power_state`, `power_on`,
@@ -924,15 +924,15 @@ tools are the runtime verbs above: `target_list`, `video_shot`, `video_read`,
 `video_shot` returns the screen as an image plus `signal=…  hash=…`; pass the
 hash back as `changed_since` to wait for a change, as with `video shot
 --changed-since`. Configuration (`set`, `add`, `watch`) is still the CLI. A
-failed tool result carries paniolo's exit code and JSON error object (see
+failed tool result carries panio's exit code and JSON error object (see
 *When a command fails* above), and a write that may or may not have run says
 "Outcome unknown". Setup: `docs/mcp.md`.
 
 ## Targets on a remote control host (a "lab")
 
-When the machine wired to the target isn't the one you're running paniolo on,
-describe your **lab** in one git-tracked TOML file and point paniolo at it with
-`--lab <file>` or `PANIOLO_LAB`. Each target's `host` names a control host;
+When the machine wired to the target isn't the one you're running panio on,
+describe your **lab** in one git-tracked TOML file and point panio at it with
+`--lab <file>` or `PANIO_LAB`. Each target's `host` names a control host;
 commands then run **transparently on that host over SSH** — you don't ssh by hand.
 
 ```toml
@@ -944,7 +944,7 @@ ssh = "user@bench1.local"     # ssh destination — how others reach it ("local"
 #                                  shared lab file is run from any machine (matched vs `hostname -f`)
 # identity = "~/.ssh/lab_key"    # set this if your ssh-agent offers many keys
 #                                  (avoids "Too many authentication failures")
-# paniolo_cmd = "~/.local/bin/paniolo"  # if paniolo isn't on the
+# panio_cmd = "~/.local/bin/panio"  # if panio isn't on the
 #                                  host's non-interactive ssh PATH
 # plugin_path = "/opt/lab-plugins"  # plugin roots on bench1, passed on every
 #                                  dispatch there (`host set --plugin-path`)
@@ -966,35 +966,35 @@ cycle_cmd = "~/scripts/power-cycle.sh"
 ```
 
 ```
-export PANIOLO_LAB=~/labs/mylab.toml
-paniolo netboot start fortune      # runs on bench1, transparently
-paniolo power-cycle fortune
-paniolo netboot logs -f fortune    # streams back live
-paniolo serial connect fortune     # interactive tio over ssh -t
-paniolo console fortune            # dashboard tunnelled to your browser; Ctrl-C to close
+export PANIO_LAB=~/labs/mylab.toml
+panio netboot start fortune      # runs on bench1, transparently
+panio power-cycle fortune
+panio netboot logs -f fortune    # streams back live
+panio serial connect fortune     # interactive tio over ssh -t
+panio console fortune            # dashboard tunnelled to your browser; Ctrl-C to close
 ```
 
 Notes:
-- With **no** `--lab`/`PANIOLO_LAB`, paniolo uses the default lab at
-  `~/.config/paniolo/lab.toml` (auto-created on first write).
+- With **no** `--lab`/`PANIO_LAB`, panio uses the default lab at
+  `~/.config/panio/lab.toml` (auto-created on first write).
 - The lab file is **CLI-managed and hand-edit friendly**: all the config
   commands edit it surgically (your comments survive), and it stays your
   git-tracked source of truth.
 - **Channels can live on different hosts** (per-channel `--host`): each command
   runs on the host of the channel it touches. Composites (`console`) need
   their channels co-located on one host.
-- Still over plain SSH if you prefer: `ssh bench1 "paniolo …"` works too, but the
+- Still over plain SSH if you prefer: `ssh bench1 "panio …"` works too, but the
   lab makes location transparent.
 
 ### Authoring a lab (discovery + provisioning)
 
-After declaring a host's connection info (`paniolo host add bench1 --ssh
+After declaring a host's connection info (`panio host add bench1 --ssh
 user@bench1.local`, or hand-write `[hosts.bench1] ssh = …`), let
-paniolo discover its hardware and propose the target block:
+panio discover its hardware and propose the target block:
 
 ```
-paniolo discover                                  # list THIS host's hardware
-paniolo --lab mylab.toml configure fortune --host bench1
+panio discover                                  # list THIS host's hardware
+panio --lab mylab.toml configure fortune --host bench1
 ```
 
 `configure` runs discovery on `bench1` over SSH and prints a proposed
@@ -1006,41 +1006,41 @@ truth). Edit the guesses as needed; add `tftp_root`/`power` (not discoverable).
 Provision a control host's daemons from your dev machine:
 
 ```
-paniolo --lab mylab.toml setup --host bench1       # runs `paniolo setup` on bench1
+panio --lab mylab.toml setup --host bench1       # runs `panio setup` on bench1
 ```
 
-(The host needs the paniolo CLI + source already present; this builds the Rust
+(The host needs the panio CLI + source already present; this builds the Rust
 daemons there over an ssh PTY.)
 
 **If the control host does not exist yet** — a blank Raspberry Pi, or a host
 being re-imaged — that is a different job, and it has its own skill:
 
 ```
-paniolo skill control-host
+panio skill control-host
 ```
 
 It covers flashing Pi OS to an SD card (including how to identify the right
 removable device before writing to it), the cloud-init seed that brings the
-box up with SSH authorized and paniolo installed, and enrolling the result
+box up with SSH authorized and panio installed, and enrolling the result
 here. Don't improvise a flashing procedure; read that skill.
 
 ## Background daemons — one view of everything
 
-Paniolo runs several per-subsystem daemons (serialcap, hdmicap, the hid
-injector, zigplug, netbootd). `paniolo daemons` shows all of them at once,
+Panio runs several per-subsystem daemons (serialcap, hdmicap, the hid
+injector, zigplug, netbootd). `panio daemons` shows all of them at once,
 plus **stray helper processes** running out of the libexec dir (e.g. wedged
 one-shot hooks — the thing to check when a serial-port-owning helper
 misbehaves):
 
 ```
-paniolo daemons                          # list: name, pid, port, detail + strays
-paniolo daemons stop zigplug serialcap   # stop specific daemons (SIGTERM)
-paniolo daemons stop 'serialcap[pi5]'    # one target's instance, as listed (quote: [] globs)
-paniolo daemons stop --all               # stop every daemon + TERM strays
-paniolo daemons stop --all --force       # …and SIGKILL whatever survives 3 s
-paniolo daemons restart --stale          # restart capture daemons with proven content changes
-paniolo daemons restart serialcap        # restart a named capture daemon
-paniolo daemons restart --all            # restart every serialcap/hdmicap
+panio daemons                          # list: name, pid, port, detail + strays
+panio daemons stop zigplug serialcap   # stop specific daemons (SIGTERM)
+panio daemons stop 'serialcap[pi5]'    # one target's instance, as listed (quote: [] globs)
+panio daemons stop --all               # stop every daemon + TERM strays
+panio daemons stop --all --force       # …and SIGKILL whatever survives 3 s
+panio daemons restart --stale          # restart capture daemons with proven content changes
+panio daemons restart serialcap        # restart a named capture daemon
+panio daemons restart --all            # restart every serialcap/hdmicap
 ```
 
 netbootd is stopped via its proper teardown (interface cleanup), everything
@@ -1049,25 +1049,25 @@ sweep-the-bench view.
 
 **Stale daemons after an upgrade.** A daemon keeps the binary it started from;
 `make install` / `apt install` replaces the binary on disk but not the running
-process. `paniolo daemons` flags **stale** only when executable content differs
+process. `panio daemons` flags **stale** only when executable content differs
 (also shown on `serial show` / `video show`). A SHA-256 checksum records content
 at spawn; Linux can also read the actual running executable through `/proc`.
 Identical bytes remain current after reinstalling, moving paths, or changing
 modification times. Missing identity, inaccessible executable content, or
 metadata changes without comparable content show **binary identity unknown**
 with a reason. Do not infer a required restart from an unknown identity.
-`paniolo daemons restart --stale` and automatic `serial watch` / `video watch`
+`panio daemons restart --stale` and automatic `serial watch` / `video watch`
 restarts select only proven content changes. Named restart, `--all`, and
 `video watch --restart` still intentionally restart a capture daemon, reusing
 its lab channel config. netbootd is excluded — cycle it via
-`paniolo netboot start/stop`.
+`panio netboot start/stop`.
 
 **Untracked daemons: `show` says stopped, `watch` says already running.** A
-daemon's discovery file is paniolo's only record of it, and on Linux `/tmp` is
+daemon's discovery file is panio's only record of it, and on Linux `/tmp` is
 swept on an age policy (Debian: 10 days), so a long-running daemon can lose that
-file while still holding its capture device. `paniolo video show` reports it as
-`running, untracked (pid N)` and `paniolo daemons` lists it under **Untracked
-daemons**; `paniolo video watch` / `video stop` and `paniolo serial watch` /
+file while still holding its capture device. `panio video show` reports it as
+`running, untracked (pid N)` and `panio daemons` lists it under **Untracked
+daemons**; `panio video watch` / `video stop` and `panio serial watch` /
 `serial stop` reap it for you. Don't reach for `ps`/`kill` — and don't conclude
 the device is free just because a daemon is gone from the tracked list.
 
@@ -1076,9 +1076,9 @@ the device is free just because a daemon is gone from the tracked list.
 - **USB fastboot RAM staging needs an external guarded runner.** Require fresh
   service entry for every artifact, separate bounded USB readiness, USB-host
   supervision with termination authority, and verified RAM contents. See
-  `docs/fastboot.md`; `paniolo usb` is a media mux, not a fastboot channel.
-- **Drive through paniolo, not around it.** Don't reconfigure or open a
-  paniolo-managed device by hand (`ifconfig`/`ip`/`ethtool` on the netboot
+  `docs/fastboot.md`; `panio usb` is a media mux, not a fastboot channel.
+- **Drive through panio, not around it.** Don't reconfigure or open a
+  panio-managed device by hand (`ifconfig`/`ip`/`ethtool` on the netboot
   interface, `screen`/`tio` on a serial port, `kill` on a daemon) — it desyncs
   the daemon. Use `netif mode …`, `serial log`/`send`, `daemons stop`.
 - `doctor` flags a channel that still works? Believe the working channel and
@@ -1099,14 +1099,14 @@ the device is free just because a daemon is gone from the tracked list.
   device's web UI. Don't open the UI to "check" while automating — it kicks
   the helper (and the helper kicks the browser). `jetkvm info` shows whether
   the target's USB is actually up; HID `OK` alone does not.
-- `~/.cargo/bin` (the CLI) must be on `PATH`, ahead of any other `paniolo`
+- `~/.cargo/bin` (the CLI) must be on `PATH`, ahead of any other `panio`
   (e.g. a Homebrew keg from the tap can shadow it). The helper binaries are
-  *not* on PATH — they live in `~/.local/libexec/paniolo/bin`
-  (`paniolo helper <name> …` to run one by hand).
-- `paniolo helper` runs on the local machine by default. For hardware on a
+  *not* on PATH — they live in `~/.local/libexec/panio/bin`
+  (`panio helper <name> …` to run one by hand).
+- `panio helper` runs on the local machine by default. For hardware on a
   control host, put `-t <target> --channel <kind>` (or `--host <labhost>`)
   **before** the helper name; flags after the name all go to the helper.
-- `paniolo console` auto-starts the video daemon, and the serial daemon when
+- `panio console` auto-starts the video daemon, and the serial daemon when
   the target has a serial channel (a KVM-only target opens as video + input,
   with no terminal pane), if they aren't running, and hands
   the browser a URL carrying every daemon's token (`?token=`,
@@ -1118,23 +1118,23 @@ the device is free just because a daemon is gone from the tracked list.
   session it opens no browser and prints an `ssh -N -L …` forwarding command
   for the human to run on their own machine. **Never pass `--print-url`**: it
   prints the token-bearing URL into your transcript; it is for a human at a
-  terminal. A daemon left over from an older paniolo has no token —
-  a named `paniolo daemons restart` (unknown identity is excluded from `--stale`).
+  terminal. A daemon left over from an older panio has no token —
+  a named `panio daemons restart` (unknown identity is excluded from `--stale`).
 - Netboot requires passwordless `sudo` (`ip` on Linux, `ifconfig` on macOS).
-- netboot and ffx are mutually exclusive on the link — use `paniolo netif mode`
+- netboot and ffx are mutually exclusive on the link — use `panio netif mode`
   to switch; entering ffx mode stops netboot so a power-cycle boots from SD.
-- To test the bare link: `paniolo netif mode link` (up) / `mode off` (soft down).
+- To test the bare link: `panio netif mode link` (up) / `mode off` (soft down).
   Soft "down" only releases the host IP — with Wake-on-LAN on, `carrier` can still
   read `up` (the PHY stays powered). For a drop the target actually detects, use
-  `paniolo netif down-hard` (kills WoL + admin-downs the iface), or unplug.
+  `panio netif down-hard` (kills WoL + admin-downs the iface), or unplug.
 - Remote (lab) targets: if ssh fails with "Too many authentication failures",
-  set the host's `identity` (agent key-spray); if the remote can't find paniolo,
-  set its `paniolo_cmd` to an absolute path.
+  set the host's `identity` (agent key-spray); if the remote can't find panio,
+  set its `panio_cmd` to an absolute path.
 - OCR is strongest on large text; tiny console fonts may misread some characters.
 - AMT bare addresses require verified HTTPS/16993. Update every power hook
   together for private CA trust or explicit legacy HTTP; never auto-downgrade.
 - AMT-backed power hooks need a password source: `AMT_PASSWORD` in the
-  environment of the `paniolo power …` invocation, or `--password-file` /
+  environment of the `panio power …` invocation, or `--password-file` /
   `--password-command` in the hook (see the Intel AMT power example). A hook
   failing with `child_exit` 3 and "the AMT password is not set" (or a file or
   command error) means configure the secret, not a bug.

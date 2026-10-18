@@ -8,7 +8,7 @@ capabilities = ["serial"]
 goal = """
 I'm about to power-cycle `dut`. After that I want to watch for *new* console
 lines that appear after the ones you've already seen — without re-dumping the
-whole log each time you check. How do you do that with paniolo?
+whole log each time you check. How do you do that with panio?
 """
 traps = [
   "each captured line has a stable, monotonic `seq`; note the highest completed sequence, then poll `--since <seq>`",
@@ -16,9 +16,9 @@ traps = [
   "`seq` stays valid across buffer eviction, so an old `--since`/range query keeps working",
 ]
 reference = [
-  'paniolo serial watch dut',
-  'paniolo serial log dut --no-pending --tail 1        # note the highest seq, e.g. #1840',
-  'paniolo serial log dut --since 1840     # only lines newer than #1840 (repeat to poll)',
+  'panio serial watch dut',
+  'panio serial log dut --no-pending --tail 1        # note the highest seq, e.g. #1840',
+  'panio serial log dut --since 1840     # only lines newer than #1840 (repeat to poll)',
 ]
 seed = "dut_console.toml"
 

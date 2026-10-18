@@ -148,7 +148,7 @@ async fn is_link_up(interface: &str) -> bool {
 /// (Re-)assign `host_ip` to the interface. The netmask is the fixed /24 the
 /// whole netboot link is built on: DHCP advertises the same
 /// `255.255.255.0` and derives the client's lease inside it
-/// (`dhcp::derive_client_ip`), and `paniolo netboot start` configures the
+/// (`dhcp::derive_client_ip`), and `panio netboot start` configures the
 /// interface with the same mask before spawning us.
 async fn apply_interface_ip(interface: &str, host_ip: Ipv4Addr) {
     let _ = if cfg!(target_os = "macos") {

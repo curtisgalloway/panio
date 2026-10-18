@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Minimal DHCP server for paniolo netboot (PoC port of `_dhcp.py`).
+//! Minimal DHCP server for panio netboot (PoC port of `_dhcp.py`).
 //!
 //! Broadcast-only replies — no raw sockets, no BPF. Handles
 //! DISCOVER→OFFER and REQUEST→ACK for a single netboot client, advertising
@@ -42,7 +42,7 @@
 //! DHCPDECLINE, DHCPRELEASE, or a REQUEST addressed to another server
 //! (option 54) — takes no lock, whoever sends it, so an unrelated host on
 //! the link cannot claim the session with a packet that would never have
-//! been served (#166). There is no lease timer to expire the lock: `paniolo
+//! been served (#166). There is no lease timer to expire the lock: `panio
 //! netboot start`/`stop` restarts this process per boot session, so swapping
 //! the netboot target means restarting netbootd, clearing the lock along
 //! with everything else this process held in memory.
@@ -99,7 +99,7 @@ const DHCP_NAK: u8 = 6;
 
 const LEASE_SECONDS: u32 = 12 * 3600;
 /// The lease's subnet mask. The whole netboot link is a fixed /24: the host
-/// interface is configured with this mask (by `paniolo netboot start` and by
+/// interface is configured with this mask (by `panio netboot start` and by
 /// `netcfg::monitor_interface`), and the client is leased an address inside
 /// it so the advertised router — the host — is reachable.
 const SUBNET_MASK: [u8; 4] = [255, 255, 255, 0];

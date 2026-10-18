@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""zigplug — Zigbee smart plug control for paniolo power hooks.
+"""zigplug — Zigbee smart plug control for panio power hooks.
 
 Operations route through a persistent daemon that owns the coordinator
 session (auto-spawned on first use; see `_daemon.py` for why one-shots are
@@ -313,7 +313,7 @@ def stop() -> None:
     to signaling the recorded pid: a discovery file outlives the daemon
     whenever it did not exit cleanly, and once the kernel reuses that pid the
     record names an unrelated process. If the authenticated request does not
-    make the daemon exit, use `paniolo daemons stop zigplug`, which checks
+    make the daemon exit, use `panio daemons stop zigplug`, which checks
     the process identity before it signals anything.
     """
     daemon = _daemon.read_discovery()
@@ -338,7 +338,7 @@ def stop() -> None:
     raise _fail(
         _app.ZigplugError(
             f"daemon (pid {daemon.pid}) did not stop within 5s of an "
-            "authenticated /stop request; use `paniolo daemons stop "
+            "authenticated /stop request; use `panio daemons stop "
             "zigplug`, which checks process identity before signaling"
         )
     )
@@ -479,7 +479,7 @@ async def _with_cluster(ieee_text: str, fn) -> None:
 
 @app.command()
 def state(ieee: _IeeeArg) -> None:
-    """Print exactly `on` or `off` (paniolo state_cmd contract)."""
+    """Print exactly `on` or `off` (panio state_cmd contract)."""
     if _options.no_daemon:
 
         async def go(cluster) -> None:

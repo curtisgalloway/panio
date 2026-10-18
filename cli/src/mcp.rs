@@ -1,4 +1,4 @@
-//! `paniolo mcp`: paniolo's runtime commands as MCP tools over stdio.
+//! `panio mcp`: panio's runtime commands as MCP tools over stdio.
 //!
 //! A Model Context Protocol server speaking newline-delimited JSON-RPC 2.0 on
 //! stdin/stdout, hand-written rather than built on an SDK (design and
@@ -53,7 +53,7 @@ pub fn serve(lab_flag: Option<&str>) -> Result<()> {
 }
 
 struct Server {
-    /// The paniolo binary tools run as a child.
+    /// The panio binary tools run as a child.
     exe: PathBuf,
     /// The `--lab` the server was started with, passed on to every child.
     lab: Option<String>,
@@ -170,13 +170,13 @@ impl Server {
         let png = dir.path().join("shot.png");
         let out = match self.run_child(&req.argv(&png)) {
             Ok(out) => out,
-            Err(e) => return tool_error(&format!("running paniolo video shot: {e}")),
+            Err(e) => return tool_error(&format!("running panio video shot: {e}")),
         };
         let stderr = String::from_utf8_lossy(&out.stderr);
         if !out.status.success() {
             let code = crate::error::shell_code(out.status);
             return tool_error(&format!(
-                "paniolo video shot exited {code}\n{}",
+                "panio video shot exited {code}\n{}",
                 stderr.trim_end()
             ));
         }
@@ -200,13 +200,13 @@ impl Server {
         })
     }
 
-    /// Run a tool that maps onto one paniolo command and reports its output
+    /// Run a tool that maps onto one panio command and reports its output
     /// as text. stderr rides along after stdout when there is any, because
     /// it carries warnings an agent should see (a stale serial log, say).
     fn run_cli_tool(&self, call: &CliCall) -> Value {
         let out = match self.run_child(&call.argv) {
             Ok(out) => out,
-            Err(e) => return tool_error(&format!("running paniolo: {e}")),
+            Err(e) => return tool_error(&format!("running panio: {e}")),
         };
         let stdout = String::from_utf8_lossy(&out.stdout);
         let stderr = String::from_utf8_lossy(&out.stderr);
@@ -217,7 +217,7 @@ impl Server {
                 && [Kind::Unreachable, Kind::Timeout]
                     .iter()
                     .any(|k| k.exit_code() == code);
-            let mut text = format!("paniolo {verb} exited {code}");
+            let mut text = format!("panio {verb} exited {code}");
             if unknown {
                 text.push_str(
                     "\nOutcome unknown: the command may or may not have run. \
@@ -234,7 +234,7 @@ impl Server {
         }
         let mut text = stdout.trim_end().to_string();
         if text.is_empty() {
-            text = format!("paniolo {verb}: ok");
+            text = format!("panio {verb}: ok");
         }
         if !stderr.trim().is_empty() {
             text.push_str("\nstderr:\n");
@@ -260,7 +260,7 @@ impl Server {
     }
 }
 
-/// One tool call translated into a paniolo argv.
+/// One tool call translated into a panio argv.
 #[derive(Debug, PartialEq)]
 struct CliCall {
     argv: Vec<String>,
@@ -330,7 +330,7 @@ const MAX_LOG_LINES: u64 = 5_000;
 /// The CLI's own cap on `serial send --pace-ms`.
 const MAX_PACE_MS: u64 = 10_000;
 
-/// Translate a tool that maps onto one paniolo command. Every target is
+/// Translate a tool that maps onto one panio command. Every target is
 /// passed as `-t`, never positionally, so a name can't be read as an option.
 fn cli_call(tool: &str, args: &Value) -> Result<CliCall, String> {
     let a = Args { tool, v: args };
@@ -628,7 +628,7 @@ impl ShotRequest {
         })
     }
 
-    /// The `paniolo` argv (after the global flags) for this shot.
+    /// The `panio` argv (after the global flags) for this shot.
     fn argv(&self, out: &Path) -> Vec<String> {
         // `-t` rather than a positional, so a target named like an option
         // can never be read as one.
@@ -661,8 +661,8 @@ fn initialize(params: &Value) -> Value {
     json!({
         "protocolVersion": version,
         "capabilities": { "tools": {} },
-        "serverInfo": { "name": "paniolo", "version": crate::VERSION },
-        "instructions": "Drive embedded target machines managed by paniolo. \
+        "serverInfo": { "name": "panio", "version": crate::VERSION },
+        "instructions": "Drive embedded target machines managed by panio. \
             Call target_list first to see the targets and their channels. \
             To see the screen, video_shot returns it as an image plus a hash; after \
             acting (hid_send, serial_send), pass that hash back as changed_since to \
@@ -687,7 +687,7 @@ fn tool_list() -> Value {
             "name": "video_shot",
             "description": "Capture the target's current screen from its HDMI-capture \
                 (video) channel. Returns the PNG and a text line `signal=<s>  hash=<h>`. \
-                The video daemon must already be running (`paniolo video watch <target>`).",
+                The video daemon must already be running (`panio video watch <target>`).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -760,7 +760,7 @@ fn tool_list() -> Value {
                 messages, shell output) from the capture log. Each line is \
                 `[time] #<seq> <text>`; pass the last seq back as `since` to get only \
                 newer lines. With no window it returns the last 200 lines. The serial \
-                daemon must be running (`paniolo serial watch <target>`), or the log may \
+                daemon must be running (`panio serial watch <target>`), or the log may \
                 be stale (a warning says so).",
             "inputSchema": schema(&[
                 ("interface", json!({ "type": "string", "description": "Serial interface name, for a target with several (see target_list)." })),
@@ -805,7 +805,7 @@ fn tool_list() -> Value {
                 [\"moveabs\", \"16384\", \"16384\"] (0..32767 across the screen, not pixels), \
                 [\"click\", \"left\"], [\"scroll\", \"-3\"]. After acting, use video_shot with \
                 changed_since to see the result. The full vocabulary is in \
-                `paniolo skill kvm-puppeting`.",
+                `panio skill kvm-puppeting`.",
             "inputSchema": schema_requiring(&["command"], &[
                 ("command", json!({ "type": "array", "items": { "type": "string" }, "minItems": 1, "description": "The verb, then its arguments, one string each." })),
             ]),
@@ -993,7 +993,7 @@ mod tests {
         assert_eq!(r[0]["id"], 1);
         assert_eq!(r[0]["result"]["protocolVersion"], "2025-06-18");
         assert!(r[0]["result"]["capabilities"]["tools"].is_object());
-        assert_eq!(r[0]["result"]["serverInfo"]["name"], "paniolo");
+        assert_eq!(r[0]["result"]["serverInfo"]["name"], "panio");
     }
 
     #[test]
@@ -1182,7 +1182,7 @@ mod tests {
         use clap::Parser;
         for (tool, args) in sample_calls() {
             let call = cli_call(tool, &args).unwrap();
-            let mut argv = vec!["paniolo", "--lab", "/l.toml", "--json-errors"];
+            let mut argv = vec!["panio", "--lab", "/l.toml", "--json-errors"];
             argv.extend(call.argv.iter().map(String::as_str));
             if let Err(e) = crate::Cli::try_parse_from(&argv) {
                 panic!("{tool}: {argv:?} rejected:\n{e}");
@@ -1221,12 +1221,12 @@ mod tests {
         ] {
             assert!(cli_call("serial_evidence", &args).is_err());
         }
+        assert!(
+            crate::Cli::try_parse_from(["panio", "serial", "evidence", "pi5", "--since", "1"])
+                .is_err()
+        );
         assert!(crate::Cli::try_parse_from([
-            "paniolo", "serial", "evidence", "pi5", "--since", "1"
-        ])
-        .is_err());
-        assert!(crate::Cli::try_parse_from([
-            "paniolo",
+            "panio",
             "serial",
             "evidence",
             "pi5",
@@ -1441,7 +1441,7 @@ mod tests {
         assert_eq!(targets[0]["channels"][0]["kind"], "video");
     }
 
-    /// A fake `paniolo` that behaves like `video shot`: writes PNG bytes to
+    /// A fake `panio` that behaves like `video shot`: writes PNG bytes to
     /// the `--out` path and the status line to stderr. Proves the child is
     /// really run with the global flags first, its file read back, and its
     /// stdin closed (the script would block on `read` otherwise).
@@ -1454,9 +1454,9 @@ mod tests {
     /// A pipe is the only thing this process holds, so no fork can inherit a
     /// writer on the script itself.
     #[cfg(unix)]
-    fn fake_paniolo(dir: &Path, body: &str) -> PathBuf {
+    fn fake_panio(dir: &Path, body: &str) -> PathBuf {
         use std::io::Write;
-        let p = dir.join("paniolo");
+        let p = dir.join("panio");
         let mut writer = std::process::Command::new("sh")
             .args(["-c", "cat > \"$1\" && chmod 755 \"$1\"", "sh"])
             .arg(&p)
@@ -1478,7 +1478,7 @@ mod tests {
     fn video_shot_runs_the_cli_and_returns_the_image() {
         let dir = tempfile::tempdir().unwrap();
         let args_log = dir.path().join("args");
-        let exe = fake_paniolo(
+        let exe = fake_panio(
             dir.path(),
             &format!(
                 r#"echo "$@" > {log}
@@ -1528,7 +1528,7 @@ echo 'signal=ok  hash=00ff' >&2"#,
     fn cli_tool_returns_stdout_and_stderr_and_runs_the_argv() {
         let dir = tempfile::tempdir().unwrap();
         let args_log = dir.path().join("args");
-        let exe = fake_paniolo(
+        let exe = fake_panio(
             dir.path(),
             &format!(
                 r#"echo "$@" > {log}
@@ -1558,10 +1558,10 @@ echo 'warning: serialcap is not running; the log may be stale' >&2"#,
     #[test]
     fn empty_output_reports_ok() {
         let dir = tempfile::tempdir().unwrap();
-        let s = server(fake_paniolo(dir.path(), "exit 0"), None);
+        let s = server(fake_panio(dir.path(), "exit 0"), None);
         let result = call(&s, "power_on", json!({ "target": "pi5" }));
         assert_eq!(result["isError"], false);
-        assert_eq!(result["content"][0]["text"], "paniolo power on: ok");
+        assert_eq!(result["content"][0]["text"], "panio power on: ok");
     }
 
     /// An unreachable host or a timeout leaves a write's outcome unknown, and
@@ -1577,7 +1577,7 @@ echo 'warning: serialcap is not running; the log may be stale' >&2"#,
             (4, "power_state", false),
             (3, "power_cycle", false),
         ] {
-            let exe = fake_paniolo(dir.path(), &format!("echo 'ssh failed' >&2; exit {code}"));
+            let exe = fake_panio(dir.path(), &format!("echo 'ssh failed' >&2; exit {code}"));
             let s = server(exe, None);
             let args = if tool == "hid_send" {
                 json!({ "target": "pi5", "command": ["key", "ENTER"] })
@@ -1601,7 +1601,7 @@ echo 'warning: serialcap is not running; the log may be stale' >&2"#,
     #[test]
     fn video_shot_failure_is_a_tool_error_with_the_exit_code() {
         let dir = tempfile::tempdir().unwrap();
-        let exe = fake_paniolo(dir.path(), "echo 'no video daemon running' >&2; exit 6");
+        let exe = fake_panio(dir.path(), "echo 'no video daemon running' >&2; exit 6");
         let s = server(exe, None);
         let r = exchange(
             &s,

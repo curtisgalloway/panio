@@ -8,7 +8,7 @@ capabilities = ["serial"]
 goal = """
 Earlier you noted a kernel panic around console lines #840–#870 on `dut`. Re-read
 exactly that span in a machine-readable form so I can parse the timestamps. List
-the exact paniolo command you would run.
+the exact panio command you would run.
 """
 traps = [
   "`--from N --to M` selects an inclusive seq range",
@@ -16,7 +16,7 @@ traps = [
   "seq numbers are stable across buffer eviction, so the old range stays valid; add `--raw` if you need the original ANSI",
 ]
 reference = [
-  'paniolo serial log dut --from 840 --to 870 --json',
+  'panio serial log dut --from 840 --to 870 --json',
 ]
 seed = "dut_console.toml"
 

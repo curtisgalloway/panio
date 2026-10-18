@@ -20,7 +20,7 @@ usbmon records host-side USB requests and completions. See the
 
 ## Earlier measurements
 
-On 2026-09-20, paniolo 0.4.1 on x86_64 Ubuntu 26.04, kernel 7.0, could not
+On 2026-09-20, panio 0.4.1 on x86_64 Ubuntu 26.04, kernel 7.0, could not
 communicate with a physically identified Mini-KVM exposing `1a86:fe0c`
 through `cdc_acm`, alongside MS2109 video (`345f:2109`). Target-side HID
 identified as `1a86:fe00`, KeyMod. The same unit and cable worked on macOS.
@@ -35,7 +35,7 @@ identified as `1a86:fe00`, KeyMod. The same unit and cable worked on macOS.
 | Keyboard command observed at target input device | no event | — |
 | USB reset or replug | no reply | — |
 
-Further 2026-10-11 tests with paniolo 0.7.0 failed at all four DTR/RTS states,
+Further 2026-10-11 tests with panio 0.7.0 failed at all four DTR/RTS states,
 through different host USB connections, and after both cables were removed
 together. Whether that was the September unit was not recorded. No process held
 the tty and `ID_MM_DEVICE_IGNORE=1` was active. A cold restart followed by
@@ -225,7 +225,7 @@ No issue or upstream comment has been posted.
 - Earlier missing target keystrokes remain relevant; this session verified
   GET_INFO recovery, not a new end-to-end HID test.
 
-[issue]: https://github.com/curtisgalloway/paniolo/issues/238
+[issue]: https://github.com/curtisgalloway/panio/issues/238
 [release]: https://github.com/TechxArtisanStudio/Openterface_KM/releases/tag/v0.0.5
 [ep3]: https://github.com/TechxArtisanStudio/Openterface_KM/commit/3b105037b7df73df077f5c1f1eedb06593a0a442
 [queue]: https://github.com/TechxArtisanStudio/Openterface_KM/commit/4a90be4f7985846c6016eb1f4291f9278b1c00c2

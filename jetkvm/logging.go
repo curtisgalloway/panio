@@ -19,7 +19,7 @@ import (
 	"os"
 )
 
-// initLogging logs to stderr: the paniolo CLI redirects a daemon's stderr into
+// initLogging logs to stderr: the panio CLI redirects a daemon's stderr into
 // its daemon.log and discards stdout.
 func initLogging() {
 	level := slog.LevelInfo

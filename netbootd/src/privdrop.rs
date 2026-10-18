@@ -15,7 +15,7 @@
 //! Drop root after the privileged setup is done (Linux).
 //!
 //! On Linux ports 67/69 (and 80) need root, and so does `SO_BINDTODEVICE` on
-//! older kernels, so `paniolo netboot start` spawns netbootd under `sudo`.
+//! older kernels, so `panio netboot start` spawns netbootd under `sudo`.
 //! Nothing after the listen sockets are bound and pinned needs root, though:
 //! the ARP pin and the interface-IP monitor already go through their own
 //! `sudo` (passwordless sudo is a documented requirement on Linux control
@@ -101,7 +101,7 @@ pub fn drop_privileges() -> Result<()> {
             tracing::warn!(
                 "running as root with no SUDO_UID/SUDO_GID in the environment; \
                  cannot drop privileges (start netbootd through sudo, as \
-                 `paniolo netboot start` does)"
+                 `panio netboot start` does)"
             );
         }
         return Ok(());

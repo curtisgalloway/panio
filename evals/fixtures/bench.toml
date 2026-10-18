@@ -26,5 +26,5 @@ device = "HDMI2"
 
 [targets.board.hid]
 cmd = "hidrig -d /dev/cu.usbmodem9999"
-# paniolo lab — managed by the `paniolo` CLI; hand-edits are preserved
+# panio lab — managed by the `panio` CLI; hand-edits are preserved
 

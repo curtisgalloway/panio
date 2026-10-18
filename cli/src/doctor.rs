@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! `paniolo doctor` — probe configured channels against reality.
+//! `panio doctor` — probe configured channels against reality.
 //!
 //! Read-only health check: for each channel it SSHes to the control host the
 //! channel lives on (or runs locally) and tests that the configured device or
@@ -79,7 +79,7 @@ impl Status {
 
 /// One health check, expressed structurally rather than as shell text.
 ///
-/// Locally a probe runs natively, so `paniolo doctor` needs no shell at all.
+/// Locally a probe runs natively, so `panio doctor` needs no shell at all.
 /// It used to build a POSIX script and run it through `sh -c`, which does not
 /// exist on Windows — and nothing caught that, because the tests asserted on
 /// the *text* of the generated script instead of running it. Anything that
@@ -118,7 +118,7 @@ enum Probe {
 impl Probe {
     /// Render as a POSIX-sh script, for probing a remote Unix control host.
     /// `plugin_path` is the host's lab `plugin_path`, which a dispatch there
-    /// would pass on; `None` leaves the host's own `PANIOLO_PLUGIN_PATH` in
+    /// would pass on; `None` leaves the host's own `PANIO_PLUGIN_PATH` in
     /// charge (see [`hook_path_prefix`]).
     fn to_posix(&self, plugin_path: Option<&str>) -> String {
         match self {
@@ -376,7 +376,7 @@ fn netboot_drift_detail(
     defaulted: bool,
 ) -> String {
     format!(
-        "{iface} holds {held} but host_ip is {host_ip}{}; run `paniolo netif mode link \
+        "{iface} holds {held} but host_ip is {host_ip}{}; run `panio netif mode link \
          {target}` (or `netboot start {target}`) to re-apply it",
         if defaulted { " (default)" } else { "" }
     )
@@ -421,15 +421,15 @@ fn field<'a>(ch: &'a ResolvedChannel, key: &str) -> Option<&'a str> {
 
 /// Shell statements giving hook commands the same resolution the hooks get at
 /// runtime (`daemons::hook_path()`): the per-user libexec dir, then the system
-/// package dir, then each plugin root's `libexec/paniolo/bin`, then PATH. The
+/// package dir, then each plugin root's `libexec/panio/bin`, then PATH. The
 /// literal paths must match `daemons::libexec_dir()` /
 /// `daemons::system_libexec_dir()` / `daemons::plugin_helper_dir()`; `$HOME`
 /// is expanded by the probed host's own shell so that host's home applies.
 ///
 /// The plugin roots are the host's lab `plugin_path` when it has one (what a
-/// dispatch there passes as `--plugin-path`), else the `PANIOLO_PLUGIN_PATH`
+/// dispatch there passes as `--plugin-path`), else the `PANIO_PLUGIN_PATH`
 /// the host's own non-interactive SSH environment carries, which is what the
-/// remote paniolo would read. Split on `:` in a subshell, so the caller's IFS
+/// remote panio would read. Split on `:` in a subshell, so the caller's IFS
 /// and globbing are untouched, with relative entries skipped as
 /// `daemons::parse_plugin_path` skips them.
 ///
@@ -441,13 +441,13 @@ fn field<'a>(ch: &'a ResolvedChannel, key: &str) -> Option<&'a str> {
 fn hook_path_prefix(plugin_path: Option<&str>) -> String {
     let roots = match plugin_path {
         Some(p) => ssh::shell_quote(p),
-        None => "\"${PANIOLO_PLUGIN_PATH:-}\"".to_string(),
+        None => "\"${PANIO_PLUGIN_PATH:-}\"".to_string(),
     };
     format!(
         "pp={roots}; \
          pd=$(IFS=:; set -f; for r in $pp; do case $r in /*) \
-         printf '%s/libexec/paniolo/bin:' \"$r\";; esac; done); \
-         PATH=\"$HOME/.local/libexec/paniolo/bin:/usr/libexec/paniolo/bin:$pd$PATH\";"
+         printf '%s/libexec/panio/bin:' \"$r\";; esac; done); \
+         PATH=\"$HOME/.local/libexec/panio/bin:/usr/libexec/panio/bin:$pd$PATH\";"
     )
 }
 
@@ -496,7 +496,7 @@ const HELPER_DOCTOR_TIMEOUT: Duration = Duration::from_secs(10);
 /// and the remote path (GNU `timeout`'s convention).
 const TIMED_OUT: i32 = 124;
 
-/// The most of a helper's report paniolo reads; the rest is discarded.
+/// The most of a helper's report panio reads; the rest is discarded.
 const MAX_REPORT_BYTES: usize = 64 * 1024;
 
 /// The longest name or detail printed from a helper's report.
@@ -646,7 +646,7 @@ pub(crate) fn doctor_command_for_hook(hook: &str) -> Result<String, String> {
 }
 
 /// The helper doctor command for a *prefix* (`hid`/`usb` `cmd`, which
-/// paniolo already appends verbs to): the whole command, then
+/// panio already appends verbs to): the whole command, then
 /// ` doctor --json`. It must still be one simple command.
 pub(crate) fn doctor_command_for_prefix(cmd: &str) -> Result<String, String> {
     let mut end = 0;
@@ -1089,7 +1089,7 @@ fn check_channel(lab: &Lab, ch: &ResolvedChannel, rt: &ResolvedTarget) -> (Statu
         ChannelKind::Netboot if field(ch, "tftp_root").is_none_or(str::is_empty) => (
             Status::Missing,
             format!(
-                "no tftp_root configured (paniolo netboot set -t {} --tftp-root <path>)",
+                "no tftp_root configured (panio netboot set -t {} --tftp-root <path>)",
                 rt.name
             ),
         ),
@@ -1111,7 +1111,7 @@ fn check_channel(lab: &Lab, ch: &ResolvedChannel, rt: &ResolvedTarget) -> (Statu
                         Status::Conflict,
                         format!(
                             "{iface} at {}{} shares {} with '{}' on {}; give one link its \
-                             own /24 (paniolo netboot set --host-ip)",
+                             own /24 (panio netboot set --host-ip)",
                             c.host_ip,
                             if c.defaulted { " (default)" } else { "" },
                             c.subnet,
@@ -1231,7 +1231,7 @@ fn check_channel(lab: &Lab, ch: &ResolvedChannel, rt: &ResolvedTarget) -> (Statu
             }
         },
         ChannelKind::Adb => {
-            // adb is a system tool (PATH), not a paniolo libexec helper. Exit 3
+            // adb is a system tool (PATH), not a panio libexec helper. Exit 3
             // distinguishes "adb not installed" from "device not reachable".
             let adb_bin = field(ch, "adb").unwrap_or("adb");
             let serial = field(ch, "serial");
@@ -1278,11 +1278,11 @@ fn local_root_status(
         return (Status::Missing, "no such directory".to_string());
     }
     let helpers = daemons::plugin_helper_dir(root);
-    let skills = root.join("share/paniolo/skills");
+    let skills = root.join("share/panio/skills");
     if !helpers.is_dir() && !skills.is_dir() {
         return (
             Status::Incomplete,
-            "has neither libexec/paniolo/bin nor share/paniolo/skills".to_string(),
+            "has neither libexec/panio/bin nor share/panio/skills".to_string(),
         );
     }
     let lost: Vec<&str> = shadowed
@@ -1300,7 +1300,7 @@ fn local_root_status(
     }
 }
 
-/// Report the plugin roots (`PANIOLO_PLUGIN_PATH`, GitHub #303) of each host
+/// Report the plugin roots (`PANIO_PLUGIN_PATH`, GitHub #303) of each host
 /// in `hosts`, one line per root, and return how many are missing. This
 /// machine reports its own environment. A remote host reports its lab
 /// `plugin_path`, the roots a dispatch there passes on; one without the field
@@ -1436,11 +1436,11 @@ mod tests {
     fn hook_path_prefix_covers_user_and_system_libexec() {
         // The probe must search everywhere the hooks themselves resolve
         // helpers (daemons::helper_dirs()): a .deb install's helpers live only
-        // in /usr/libexec/paniolo/bin, off PATH.
+        // in /usr/libexec/panio/bin, off PATH.
         for pp in [None, Some("/opt/lab-plugins")] {
             let prefix = hook_path_prefix(pp);
-            assert!(prefix.contains("$HOME/.local/libexec/paniolo/bin"));
-            assert!(prefix.contains("/usr/libexec/paniolo/bin"));
+            assert!(prefix.contains("$HOME/.local/libexec/panio/bin"));
+            assert!(prefix.contains("/usr/libexec/panio/bin"));
             // A standalone statement, so a following `command -v` honors it
             // in dash as well as bash.
             assert!(prefix.ends_with(';'));
@@ -1449,7 +1449,7 @@ mod tests {
 
     /// Runs the remote hook-path prefix in a real `sh`, with `HOME` pointed at
     /// a scratch dir: a plugin helper resolves (from the lab value, or from
-    /// the host's own `PANIOLO_PLUGIN_PATH` when the lab has none), a
+    /// the host's own `PANIO_PLUGIN_PATH` when the lab has none), a
     /// relative entry is skipped, and a bundled helper of the same name wins.
     #[cfg(unix)]
     #[test]
@@ -1457,7 +1457,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path().join("home");
-        let bundled = home.join(".local/libexec/paniolo/bin");
+        let bundled = home.join(".local/libexec/panio/bin");
         let root = tmp.path().join("plugins");
         let pdir = daemons::plugin_helper_dir(&root);
         for (dir, name) in [(&bundled, "dup"), (&pdir, "dup"), (&pdir, "labctl")] {
@@ -1523,7 +1523,7 @@ mod tests {
     //
     // These RUN the probes. The string-shape tests below cover the POSIX
     // rendering used over SSH, but they pass identically on every platform —
-    // which is exactly how `paniolo doctor` shipped depending on `sh -c`, a
+    // which is exactly how `panio doctor` shipped depending on `sh -c`, a
     // binary that does not exist on Windows. A probe that cannot execute has
     // to fail a test somewhere, so it fails here.
 
@@ -1556,7 +1556,7 @@ mod tests {
         // A name nothing could resolve. The point is that the lookup runs to
         // completion and reports missing, rather than failing to launch.
         assert_eq!(
-            Probe::OnHookPath("paniolo-no-such-helper-xyzzy".to_string()).run_local(),
+            Probe::OnHookPath("panio-no-such-helper-xyzzy".to_string()).run_local(),
             Some(1)
         );
     }
@@ -1859,7 +1859,7 @@ mod tests {
         assert_eq!(drift_from_probe(137, ""), None, "SIGKILL is not drift");
     }
 
-    /// MISMATCH counts as a problem, so `paniolo doctor` exits non-zero and a
+    /// MISMATCH counts as a problem, so `panio doctor` exits non-zero and a
     /// script gating on it notices. A status that reported nothing would make
     /// the whole check decorative.
     #[test]
@@ -1915,7 +1915,7 @@ mod tests {
         let lab = crate::model::parse(
             "[targets.t.power]\ncycle_cmd = \"/bin/sh -c true\"\n\
              [targets.t.power.levels.hard]\n\
-             cycle_cmd = \"AMT_PASSWORD=x /paniolo-no-such-helper-xyzzy cycle\"\n",
+             cycle_cmd = \"AMT_PASSWORD=x /panio-no-such-helper-xyzzy cycle\"\n",
         )
         .unwrap();
         let rt = lab.resolved_target("t").unwrap();
@@ -1927,7 +1927,7 @@ mod tests {
         let (status, detail) = check_channel(&lab, ch, &rt);
         assert!(status.is_problem(), "{detail}");
         assert!(detail.starts_with("level 'hard': "), "{detail}");
-        assert!(detail.contains("/paniolo-no-such-helper-xyzzy"), "{detail}");
+        assert!(detail.contains("/panio-no-such-helper-xyzzy"), "{detail}");
     }
 
     #[test]
@@ -1935,7 +1935,7 @@ mod tests {
         // Exit 3 is what separates "adb is not installed" from "the device is
         // not reachable"; callers branch on it.
         let p = Probe::Adb {
-            bin: "paniolo-no-such-adb-xyzzy".to_string(),
+            bin: "panio-no-such-adb-xyzzy".to_string(),
             serial: None,
         };
         assert_eq!(p.run_local(), Some(3));
@@ -1946,7 +1946,7 @@ mod tests {
         // A device path that cannot exist, so the probe falls through to the
         // hdmicap lookup. If hdmicap IS installed on this machine the fallback
         // runs it instead, which is also a valid answer — assert on the pair.
-        let p = Probe::Video("/paniolo-no-such-capture-device-xyzzy".to_string());
+        let p = Probe::Video("/panio-no-such-capture-device-xyzzy".to_string());
         let rc = p.run_local();
         if crate::daemons::find_binary("hdmicap").is_some() {
             assert_eq!(rc, Some(1), "hdmicap present: device simply not listed");
@@ -2463,7 +2463,7 @@ mod tests {
     #[test]
     fn video_probe_searches_helper_dirs_then_path_then_cargo() {
         let s = video_probe_script("/dev/video0", None);
-        assert!(s.contains("/usr/libexec/paniolo/bin"), "{s}");
+        assert!(s.contains("/usr/libexec/panio/bin"), "{s}");
         assert!(s.contains("$HOME/.cargo/bin"), "{s}");
         assert!(s.contains("command -v hdmicap"), "{s}");
         assert!(s.starts_with("test -e /dev/video0 && exit 0"), "{s}");

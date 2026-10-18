@@ -6,7 +6,7 @@ core = true
 conditions = ["cold", "warm", "preloaded"]
 capabilities = ["serial"]
 goal = """
-`paniolo serial connect dut` fails because the serial port is already in use. As
+`panio serial connect dut` fails because the serial port is already in use. As
 an automated agent (not a human at a terminal), how should I read the console and
 send it commands instead? Explain what's happening and the commands to use.
 """
@@ -19,9 +19,9 @@ traps = [
 reference = """
 The port is exclusive and a `serial watch` daemon already holds it. Don't use
 interactive `connect` (foreground tio, for a human). Read with
-`paniolo serial log dut --tail/--since/--from/--to` and drive with
-`paniolo serial send dut "..."` — both work alongside the capture daemon. Only
-if you specifically need interactive tio, run `paniolo serial stop dut` to
+`panio serial log dut --tail/--since/--from/--to` and drive with
+`panio serial send dut "..."` — both work alongside the capture daemon. Only
+if you specifically need interactive tio, run `panio serial stop dut` to
 release the port first, then `connect`.
 """
 seed = "dut_console.toml"

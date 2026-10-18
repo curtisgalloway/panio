@@ -6,15 +6,15 @@ core = false
 conditions = ["cold", "warm", "preloaded"]
 capabilities = ["doctor"]
 goal = """
-Is target `pico`'s paniolo configuration consistent with what's actually
+Is target `pico`'s panio configuration consistent with what's actually
 plugged into this machine right now? Tell me which configured devices are
 present and which are missing.
 """
 traps = [
-  "use `paniolo doctor` (probes channels against reality) rather than re-deriving by hand",
+  "use `panio doctor` (probes channels against reality) rather than re-deriving by hand",
 ]
 reference = [
-  'paniolo doctor',
+  'panio doctor',
 ]
 seed = "pico_absent_devices.toml"
 

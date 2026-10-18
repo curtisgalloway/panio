@@ -14,7 +14,7 @@
 
 //! `netbootd-bpf-helper` — the *only* privileged component of netboot.
 //!
-//! Installed setuid-root by `paniolo setup` (the one-time `sudo`). Its entire
+//! Installed setuid-root by `panio setup` (the one-time `sudo`). Its entire
 //! job: open `/dev/bpf` **write-only**, bind it to the requested interface, set
 //! `BIOCSHDRCMPLT`, install a reject-all filter, and hand the descriptor back
 //! to its (unprivileged) caller over the inherited socketpair fd via
@@ -106,7 +106,7 @@ fn main() -> std::process::ExitCode {
             let hint = if e.kind() == std::io::ErrorKind::PermissionDenied
                 && unsafe { libc::geteuid() } != 0
             {
-                " (not running as root — is the helper installed setuid? run `paniolo setup`)"
+                " (not running as root — is the helper installed setuid? run `panio setup`)"
             } else {
                 ""
             };

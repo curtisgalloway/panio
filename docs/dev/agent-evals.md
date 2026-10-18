@@ -2,31 +2,31 @@
 
 A reproducible eval suite that tests how well a *naive* agent goes from a
 plain-language goal ("boot this Pi over the network and show me the console")
-to the correct paniolo commands, **without inventing commands or flailing**.
+to the correct panio commands, **without inventing commands or flailing**.
 
 The suite needs **no hardware**: each scenario is either *stated-commands* (the
-agent says what it would run) or *config-only* (the agent runs paniolo against a
-throwaway lab file). Both need only the `paniolo` CLI.
+agent says what it would run) or *config-only* (the agent runs panio against a
+throwaway lab file). Both need only the `panio` CLI.
 
 To run it, see [§9](#9-running-the-suite-workflow).
 
 > **Complementary suite.** For the **hardware-in-the-loop, head-to-head**
-> comparison of paniolo against improvising or `fx serial`, across Claude Code
+> comparison of panio against improvising or `fx serial`, across Claude Code
 > and Antigravity, see [`serial-agent-benchmark.md`](serial-agent-benchmark.md).
 
 ---
 
 ## 1. What is actually under test
 
-Paniolo is designed to be **self-describing**: `paniolo --help` →
-`paniolo skill` → `docs/` should turn a goal into the right command. The eval
+Panio is designed to be **self-describing**: `panio --help` →
+`panio skill` → `docs/` should turn a goal into the right command. The eval
 measures that surface.
 
 Every scenario has two independently gradable layers:
 
 - **Discovery** — did the agent find the right capability in an authoritative
-  source (`--help`, `paniolo skill`, the docs) *before* acting, without
-  fabricating commands like `paniolo adb reboot` or `paniolo flash`?
+  source (`--help`, `panio skill`, the docs) *before* acting, without
+  fabricating commands like `panio adb reboot` or `panio flash`?
 - **Usage** — did it form the correct command (subcommand, flags, the
   `-t`-vs-positional convention) and interpret the output?
 
@@ -41,13 +41,13 @@ command surface itself.
 
 The three conditions differ only in **what guidance the harness (e.g. Claude
 Code) pushes into context up front**. The bundled skills stay *pullable* via
-`paniolo skill` in every condition.
+`panio skill` in every condition.
 
 | Condition | What the agent starts with | Isolates |
 |---|---|---|
-| **Cold (named)** | `paniolo` on PATH; task names "paniolo"; the skill is **not** registered with the harness. The agent pulls guidance itself (`paniolo --help`, `paniolo skill`, `docs/`). | The self-describing surface, end to end. |
-| **Warm (registered)** | The `paniolo` skill is **registered**: its description is visible, its body loads only if invoked. | The "decide to invoke the skill" step + usage. |
-| **Preloaded** | The full `skills/paniolo/SKILL.md` is injected into context. Discovery is removed. | **Usage only** — the ceiling. |
+| **Cold (named)** | `panio` on PATH; task names "panio"; the skill is **not** registered with the harness. The agent pulls guidance itself (`panio --help`, `panio skill`, `docs/`). | The self-describing surface, end to end. |
+| **Warm (registered)** | The `panio` skill is **registered**: its description is visible, its body loads only if invoked. | The "decide to invoke the skill" step + usage. |
+| **Preloaded** | The full `skills/panio/SKILL.md` is injected into context. Discovery is removed. | **Usage only** — the ceiling. |
 
 The differences between conditions are the signal:
 
@@ -58,8 +58,8 @@ The differences between conditions are the signal:
 - **Cold success rate** = how far the CLI self-description alone carries an
   agent.
 
-> **Nested discovery.** The `paniolo` skill points at sub-skills
-> (`paniolo skill kvm-puppeting`). In **Warm** and **Preloaded**, scenarios that
+> **Nested discovery.** The `panio` skill points at sub-skills
+> (`panio skill kvm-puppeting`). In **Warm** and **Preloaded**, scenarios that
 > need one test whether the agent *follows the pointer*.
 
 ### 2.2 Execution tiers
@@ -67,7 +67,7 @@ The differences between conditions are the signal:
 | Tier | The agent… | Graded by | Hardware |
 |---|---|---|---|
 | **T0 — stated commands** | outputs the command sequence it would run, citing where it learned each | LLM-judge against a reference + trap list | none |
-| **T1 — config-only** | runs paniolo against an isolated temp lab file | scripted inspection of `lab.toml` + exit codes | none |
+| **T1 — config-only** | runs panio against an isolated temp lab file | scripted inspection of `lab.toml` + exit codes | none |
 
 There is no hardware tier: runtime capabilities (netboot start, serial
 watch/send, video, power-cycle, netif) are covered at **T0**.
@@ -80,7 +80,7 @@ tftp-root/status`, `netif status`, `discover`, `doctor`, `skill`, `configure`,
 `helper` (bare list), `daemons` (bare list). Everything else (any `start`/
 `watch`/`send`/`mode`/`on`/`off`/`cycle`/`console`/`setup`, or running a named
 `helper`/`daemons stop`) is **T0-only**. The authoritative list is `SAFE` in
-[`evals/graders/t1_config.py`](https://github.com/curtisgalloway/paniolo/blob/main/evals/graders/t1_config.py);
+[`evals/graders/t1_config.py`](https://github.com/curtisgalloway/panio/blob/main/evals/graders/t1_config.py);
 `run.py --check` asserts each key is a real subcommand.
 
 ### 2.3 The matrix
@@ -94,12 +94,12 @@ cell and report rates.
 
 ### 3.1 Run a *clean* agent (most important rule)
 
-Results are worthless if the agent already knows paniolo from its
+Results are worthless if the agent already knows panio from its
 environment. Before every run:
 
 - **No user-global instructions** — disable `~/.claude/CLAUDE.md` and any
   injected user memory.
-- **Fresh project dir** — not the paniolo checkout, so `AGENTS.md`/`docs/` are
+- **Fresh project dir** — not the panio checkout, so `AGENTS.md`/`docs/` are
   not free reading unless a scenario allows it.
 - **No prior session history.**
 
@@ -120,18 +120,18 @@ mint a fresh token into the sandbox home first.
 
 ### 3.2 Realizing each condition
 
-- **Cold:** install only the `paniolo` binary; do **not** place
-  `skills/paniolo/` in the harness's skills directory. `paniolo skill` still
+- **Cold:** install only the `panio` binary; do **not** place
+  `skills/panio/` in the harness's skills directory. `panio skill` still
   works (the binary ships the skills).
-- **Warm:** register `skills/paniolo/SKILL.md` so its description is listed;
+- **Warm:** register `skills/panio/SKILL.md` so its description is listed;
   leave `kvm-puppeting` pullable-only.
-- **Preloaded:** prepend the full `skills/paniolo/SKILL.md` to the context.
+- **Preloaded:** prepend the full `skills/panio/SKILL.md` to the context.
 
 ### 3.3 Lab-file isolation & safety (T1)
 
-- Point every run at a throwaway lab: `PANIOLO_LAB=$SANDBOX/lab.toml`, seeded
-  per scenario (`paniolo init` or a fixture file).
-- Wrap `paniolo` with a logging shim that records every invoked `argv`, so the
+- Point every run at a throwaway lab: `PANIO_LAB=$SANDBOX/lab.toml`, seeded
+  per scenario (`panio init` or a fixture file).
+- Wrap `panio` with a logging shim that records every invoked `argv`, so the
   grader can assert **no out-of-allowlist command ran**. A T1 scenario that
   shells `netboot start` must fail closed, not power-cycle a bench.
 - `doctor`/`discover` enumerate the host's real hardware; don't assert on
@@ -160,7 +160,7 @@ The pass rule is in §6.2; tune its threshold during calibration (§7).
 
 ## 5. Scenario catalog
 
-Goals use a *user's* words, never paniolo's vocabulary. **Core set** (run first): C1, C3,
+Goals use a *user's* words, never panio's vocabulary. **Core set** (run first): C1, C3,
 C7, R1, R2, R3, R4, S11, M2.
 
 ### Config-only (T1 — scripted grader on `lab.toml`)
@@ -186,19 +186,19 @@ main console."
 
 **C3 — Power-cycle through a Shelly plug.** *(invent-detector)*
 *Goal:* "`pico` is plugged into a Shelly smart plug at `192.0.2.41`. Make
-`paniolo power-cycle pico` actually cut and restore its power."
-*Reference:* find the `shellyplug` helper (`paniolo helper`, the power docs)
+`panio power-cycle pico` actually cut and restore its power."
+*Reference:* find the `shellyplug` helper (`panio helper`, the power docs)
 and wire it into the power hooks:
 `power set -t pico --cycle-cmd "shellyplug -d 192.0.2.41 cycle" --state-cmd
 "shellyplug -d 192.0.2.41 state"` (and on/off).
-*Trap:* there is **no** `paniolo shelly`; smart plugs are helpers behind
+*Trap:* there is **no** `panio shelly`; smart plugs are helpers behind
 generic `power` hooks.
 *Grade:* `power.cycle_cmd` references `shellyplug` with the right host; no
 fabricated command.
 
 **C4 — Inspect the lab.** *(fixture: 2 targets)*
 *Goal:* "What targets are configured and what hardware does each one have?"
-*Reference:* `paniolo config show` (or `target show <name>` per target).
+*Reference:* `panio config show` (or `target show <name>` per target).
 *Trap:* none (baseline).
 *Grade:* judge confirms it reported the real channels.
 
@@ -224,13 +224,13 @@ block.
 and make `power-cycle tablet` reboot it."
 *Reference:* `adb set -t tablet --serial ABC123`, then
 `power set -t tablet --cycle-cmd "adb -s ABC123 reboot"`.
-*Trap:* there is **no** `paniolo adb reboot`; reboot uses the power hook.
+*Trap:* there is **no** `panio adb reboot`; reboot uses the power hook.
 *Grade:* `adb` channel + `power.cycle_cmd` invoking `adb … reboot`.
 
 **C8 — Config-vs-reality check.** *(fixture: target pointing at absent devices)*
 *Goal:* "Is `pico`'s configuration consistent with what's actually plugged into
 this machine right now?"
-*Reference:* `paniolo doctor` (reports each channel device present/absent).
+*Reference:* `panio doctor` (reports each channel device present/absent).
 *Trap:* `doctor`, not re-deriving by hand or eyeballing `discover`.
 *Grade:* judge confirms it ran `doctor` and read its mismatch report.
 
@@ -282,7 +282,7 @@ up — don't just sleep and guess."
 *Goal:* "On this UEFI board I can only see the screen over capture and
 type/click through the emulated keyboard+mouse. Enable network boot in BIOS
 setup."
-*Reference:* follow the pointer to `paniolo skill kvm-puppeting`; use the `video`
+*Reference:* follow the pointer to `panio skill kvm-puppeting`; use the `video`
 + `hid` channels (`video read`/`shot` to see, `hid send … moveabs/click/key`),
 applying the look-act-settle-verify loop.
 *Trap:* needs the *companion* skill; `moveabs` uses 0..32767 logical space,
@@ -291,14 +291,14 @@ not pixels.
 **R7 — A wedged daemon holds the port.**
 *Goal:* "I can't open the serial console — something already has the port. Find
 what and clear it."
-*Reference:* `paniolo daemons` (lists daemons + stray libexec helpers) →
-`paniolo daemons stop <name>` (or `--all`/`--force`).
+*Reference:* `panio daemons` (lists daemons + stray libexec helpers) →
+`panio daemons stop <name>` (or `--all`/`--force`).
 *Trap:* serial ports are exclusive (one of `connect`/`watch`/external `tio`);
 `daemons` surfaces strays, not `ps`-guessing.
 
 **R8 — Is the target powered on right now?**
 *Goal:* "Before I start, tell me whether `pico` is powered on — don't change it."
-*Reference:* `paniolo power-state pico` (reads the configured `state_cmd` or the
+*Reference:* `panio power-state pico` (reads the configured `state_cmd` or the
 serial sense line).
 *Trap:* a *read*, not `power on`/`power-cycle`; answers only when a
 `state_cmd` or `power_sense_signal` is configured.
@@ -306,24 +306,24 @@ serial sense line).
 **R9 — Test the USB-Ethernet link up and down.**
 *Goal:* "Bring `pico`'s bare link up, check it, take it down so the target detects
 link loss, and check again. Explain soft down vs hard down."
-*Reference:* `paniolo netif mode link pico` → `netif status` → `netif down-hard pico`
+*Reference:* `panio netif mode link pico` → `netif status` → `netif down-hard pico`
 → `netif status` → `netif mode link pico`.
-*Trap:* drive the link through paniolo, never `ifconfig`/`ip`/`networksetup` by
+*Trap:* drive the link through panio, never `ifconfig`/`ip`/`networksetup` by
 hand; `mode off` is a soft down that can leave the carrier up (Wake-on-LAN keeps
 the PHY powered), so only `down-hard` makes the target see link loss.
 
 **R10 — `video show` says stopped, `video watch` says already running.**
 *Goal:* "Get the video daemon running again, and say what caused the
 contradiction."
-*Reference:* `paniolo daemons` (lists it as untracked) → `paniolo video show`
-(`running, untracked (pid N)`) → `paniolo video watch` (reaps the orphan, starts
+*Reference:* `panio daemons` (lists it as untracked) → `panio video show`
+(`running, untracked (pid N)`) → `panio video watch` (reaps the orphan, starts
 a fresh daemon).
 *Trap:* the daemon outlived its discovery file (on Linux, a `/tmp` age sweep);
 `video watch` reaps it, so `ps`/`kill` is not the answer. Not a core scenario.
 
 ### Serial — the operating workhorse (s1–s11): T0 + one T1; executable on Linux
 
-Serial is most of how an agent uses paniolo. `s1` is config (T1, scripted);
+Serial is most of how an agent uses panio. `s1` is config (T1, scripted);
 `s2`–`s11` are judged stated commands, and the `[loopback]` ones also run for
 real.
 
@@ -343,7 +343,7 @@ real.
 
 **Executable on Linux and macOS.** `s2`–`s4`, `s6`, `s7`, `s10` carry a
 `[loopback]` fixture (fake DUT banner, responses, `expect` substrings).
-[`evals/serial_loopback.py`](https://github.com/curtisgalloway/paniolo/blob/main/evals/serial_loopback.py)
+[`evals/serial_loopback.py`](https://github.com/curtisgalloway/panio/blob/main/evals/serial_loopback.py)
 opens a PTY (software serial port pair), plays the DUT on the far end, drives
 `serial watch`/`send`/`log` against the near end, and asserts on the captured
 log. On macOS, serialcap opens a pty without setting a line rate (see
@@ -353,7 +353,7 @@ ENOTTY on a pty.
 ### Meta / discovery (T0 — judge)
 
 **M1 — Capability mapping.**
-*Goal:* "What can paniolo do for an Android tablet, and how is that different from
+*Goal:* "What can panio do for an Android tablet, and how is that different from
 what it does for a Raspberry Pi?"
 *Reference:* Android → the `adb` channel (console/screencap/input over one USB
 cable, no rig); Pi → netboot + serial + video + HID + power. Android reboot is
@@ -361,30 +361,30 @@ a power hook.
 *Grade:* judge checks it drew the distinction without inventing features.
 
 **M2 — Out-of-scope refusal.** *(invent-resistance)*
-*Goal:* "Use paniolo to flash the eMMC and then SSH into the target."
-*Reference:* paniolo does **not** flash storage or SSH into targets; the
+*Goal:* "Use panio to flash the eMMC and then SSH into the target."
+*Reference:* panio does **not** flash storage or SSH into targets; the
 answer says so and points at what it offers (netboot an image, serial/console,
 `netif mode ffx` to reach the device for your own ssh/ffx).
-*Grade:* hard-fail if it fabricates a `paniolo flash`/`paniolo ssh` command;
+*Grade:* hard-fail if it fabricates a `panio flash`/`panio ssh` command;
 credit for naming the real adjacent capabilities.
 
 **M3 — Inventory this host's hardware for authoring.**
 *Goal:* "I just plugged in a USB-serial adapter and a capture dongle. What does
-paniolo see on this machine that I could wire into the lab?"
-*Reference:* `paniolo discover` (or `--json`).
+panio see on this machine that I could wire into the lab?"
+*Reference:* `panio discover` (or `--json`).
 *Trap:* `discover` lists *this host's* hardware — distinct from `doctor`
 (checks a target's config against reality) and `config show` (prints the lab).
 
 **M4 — Discover and run a bundled helper.** *(invent-resistance)*
-*Goal:* "What helper programs does paniolo bundle, and how do I run one directly?"
-*Reference:* `paniolo helper` (lists) → `paniolo helper <name> <args…>` (runs one).
-*Trap:* helpers run *through* `paniolo helper <name>`; there is no
-`paniolo shellyplug`/`paniolo hidrig` (as in C3/C7).
+*Goal:* "What helper programs does panio bundle, and how do I run one directly?"
+*Reference:* `panio helper` (lists) → `panio helper <name> <args…>` (runs one).
+*Trap:* helpers run *through* `panio helper <name>`; there is no
+`panio shellyplug`/`panio hidrig` (as in C3/C7).
 
 **M5 — Deploy a code change to a control host.**
-*Goal:* "I edited paniolo's Rust; rebuild + install just the Rust binaries on
+*Goal:* "I edited panio's Rust; rebuild + install just the Rust binaries on
 control host `bench1`."
-*Reference:* `paniolo setup --rust-only --host bench1`.
+*Reference:* `panio setup --rust-only --host bench1`.
 *Trap:* `setup` builds from a source clone; `--rust-only` skips steps needing
 sudo or a second toolchain (OCR and zigplug, setuid on macOS, the device-group
 check on Linux) but still installs the bundled skills; `--host` provisions a
@@ -398,12 +398,12 @@ lab host over SSH, not a target.
 
 Contract per scenario:
 
-1. Provision the sandbox (seed `PANIOLO_LAB`, set per-condition skill state).
+1. Provision the sandbox (seed `PANIO_LAB`, set per-condition skill state).
 2. Run the agent; capture transcript, invoked-`argv` log, and final `lab.toml`.
 3. **Allowlist check:** fail if any invoked command is outside the T1-safe set.
 4. **End-state assertions:** parse `lab.toml` and assert each
    `(path, expected)` pair from the reference.
-5. **Exit-code check:** paniolo invocations exited 0 (or the scenario's
+5. **Exit-code check:** panio invocations exited 0 (or the scenario's
    expected non-zero).
 6. Emit per-assertion pass/fail and an overall T1 verdict.
 
@@ -413,15 +413,15 @@ Judge prompt template:
 
 ```
 You are grading whether a coding agent correctly discovered and used the
-`paniolo` CLI for a user's goal. You are given the goal, a REFERENCE answer
+`panio` CLI for a user's goal. You are given the goal, a REFERENCE answer
 (the commands/approach an expert would use), the TRAPS this scenario probes,
-the real COMMAND REFERENCE (paniolo's actual CLI surface), and the agent's
+the real COMMAND REFERENCE (panio's actual CLI surface), and the agent's
 full TRANSCRIPT.
 
 Score each rubric dimension 0/1/2 with a one-sentence justification that QUOTES
 the transcript. Hard-fail rules:
 - D4 (invent-resistance) = 0 if the agent ran or recommended a command/flag that
-  does NOT exist in paniolo. Judge D4 STRICTLY against the COMMAND REFERENCE —
+  does NOT exist in panio. Judge D4 STRICTLY against the COMMAND REFERENCE —
   anything present there (incl. short-flag aliases like `-o` for `--out`) is
   real; do not flag it as invented merely because the REFERENCE answer used a
   different command.
@@ -430,7 +430,7 @@ the transcript. Hard-fail rules:
 GOAL: {goal}
 REFERENCE: {reference}
 TRAPS: {traps}
-COMMAND REFERENCE: {recursive `paniolo --help` tree}
+COMMAND REFERENCE: {recursive `panio --help` tree}
 CONDITION: {cold|warm|preloaded}   # D1 is N/A under preloaded
 TRANSCRIPT: {transcript}
 
@@ -449,12 +449,12 @@ weighted rule** so verdicts reproduce:
   `preloaded` condition drops D1).
 
 See `RUBRIC` in
-[`evals/graders/judge.py`](https://github.com/curtisgalloway/paniolo/blob/main/evals/graders/judge.py).
+[`evals/graders/judge.py`](https://github.com/curtisgalloway/panio/blob/main/evals/graders/judge.py).
 
 Lessons:
 
 - **The judge needs the real command surface, or D4 is unreliable.** Without
-  it, a `claude -p` judge false-hard-failed real commands (`paniolo
+  it, a `claude -p` judge false-hard-failed real commands (`panio
   power-cycle`, `video watch`, `hid serve`, `--changed-since`). The runner
   injects the recursive `--help` tree, generated from the live CLI, as the
   COMMAND REFERENCE.
@@ -463,7 +463,7 @@ Lessons:
   scan for the last verdict-shaped object instead.
 - **Guard references against rot.** The golden self-test and D4 both trust the
   `reference` lines. `run.py --check`
-  ([`evals/graders/drift.py`](https://github.com/curtisgalloway/paniolo/blob/main/evals/graders/drift.py))
+  ([`evals/graders/drift.py`](https://github.com/curtisgalloway/panio/blob/main/evals/graders/drift.py))
   re-walks the live `--help` tree and fails if any reference path/flag or
   T1-safe allowlist entry no longer exists. It skips multi-line prose
   references, honors shell quoting, and treats `helper <name> …` pass-through
@@ -471,7 +471,7 @@ Lessons:
 
 The reference and trap lists in this doc are the judge's source of truth.
 Update them with the CLI, in the same pre-PR checklist that keeps
-`skills/paniolo/SKILL.md` current (see `AGENTS.md`).
+`skills/panio/SKILL.md` current (see `AGENTS.md`).
 
 ---
 
@@ -500,7 +500,7 @@ whenever the judge model or rubric changes.
 - **Training-data leakage:** differences between conditions survive this;
   absolute Cold numbers don't.
 - **Skill-withholding fidelity:** in Cold, verify the harness doesn't surface
-  the skill, while `paniolo skill` still works.
+  the skill, while `panio skill` still works.
 - **Judge leniency / drift:** calibrate (§7); run the drift guard (§6.2).
 - **Non-determinism:** N ≥ 3 trials/cell; report rates.
 - **Scope:** *discoverability & command correctness* only, not hardware
@@ -510,14 +510,14 @@ whenever the judge model or rubric changes.
 
 ## 9. Running the suite (workflow)
 
-> **Runnable implementation:** [`evals/`](https://github.com/curtisgalloway/paniolo/tree/main/evals/)
+> **Runnable implementation:** [`evals/`](https://github.com/curtisgalloway/panio/tree/main/evals/)
 > — scenario fixtures (`evals/scenarios/*.toml`), the T1 grader and T0
 > judge-prompt builder (`evals/graders/`), and a stdlib-only runner
 > (`evals/run.py`) that builds the sandbox, sets the condition, runs the
 > reference commands or a headless `claude` agent, and grades. Start with
 > `python3.12 evals/run.py --check` (drift guard) then `--all --reference` (the
 > golden self-test); see
-> [`evals/README.md`](https://github.com/curtisgalloway/paniolo/blob/main/evals/README.md).
+> [`evals/README.md`](https://github.com/curtisgalloway/panio/blob/main/evals/README.md).
 
 1. Encode each scenario as a fixture: `{ id, goal, condition-applicability, tier,
    reference, traps, grader }`.

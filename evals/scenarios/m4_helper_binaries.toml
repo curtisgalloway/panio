@@ -6,16 +6,16 @@ core = false
 conditions = ["cold", "warm", "preloaded"]
 capabilities = ["helper"]
 goal = """
-What helper programs does paniolo bundle, and how would I run one of them
+What helper programs does panio bundle, and how would I run one of them
 directly — say, to query a smart plug's state? List the exact command(s).
 """
 traps = [
-  "bare `paniolo helper` LISTS the bundled helpers; `paniolo helper <name> [args]` runs one",
-  "helpers are NOT top-level paniolo subcommands — there is no `paniolo shellyplug` / `paniolo hidrig` / `paniolo zigplug`",
+  "bare `panio helper` LISTS the bundled helpers; `panio helper <name> [args]` runs one",
+  "helpers are NOT top-level panio subcommands — there is no `panio shellyplug` / `panio hidrig` / `panio zigplug`",
 ]
 reference = [
-  'paniolo helper',
-  'paniolo helper shellyplug -d 192.0.2.41 state',
+  'panio helper',
+  'panio helper shellyplug -d 192.0.2.41 state',
 ]
 seed = ""
 

@@ -25,9 +25,9 @@ the bytes. Repeat the complete operation for every artifact.
   progress for one artifact.
 
 This guide defines the supported integration contract for an external runner;
-paniolo does not ship a fastboot channel or guarded staging helper. Its
+panio does not ship a fastboot channel or guarded staging helper. Its
 [`usb` channel](usb.md) switches physical media, and its [adb channel](adb.md)
-talks to Android; neither implements this workflow. Use paniolo's existing
+talks to Android; neither implements this workflow. Use panio's existing
 serial commands for the console. Do not open its managed serial port directly.
 
 ## Establish the board profile and owner
@@ -62,7 +62,7 @@ dashboards and operators must not send input or reset it. A coordinator or
 exclusive bench checkout must enforce that reservation across control hosts;
 an informal assumption that nobody else is using it is insufficient.
 
-Paniolo's [serial transaction lock](serial.md#requestresponse-transactions)
+Panio's [serial transaction lock](serial.md#requestresponse-transactions)
 holds only during a command/reply exchange. Its [action/power hook lock](actions.md#how-an-action-runs)
 holds only around hooks. Neither reserves the complete staging sequence or
 excludes another USB client. A runner must not treat either as a global lock.
@@ -201,7 +201,7 @@ Use wall-clock timestamps for correlation and monotonic durations for limits.
 If a client cannot report a byte count, record it as unknown rather than
 inventing a completed count; the profile must provide the evidence required
 to establish full delivery. A failed evidence write or truncated required
-response prevents advancement. Paniolo's [raw serial evidence](serial.md#immutable-receive-evidence)
+response prevents advancement. Panio's [raw serial evidence](serial.md#immutable-receive-evidence)
 preserves receive times independently of when the runner reads it.
 
 ## Acceptance checks for an integration

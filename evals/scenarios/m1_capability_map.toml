@@ -6,14 +6,14 @@ core = false
 conditions = ["cold", "warm", "preloaded"]
 capabilities = ["adb", "overview"]
 goal = """
-What can paniolo do for an Android tablet, and how is that different from what
+What can panio do for an Android tablet, and how is that different from what
 it does for a Raspberry Pi? I want to understand which subsystems apply to each.
 """
 traps = [
   "Android uses the `adb` channel — console/screencap/input over one USB cable, no netboot/capture/HID/serial rig",
   "a Pi uses netboot + serial + video + HID + power",
-  "Android reboot is via a power hook (`adb reboot`), not an adb-specific paniolo command",
-  "do not invent capabilities paniolo doesn't have",
+  "Android reboot is via a power hook (`adb reboot`), not an adb-specific panio command",
+  "do not invent capabilities panio doesn't have",
 ]
 reference = """
 Android (`adb` channel): one USB cable gives console (`adb shell`/`adb run`),

@@ -7,7 +7,7 @@ conditions = ["cold", "warm", "preloaded"]
 capabilities = ["serial"]
 goal = """
 At `dut`'s shell prompt, run `cat /proc/version` over the serial console and
-show me just that command's output. List the exact paniolo commands you would
+show me just that command's output. List the exact panio commands you would
 run, in order, and note any ordering constraints.
 """
 traps = [
@@ -17,10 +17,10 @@ traps = [
   "input only reaches the target if its console actually reads the UART",
 ]
 reference = [
-  'paniolo serial watch dut',
-  'paniolo serial log dut --no-pending --tail 1            # note the seq before sending',
-  'paniolo serial send dut "cat /proc/version"',
-  'paniolo serial log dut --since <seq>        # read back the echoed command + output',
+  'panio serial watch dut',
+  'panio serial log dut --no-pending --tail 1            # note the seq before sending',
+  'panio serial send dut "cat /proc/version"',
+  'panio serial log dut --since <seq>        # read back the echoed command + output',
 ]
 seed = "dut_console.toml"
 

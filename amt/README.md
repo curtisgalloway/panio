@@ -31,7 +31,7 @@ Commands talk to the **Management Engine** (ME), which runs on standby power, so
 - **Trust:** built-in public roots, plus certificates from `--tls-ca-file
   <path>` (PEM). `AMT_TLS_CA_FILE` is the fallback; the flag wins. These are
   additive roots, not the operating system's certificate store. The file and
-  fallback are read on the execution host; paniolo does not forward that
+  fallback are read on the execution host; panio does not forward that
   environment variable over SSH. Invalid or empty files fail before requests.
 - **Identity:** use the name in the server certificate; an IP needs a matching
   IP Subject Alternative Name (SAN). A CA file cannot fix a name mismatch.
@@ -69,7 +69,7 @@ from the first of these that is set:
 
 ```bash
 amt -d amt-host.example --password-command 'op read op://lab/amt/password' state
-amt -d amt-host.example --password-file ~/.config/paniolo/amt state
+amt -d amt-host.example --password-file ~/.config/panio/amt state
 op run --env-file .env -- bash -c 'amt state -d amt-host.example'
 ```
 
@@ -97,25 +97,25 @@ amt -d <host> cycle [--delay-ms 3000]   # off → confirm → delay → on → c
   and soft-off print `off`; any other state is an error.
 - **`off`** is the CIM "Off - Soft" unconditional power-off, like holding the
   power button.
-- **`cycle`** uses the same `--delay-ms` as the other paniolo power helpers. A
+- **`cycle`** uses the same `--delay-ms` as the other panio power helpers. A
   sleeping or hibernating machine cold-boots instead of resuming.
 - **`on`, `off`, `cycle`** exit non-zero if the read-back shows the machine did
   not comply.
 
-## paniolo integration
+## panio integration
 
-`make install` / `paniolo setup` installs `amt` into paniolo's private libexec
-dir; run it by hand with `paniolo helper amt …`. Wire the four power hooks:
+`make install` / `panio setup` installs `amt` into panio's private libexec
+dir; run it by hand with `panio helper amt …`. Wire the four power hooks:
 
 ```bash
-paniolo power set -t <target> \
+panio power set -t <target> \
     --cycle-cmd "amt cycle -d <host> --delay-ms 5000" \
     --on-cmd    "amt on -d <host>" \
     --off-cmd   "amt off -d <host>" \
     --state-cmd "amt state -d <host>"
 ```
 
-For private trust, add `--tls-ca-file /etc/paniolo/amt-ca.pem` to each hook.
+For private trust, add `--tls-ca-file /etc/panio/amt-ca.pem` to each hook.
 Add `--password-file` or `--password-command` to each hook, or run
-`paniolo power …` with `AMT_PASSWORD` set. See `docs/power.md` for the full
+`panio power …` with `AMT_PASSWORD` set. See `docs/power.md` for the full
 recipe, with systemd, 1Password and macOS Keychain examples.
