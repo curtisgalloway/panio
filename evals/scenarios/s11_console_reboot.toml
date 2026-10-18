@@ -7,18 +7,18 @@ conditions = ["cold", "warm", "preloaded"]
 capabilities = ["serial"]
 goal = """
 I've got a shell on the Pi `pico` over serial. Use serial to reboot it, then
-show me it came back up. List the exact paniolo commands you would run, in order.
+show me it came back up. List the exact panio commands you would run, in order.
 """
 traps = [
-  "central trap: 'reboot over the serial console' means typing the `reboot` command into the logged-in shell — `paniolo serial send pico \"reboot\"` — NOT `serial reset` / `serial dtr`, which is a hardware DTR power-button toggle on the J2 wire",
-  "`pico` has not opted into DTR power control (no serial interface has `power_button = true`), so `serial reset pico` / `serial dtr pico` errors with a hint; its real power method is the `cycle_cmd` hook (`paniolo power-cycle pico`)",
+  "central trap: 'reboot over the serial console' means typing the `reboot` command into the logged-in shell — `panio serial send pico \"reboot\"` — NOT `serial reset` / `serial dtr`, which is a hardware DTR power-button toggle on the J2 wire",
+  "`pico` has not opted into DTR power control (no serial interface has `power_button = true`), so `serial reset pico` / `serial dtr pico` errors with a hint; its real power method is the `cycle_cmd` hook (`panio power-cycle pico`)",
   "`serial send` injects through the RUNNING `serial watch` daemon — start watch first",
   "`serial send` takes the target as a positional (two positionals = `<target> <text>`)",
 ]
 reference = [
-  'paniolo serial watch pico',
-  'paniolo serial send pico "reboot"',
-  'paniolo serial log pico --since <seq>   # watch for the boot banner',
+  'panio serial watch pico',
+  'panio serial send pico "reboot"',
+  'panio serial log pico --since <seq>   # watch for the boot banner',
 ]
 seed = "bench.toml"
 

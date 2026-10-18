@@ -12,9 +12,9 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Runner for the paniolo agent-eval suite.
+"""Runner for the panio agent-eval suite.
 
-Sets up an isolated sandbox (throwaway lab file, a logging `paniolo` shim,
+Sets up an isolated sandbox (throwaway lab file, a logging `panio` shim,
 per-condition skill state), runs either the scenario's golden REFERENCE
 commands or a real agent, then grades the result. Stdlib only.
 
@@ -43,7 +43,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent
-SKILL_MD = REPO / "skills" / "paniolo" / "SKILL.md"
+SKILL_MD = REPO / "skills" / "panio" / "SKILL.md"
 sys.path.insert(0, str(HERE))
 from graders import drift as drift_mod  # noqa: E402
 from graders import judge as judge_mod  # noqa: E402
@@ -66,27 +66,27 @@ def load_scenarios() -> dict[str, dict]:
 # --- sandbox + condition setup ----------------------------------------------
 
 
-def real_paniolo() -> str:
-    p = shutil.which("paniolo")
+def real_panio() -> str:
+    p = shutil.which("panio")
     if not p:
-        sys.exit("error: `paniolo` not found on PATH (install it first)")
+        sys.exit("error: `panio` not found on PATH (install it first)")
     return p
 
 
 def make_sandbox(scenario: dict, real: str) -> dict:
-    sb = Path(tempfile.mkdtemp(prefix=f"paniolo-eval-{scenario['id']}-"))
+    sb = Path(tempfile.mkdtemp(prefix=f"panio-eval-{scenario['id']}-"))
     (sb / "bin").mkdir()
     (sb / "project").mkdir()
     (sb / "home").mkdir()
     lab = sb / "lab.toml"
     argv_log = sb / "argv.log"
 
-    # logging shim: records argv (tab-separated), then execs the real paniolo.
-    shim = sb / "bin" / "paniolo"
+    # logging shim: records argv (tab-separated), then execs the real panio.
+    shim = sb / "bin" / "panio"
     shim.write_text(
         "#!/bin/sh\n"
         "{ for a in \"$@\"; do printf '%s\\t' \"$a\"; done; printf '\\n'; } "
-        '>> "$PANIOLO_ARGV_LOG"\n'
+        '>> "$PANIO_ARGV_LOG"\n'
         f'exec "{real}" "$@"\n'
     )
     shim.chmod(0o755)
@@ -101,7 +101,7 @@ def make_sandbox(scenario: dict, real: str) -> dict:
         if proc.returncode != 0:
             shutil.rmtree(sb, ignore_errors=True)
             raise RuntimeError(
-                f"paniolo init failed (rc={proc.returncode}): "
+                f"panio init failed (rc={proc.returncode}): "
                 f"{(proc.stderr or proc.stdout).strip()}")
 
     return {"dir": sb, "lab": lab, "argv_log": argv_log}
@@ -113,14 +113,14 @@ CREDENTIALS_REL = Path(".claude") / ".credentials.json"
 def base_env(sb: dict, isolation: str) -> dict:
     env = dict(os.environ)
     env["PATH"] = f"{sb['dir'] / 'bin'}:{env.get('PATH', '')}"
-    env["PANIOLO_LAB"] = str(sb["lab"])
-    env["PANIOLO_ARGV_LOG"] = str(sb["argv_log"])
-    # Scope paniolo's runtime dir (daemon pids/sockets) to the sandbox in every
+    env["PANIO_LAB"] = str(sb["lab"])
+    env["PANIO_ARGV_LOG"] = str(sb["argv_log"])
+    # Scope panio's runtime dir (daemon pids/sockets) to the sandbox in every
     # mode, so the agent's daemons — and the post-run `daemons stop --all`
-    # sweep — never see the operator's real /tmp/paniolo-<uid>.
+    # sweep — never see the operator's real /tmp/panio-<uid>.
     runtime = sb["dir"] / "runtime"
     runtime.mkdir(parents=True, exist_ok=True)
-    env["PANIOLO_RUNTIME_BASE"] = str(runtime)
+    env["PANIO_RUNTIME_BASE"] = str(runtime)
     if isolation == "home":
         home = sb["dir"] / "home"
         env["HOME"] = str(home)
@@ -160,11 +160,11 @@ def setup_condition(scenario: dict, sb: dict, condition: str) -> dict:
     if condition == "preloaded":
         extra_args += ["--append-system-prompt", SKILL_MD.read_text()]
     elif condition == "warm":
-        # register the paniolo skill as a project skill in the agent's cwd.
-        dst = sb["dir"] / "project" / ".claude" / "skills" / "paniolo"
+        # register the panio skill as a project skill in the agent's cwd.
+        dst = sb["dir"] / "project" / ".claude" / "skills" / "panio"
         dst.mkdir(parents=True, exist_ok=True)
         shutil.copy(SKILL_MD, dst / "SKILL.md")
-    # cold: nothing pushed; guidance is pullable via `paniolo skill`.
+    # cold: nothing pushed; guidance is pullable via `panio skill`.
     return {"extra_args": extra_args}
 
 
@@ -254,20 +254,20 @@ _SURFACE_CACHE: str | None = None
 
 
 def command_surface(real: str, force: bool = False) -> str:
-    """Build (and cache) the real paniolo CLI surface: the recursive --help
+    """Build (and cache) the real panio CLI surface: the recursive --help
     tree. Injected into the judge prompt so invent-resistance (D4) is graded
     against ground truth, not the judge's guesses about what commands exist.
 
     `force=True` ignores any cache and re-walks the live CLI — used by `--check`
     so drift is always measured against the installed binary, never a stale dump.
-    The on-disk cache is also ignored when the paniolo binary is newer than it
+    The on-disk cache is also ignored when the panio binary is newer than it
     (a rebuild since the last walk), so a judge never grades against the
     previous build's surface.
     """
     global _SURFACE_CACHE
     if not force and _SURFACE_CACHE is not None:
         return _SURFACE_CACHE
-    cache = HERE / ".paniolo_surface.txt"
+    cache = HERE / ".panio_surface.txt"
     if not force and surface_cache_fresh(cache, real):
         _SURFACE_CACHE = cache.read_text()
         return _SURFACE_CACHE
@@ -281,7 +281,7 @@ def command_surface(real: str, force: bool = False) -> str:
         seen.add(key)
         r = subprocess.run([real, *path, "--help"], capture_output=True, text=True)
         txt = r.stdout or r.stderr
-        chunks.append(f"$ paniolo {' '.join(path)} --help\n{txt}".rstrip())
+        chunks.append(f"$ panio {' '.join(path)} --help\n{txt}".rstrip())
         subs, in_cmds = [], False
         for line in txt.splitlines():
             s = line.strip()
@@ -305,7 +305,7 @@ def command_surface(real: str, force: bool = False) -> str:
 
 def surface_cache_fresh(cache: Path, real: str) -> bool:
     """A cached --help dump is trustworthy only if it postdates the binary it
-    was walked from (`paniolo --version` is constant across builds, so mtime
+    was walked from (`panio --version` is constant across builds, so mtime
     is the signal)."""
     try:
         return cache.stat().st_mtime >= Path(real).stat().st_mtime
@@ -336,7 +336,7 @@ def grade(scenario: dict, sb: dict, exec_result: dict, condition: str,
 
 def run_one(scenario: dict, condition: str, mode: str, agent: str,
             isolation: str, judge_cmd: str | None, keep: bool) -> dict:
-    real = real_paniolo()
+    real = real_panio()
     sb = make_sandbox(scenario, real)
     env = base_env(sb, isolation)
     try:
@@ -358,14 +358,14 @@ def _run_one(scenario: dict, sb: dict, env: dict, real: str, condition: str,
         # (which need hardware/sudo and would block in this no-hardware sandbox).
         if scenario.get("tier") == "t0":
             goal = goal.rstrip() + (
-                "\n\nNote: you may inspect `paniolo --help` and `paniolo skill` "
+                "\n\nNote: you may inspect `panio --help` and `panio skill` "
                 "to discover commands, but do NOT execute the operational "
                 "commands (netboot/netif/power/video/`serial watch`/etc.) — "
                 "just list the exact sequence you would run.")
         exec_result = run_agent(scenario, sb, env, agent, cond["extra_args"], goal)
         # Safety sweep: a "list the commands" scenario shouldn't start daemons,
         # but an over-eager agent might. Don't leave a stray holding a port.
-        # `env` carries the sandbox PANIOLO_RUNTIME_BASE, so this only ever
+        # `env` carries the sandbox PANIO_RUNTIME_BASE, so this only ever
         # sees daemons the agent started — never the operator's.
         subprocess.run([real, "daemons", "stop", "--all"], env=env,
                        capture_output=True)
@@ -393,7 +393,7 @@ def run_drift_check(scenarios: dict) -> int:
     *live* CLI surface. The whole suite trusts these references (golden
     self-test + the judge's D4 ground truth), so this catches a renamed
     subcommand or dropped flag before it silently rots the eval."""
-    real = real_paniolo()
+    real = real_panio()
     surface = command_surface(real, force=True)  # always re-walk the live CLI
     report = drift_mod.run_check(scenarios, surface, t1_config.SAFE)
     print(f"drift check: parsed {report['paths']} command paths from the live CLI")
@@ -419,7 +419,7 @@ def fmt(out: dict) -> str:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="paniolo agent-eval runner")
+    ap = argparse.ArgumentParser(description="panio agent-eval runner")
     ap.add_argument("--scenario", action="append", default=[],
                     help="scenario id (repeatable)")
     ap.add_argument("--all", action="store_true", help="run every scenario")

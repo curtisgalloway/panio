@@ -14,10 +14,10 @@
 
 //! Daemon lifecycle for `hidrig serve`: advisory lock, discovery file, tokio
 //! runtime, graceful shutdown. Mirrors serialcap/hdmicap so the three read the
-//! same way and paniolo discovers them identically.
+//! same way and panio discovers them identically.
 //!
 //! The discovery directory is the **channel** name `hid` (not `hidrig`), under
-//! `/tmp/paniolo-<uid>/hid/daemon.json`, so paniolo finds the daemon without
+//! `/tmp/panio-<uid>/hid/daemon.json`, so panio finds the daemon without
 //! knowing which helper implements the channel. The file records the owned
 //! `device` so a CLI one-shot can tell whether the running daemon owns *its*
 //! UART before routing through it.
@@ -34,7 +34,7 @@ use tracing::{info, warn};
 use crate::server::{self, AppState};
 use crate::uart::HidHandle;
 
-/// Discovery subdir = the paniolo channel name, not the binary name.
+/// Discovery subdir = the panio channel name, not the binary name.
 pub const DISCOVERY_NAME: &str = "hid";
 
 /// How long shutdown waits for the release of held keys and buttons before
@@ -52,7 +52,7 @@ pub struct Discovery {
     pub token: Option<String>,
     /// The control UART this daemon owns (so a CLI one-shot can match its -d).
     pub device: String,
-    /// The path paniolo's `serial` channel points its `device =` at when the
+    /// The path panio's `serial` channel points its `device =` at when the
     /// console bridge is up: the stable symlink `<runtime>/hid/console` when
     /// it could be made, else the slave device itself. Absent if PTY
     /// allocation failed.
@@ -66,20 +66,20 @@ pub struct Discovery {
     pub console_device: Option<String>,
 }
 
-/// The daemon's runtime dir. Paniolo passes the canonical location as
-/// `PANIOLO_RUNTIME_DIR` (named for the hid *channel*, not this binary —
+/// The daemon's runtime dir. Panio passes the canonical location as
+/// `PANIO_RUNTIME_DIR` (named for the hid *channel*, not this binary —
 /// any conforming injector helper serves the same discovery dir); the
 /// literal fallback below is for standalone invocations and matches it:
-/// `/tmp/paniolo-<uid>/hid` (deliberately not `$TMPDIR`/`$XDG_RUNTIME_DIR`
-/// — see the paniolo CLI's daemons.rs for why).
+/// `/tmp/panio-<uid>/hid` (deliberately not `$TMPDIR`/`$XDG_RUNTIME_DIR`
+/// — see the panio CLI's daemons.rs for why).
 pub fn runtime_dir() -> Result<PathBuf> {
-    if let Some(dir) = std::env::var_os("PANIOLO_RUNTIME_DIR") {
+    if let Some(dir) = std::env::var_os("PANIO_RUNTIME_DIR") {
         let dir = PathBuf::from(dir);
         fs::create_dir_all(&dir)?;
         return Ok(dir);
     }
     let uid = crate::platform::current_uid();
-    let base = crate::platform::runtime_root().join(format!("paniolo-{uid}"));
+    let base = crate::platform::runtime_root().join(format!("panio-{uid}"));
     crate::platform::ensure_private_dir(&base)?;
     let dir = base.join(DISCOVERY_NAME);
     fs::create_dir_all(&dir)?;
@@ -138,7 +138,7 @@ pub fn run(device: String, port: u16) -> Result<()> {
 
     rt.block_on(async move {
         // Bring up the DUT serial-console PTY and publish a stable symlink that
-        // paniolo's `serial` channel points its `device =` at. Best-effort: if
+        // panio's `serial` channel points its `device =` at. Best-effort: if
         // PTY allocation fails the daemon still serves HID/control, just without
         // a console. `link` is set only when we created a symlink, so shutdown
         // removes ours and never the /dev/pts node itself. The slave handle is
@@ -308,7 +308,7 @@ fn remove_stale_console_link(link: &Path) {
     }
 }
 
-/// Windows has no PTY layer to hand a slave device path to paniolo's `serial`
+/// Windows has no PTY layer to hand a slave device path to panio's `serial`
 /// channel, so the console bridge is simply absent. (A ConPTY pseudoconsole is
 /// not a substitute: it has no filesystem node another process can open, which
 /// is the whole point of the published `console` path.) HID and control are
@@ -387,7 +387,7 @@ mod tests {
     #[test]
     fn shutdown_cleanup_leaves_the_lock_file_locked() {
         let dir =
-            std::env::temp_dir().join(format!("paniolo-hidrig-lock-test-{}", std::process::id()));
+            std::env::temp_dir().join(format!("panio-hidrig-lock-test-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let lock_path = dir.join("daemon.lock");
@@ -435,11 +435,11 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn stale_console_link_is_replaced_on_start() {
-        let dir = std::env::temp_dir().join(format!("paniolo-hid-console-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("panio-hid-console-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let link = dir.join("console");
-        std::os::unix::fs::symlink("/dev/pts/paniolo-does-not-exist", &link).unwrap();
+        std::os::unix::fs::symlink("/dev/pts/panio-does-not-exist", &link).unwrap();
         assert!(fs::metadata(&link).is_err(), "the stale link dangles");
 
         let bridge = open_console_bridge(&dir);

@@ -1,7 +1,7 @@
 # HDMI capture frames for the OCR benchmark
 
-From paniolo-64, on request from paniolo-15. Eight frames, all straight out of
-`paniolo video shot` (hdmicap) — lossless PNG, RGB, 1280x720, the capture
+From panio-64, on request from panio-15. Eight frames, all straight out of
+`panio video shot` (hdmicap) — lossless PNG, RGB, 1280x720, the capture
 resolution, never resized and never through JPEG on the host side. No ground
 truth attached.
 
@@ -54,7 +54,7 @@ in the repo's public docs already.
 
 # Batch 2 — added after Curtis okayed the lab-nuc-1 reboot
 
-Five more frames, same pipeline (`paniolo video shot`, lossless PNG, RGB,
+Five more frames, same pipeline (`panio video shot`, lossless PNG, RGB,
 1280x720, unresized). The NUC dongle was re-checked immediately before this
 batch and was still **MJPEG** 1280x720; the Pi is still **YUYV 4:2:2**.
 
@@ -98,10 +98,10 @@ agent that gates on it will both trust garbage and discard valid captures.
 returned alongside real content at least once.
 
 Unrelated gotcha if you ever script captures on the control host: waldo's local
-`~/.config/paniolo/lab.toml` is a *different, older* lab file that does not
+`~/.config/panio/lab.toml` is a *different, older* lab file that does not
 contain `lab-nuc-1`. Target names only resolve from the canonical lab file on
-Curtis's Mac, so `paniolo video shot lab-nuc-1` run *on waldo* fails with
-"target not found". Drive captures from the Mac and let paniolo dispatch.
+Curtis's Mac, so `panio video shot lab-nuc-1` run *on waldo* fails with
+"target not found". Drive captures from the Mac and let panio dispatch.
 
 ## Content check (batch 2)
 

@@ -8,11 +8,11 @@ SPDX-License-Identifier: Apache-2.0
 Plain-language definitions for the terms these docs use. The guides gloss
 each term briefly on first use; this page is the longer reference.
 
-## paniolo's own terms
+## panio's own terms
 
 | Term | Meaning |
 |---|---|
-| **action** | A named hook command in a target's `actions` table for a control that is not power, such as a reset line or boot strap. Run with `paniolo action run`. See [Named actions](actions.md). |
+| **action** | A named hook command in a target's `actions` table for a control that is not power, such as a reset line or boot strap. Run with `panio action run`. See [Named actions](actions.md). |
 | **power level** | A named set of power hooks (such as `soft` or `hard`) beside a target's default ones, for a target with more than one independent power layer. Picked with `--level` on the power commands. See [Power levels](power.md#power-levels-soft-and-hard). |
 | **receive boundary** | A capture epoch and exclusive RX chunk sequence; only later received chunks from that epoch belong to an acquisition. |
 | **transaction / transaction lock** | One `serial transact` exchange: record the receive boundary, send a command, wait for its reply. The per-interface lock it holds makes other transactions wait their turn and refuses plain input (`serial send`, dashboard keystrokes) until it ends. See [transactions](serial.md#requestresponse-transactions). |
@@ -22,23 +22,23 @@ each term briefly on first use; this page is the longer reference.
 | **connection generation** | Successful port-open count within an epoch; increments on reconnect. |
 | **RX / TX** | Bytes received from the target / bytes accepted by the host serial driver. Neither proves command execution. |
 | **capture watermark** | Last receive chunk processed by the capture thread; does not guarantee durable disk writes. |
-| **target** | The machine being developed on or tested: the board, PC or VM paniolo controls. Also called the DUT. |
+| **target** | The machine being developed on or tested: the board, PC or VM panio controls. Also called the DUT. |
 | **DUT** | Device under test. Same as target. |
-| **control host** | The machine cabled to the target that runs paniolo and its daemons. It can be your laptop or a dedicated box such as a Raspberry Pi. |
-| **lab file** | The single config file that describes your hosts, targets and their channels. Managed through the CLI; `paniolo config edit` opens it in your editor. |
+| **control host** | The machine cabled to the target that runs panio and its daemons. It can be your laptop or a dedicated box such as a Raspberry Pi. |
+| **lab file** | The single config file that describes your hosts, targets and their channels. Managed through the CLI; `panio config edit` opens it in your editor. |
 | **channel** | One connection to a target: `serial`, `video`, `hid`, `power`, `netboot`, `usb` and so on. |
-| **helper** | A separate program paniolo runs to drive one kind of hardware (`hdmicap`, `serialcap`, `amt`, `shellyplug`, `ch9329`, ...). |
-| **plugin root** | An install prefix outside paniolo's own install that holds extra helpers (`<root>/libexec/paniolo/bin`) and skills (`<root>/share/paniolo/skills`). Listed in the `PANIOLO_PLUGIN_PATH` environment variable, or a lab host's `plugin_path`. Plugins can add helpers and skills but never replace bundled ones. See [plugin roots](power.md#out-of-tree-helpers-and-skills-plugin-roots). |
-| **hook** | A shell command in the lab file that paniolo runs for an action, such as `on_cmd`, `off_cmd` and `state_cmd` for power. |
-| **helper doctor check** | A helper's own read-only health report, `<program> <transport options> doctor --json`, which `paniolo doctor` runs for a channel set with `--doctor` and lists under it as `ok`, `warn` or `FAIL`. *Transport options* are the options before a hook's verb that say how to reach the device, such as `-d 192.0.2.10`. See [Helper health checks](power.md#helper-health-checks-doctor). |
+| **helper** | A separate program panio runs to drive one kind of hardware (`hdmicap`, `serialcap`, `amt`, `shellyplug`, `ch9329`, ...). |
+| **plugin root** | An install prefix outside panio's own install that holds extra helpers (`<root>/libexec/panio/bin`) and skills (`<root>/share/panio/skills`). Listed in the `PANIO_PLUGIN_PATH` environment variable, or a lab host's `plugin_path`. Plugins can add helpers and skills but never replace bundled ones. See [plugin roots](power.md#out-of-tree-helpers-and-skills-plugin-roots). |
+| **hook** | A shell command in the lab file that panio runs for an action, such as `on_cmd`, `off_cmd` and `state_cmd` for power. |
+| **helper doctor check** | A helper's own read-only health report, `<program> <transport options> doctor --json`, which `panio doctor` runs for a channel set with `--doctor` and lists under it as `ok`, `warn` or `FAIL`. *Transport options* are the options before a hook's verb that say how to reach the device, such as `-d 192.0.2.10`. See [Helper health checks](power.md#helper-health-checks-doctor). |
 | **daemon** | A helper that keeps running in the background and holds a device open. `hdmicap` (video) and `serialcap` (serial) are the main ones. |
-| **discovery file** | The small file a daemon writes in the runtime directory with its address, PID and token. paniolo's only record that the daemon is running. |
+| **discovery file** | The small file a daemon writes in the runtime directory with its address, PID and token. panio's only record that the daemon is running. |
 | **stale / untracked daemon** | *Stale*: running executable content proven different from the installed helper; a metadata or inode replacement alone does not establish this. *Untracked*: still running after its discovery file was deleted. |
-| **passthrough command** | A command that hands back another program's exit status unchanged, such as `paniolo helper <name>` or `paniolo adb run`. See [Exit status and errors](errors.md#passthrough-commands). |
+| **passthrough command** | A command that hands back another program's exit status unchanged, such as `panio helper <name>` or `panio adb run`. See [Exit status and errors](errors.md#passthrough-commands). |
 | **credential source** | Where a helper reads a secret such as the AMT password: an environment variable, a file (`--password-file`) or a command whose output is the secret (`--password-command`). The first one set wins. |
-| **link mode** | The host side of the direct USB-Ethernet link to a target. `paniolo netif` puts it in one of four modes: netboot, link, ffx or off. |
-| **ownership reservation** | An external lab coordinator's exclusive assignment of a target and its shared controls to one operator or runner for an entire operation. Paniolo's shorter transaction and hook locks do not provide this reservation. |
-| **guarded staging runner** | A board-specific program that checks fresh firmware and USB readiness before each artifact's single RAM transfer, enforces deadlines and ownership, and saves evidence. This is an integration contract, not a bundled paniolo helper. See [USB fastboot staging](fastboot.md). |
+| **link mode** | The host side of the direct USB-Ethernet link to a target. `panio netif` puts it in one of four modes: netboot, link, ffx or off. |
+| **ownership reservation** | An external lab coordinator's exclusive assignment of a target and its shared controls to one operator or runner for an entire operation. Panio's shorter transaction and hook locks do not provide this reservation. |
+| **guarded staging runner** | A board-specific program that checks fresh firmware and USB readiness before each artifact's single RAM transfer, enforces deadlines and ownership, and saves evidence. This is an integration contract, not a bundled panio helper. See [USB fastboot staging](fastboot.md). |
 | **service-entry witness** | A complete, newly received firmware response proving entry into the download service for the current artifact and startup. A previous prompt or successful host send is insufficient. |
 | **staging receipt** | A retained record of one artifact's input identity, readiness observations, transfer result, termination and target verification, including failed or partial steps. |
 
@@ -51,7 +51,7 @@ each term briefly on first use; this page is the longer reference.
 | **CC2652** | A Texas Instruments Zigbee radio chip, used as the coordinator for Zigbee smart plugs. |
 | **CH340** | A common USB-to-serial chip. |
 | **CH9329** | A chip that turns serial commands into USB keyboard and mouse input. |
-| **FTDI** | A family of USB-to-serial chips. paniolo uses their DTR line to press a target's power button. |
+| **FTDI** | A family of USB-to-serial chips. panio uses their DTR line to press a target's power button. |
 | **JetKVM** | A network KVM that connects to the target by USB and HDMI. Its keyboard and mouse are reachable only over WebRTC, and it allows one session at a time. |
 | **KB2040** | An Adafruit board built on the RP2040 microcontroller. The hidrig uses two of them. |
 | **KVM** | Keyboard, video and mouse: controlling a machine's screen and input from another machine. |
@@ -118,7 +118,7 @@ each term briefly on first use; this page is the longer reference.
 | **cloud-init** | A tool that configures a Linux machine on its first boot from files on the boot media. |
 | **ControlMaster** | An SSH feature that reuses one connection for many commands. |
 | **ffx** | Fuchsia's host-side developer tool. |
-| **harness** | The agent program that drives paniolo, such as Claude Code. |
+| **harness** | The agent program that drives panio, such as Claude Code. |
 | **LAVA** | KernelCI's system for running tests on lab boards. |
 | **OCR** | Optical character recognition: reading text out of a screenshot. |
 | **RCS** | Fuchsia's RemoteControlService; `ffx target list` shows `RCS:Y` when it is reachable. |

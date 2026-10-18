@@ -6,7 +6,7 @@ core = true
 conditions = ["cold", "warm", "preloaded"]
 capabilities = ["target", "netboot", "serial", "power"]
 goal = """
-I have a control machine wired to a Raspberry Pi. Using the paniolo CLI on this
+I have a control machine wired to a Raspberry Pi. Using the panio CLI on this
 machine, set up a new target called `pico`: it netboots over USB-Ethernet
 interface `en7` with TFTP root `~/tftp/pico`, has a serial console on
 `/dev/cu.usbserial-XYZ` at 115200 baud, and is power-cycled by the script
@@ -17,11 +17,11 @@ traps = [
   "channel-config commands take -t/--target, not a positional target",
 ]
 reference = [
-  'paniolo target add pico',
-  'paniolo netboot set -t pico --interface en7 --tftp-root ~/tftp/pico',
-  'paniolo serial add console -t pico --device /dev/cu.usbserial-XYZ',
-  'paniolo power set -t pico --cycle-cmd ~/bin/cycle.sh',
-  'paniolo config show',
+  'panio target add pico',
+  'panio netboot set -t pico --interface en7 --tftp-root ~/tftp/pico',
+  'panio serial add console -t pico --device /dev/cu.usbserial-XYZ',
+  'panio power set -t pico --cycle-cmd ~/bin/cycle.sh',
+  'panio config show',
 ]
 seed = ""
 

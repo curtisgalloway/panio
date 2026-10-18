@@ -10,7 +10,7 @@ You may obtain a copy of the License at
 
 # secret
 
-A small library crate that the paniolo helpers share by path dependency. It
+A small library crate that the panio helpers share by path dependency. It
 reads a helper's secret (a password or token) from the first source that is
 set:
 

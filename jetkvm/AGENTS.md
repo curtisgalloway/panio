@@ -15,7 +15,7 @@ jetkvm/          Go module (the one non-Rust helper besides zigplug): hid
                  keyboard and mouse exist only over WebRTC, hence Go and
                  pion/webrtc. Same CLI/daemon surface as ch9329 (plus `info`),
                  so a drop-in `hid` channel (`--cmd "jetkvm -d 192.0.2.10"`),
-                 started by paniolo as `<cmd> serve --port 0` like the other hid helpers, with no jetkvm code in cli/ (cli/ knows only that a hid channel can host a feed). One flat `package main`:
+                 started by panio as `<cmd> serve --port 0` like the other hid helpers, with no jetkvm code in cli/ (cli/ knows only that a hid channel can host a feed). One flat `package main`:
   rpc.go           login -> signaling WebSocket -> "rpc" data channel,
                    JSON-RPC, `Link`
   hid.go           `Session`: keyboardReport/absMouseReport/relMouseReport/
@@ -60,7 +60,7 @@ jetkvm/          Go module (the one non-Rust helper besides zigplug): hid
 
   Tests use a fake JetKVM (httptest + a pion answerer). CI: own `jetkvm` job
   (gofmt, vet, `go test -race`), `go_job` in scripts/ci-local.sh, and
-  `ci-coverage-check.sh` covers Go modules. `paniolo setup` runs `go build`
+  `ci-coverage-check.sh` covers Go modules. `panio setup` runs `go build`
   into libexec when `go` is present (`SourceStep::JetKvm`, `GO_HELPERS` in
   setup.rs). Release packaging is not done (milestone 1b; exemption is in the
   coverage script).

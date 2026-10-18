@@ -8,7 +8,7 @@ capabilities = ["serial", "power"]
 goal = """
 `dut` is wedged and won't respond on the console. Do a soft reset by driving the
 power button over the FTDI wire on the J2 header; if that doesn't bring it back,
-force a hard power-off. List the exact paniolo commands you would run.
+force a hard power-off. List the exact panio commands you would run.
 """
 traps = [
   "DTR pulse width carries the semantic: ≤500 ms is a soft button event, ≥3000 ms is a hard PMIC power-off",
@@ -16,8 +16,8 @@ traps = [
   "DTR control is opt-in: it works here only because `dut`'s console interface declares `power_button = true` (set via `serial set --power-button`); a target without it errors",
 ]
 reference = [
-  'paniolo serial reset dut          # brief DTR pulse = soft power-button press',
-  'paniolo serial dtr dut --ms 3000   # >=3000 ms = hard PMIC power-off',
+  'panio serial reset dut          # brief DTR pulse = soft power-button press',
+  'panio serial dtr dut --ms 3000   # >=3000 ms = hard PMIC power-off',
 ]
 seed = "dut_console.toml"
 

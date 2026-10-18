@@ -14,9 +14,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 -->
 
-# jetkvm — JetKVM network KVM helper for paniolo
+# jetkvm — JetKVM network KVM helper for panio
 
-`jetkvm` is a paniolo `hid` helper for the [JetKVM](https://jetkvm.com/), a
+`jetkvm` is a panio `hid` helper for the [JetKVM](https://jetkvm.com/), a
 network KVM that plugs into the target over USB and HDMI and is reached over
 the network. It has the **same CLI surface** as [`ch9329`](../ch9329/README.md)
 and [`hidrig`](../hidrig/README.md) (`type`, `key`, `combo`, `down`, `up`,
@@ -24,7 +24,7 @@ and [`hidrig`](../hidrig/README.md) (`type`, `key`, `combo`, `down`, `up`,
 `version`, `run`, `serve`, `stop`), so it drops into a `hid` channel:
 
 ```
-paniolo hid set -t target-machine --cmd "jetkvm -d 192.0.2.10"
+panio hid set -t target-machine --cmd "jetkvm -d 192.0.2.10"
 ```
 
 It is written in Go because the device's firmware (0.5.9) exposes keyboard and
@@ -161,6 +161,6 @@ gofmt -l . ; go vet ./... ; go test -race ./...
 
 The tests include a fake JetKVM (login, signaling and a pion answerer, which
 can also play an H.264 clip) driven end to end. The ffmpeg tests skip when
-ffmpeg is not installed. `paniolo setup` builds this helper into the private libexec dir
+ffmpeg is not installed. `panio setup` builds this helper into the private libexec dir
 when `go` is on PATH. Release packaging (the `.deb`, tarball, zip and
 Homebrew keg) is not wired up yet.

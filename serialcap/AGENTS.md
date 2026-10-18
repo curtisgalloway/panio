@@ -98,5 +98,5 @@ serialcap/       Rust crate: serial console daemon (parallels hdmicap)
 
 ## Gotchas
 
-- **Serial ports are exclusive.** Only one of `tio`/`screen`/serialcap can hold a port, so `paniolo serial watch` and `paniolo serial connect` conflict on the same device.
+- **Serial ports are exclusive.** Only one of `tio`/`screen`/serialcap can hold a port, so `panio serial watch` and `panio serial connect` conflict on the same device.
 - **A pty is opened without a line rate.** The `serialport` crate applies baud on macOS with `IOSSIOSPEED`, which returns ENOTTY on a pty, so serialcap detects a pty by path and opens it at baud 0 (`open_baud()`/`is_pty()` in `serialcap/src/serial_io.rs`). **Do not extend this to Linux**: there a rate of 0 is written to `c_ospeed` as `B0`, meaning hang up. This lets serialcap attach to a VM console (`utmctl attach`, qemu `-serial pty`) and `evals/serial_loopback.py` run on macOS.

@@ -21,13 +21,13 @@ and two concurrent invocations collide on the stateful ZNP session.
 
 The daemon opens the coordinator once and serves operations over localhost
 HTTP, serialized on a single lock with hard per-operation timeouts. It
-follows paniolo's daemon contract (see cli/src/daemons.rs): it binds an
+follows panio's daemon contract (see cli/src/daemons.rs): it binds an
 OS-assigned port on 127.0.0.1 and publishes
-`/tmp/paniolo-<uid>/zigplug/daemon.json` containing `{pid, port, device,
+`/tmp/panio-<uid>/zigplug/daemon.json` containing `{pid, port, device,
 token}`. The token is a per-run secret that every request must present as a
 bearer token; the file is written mode 0600 inside the 0700 runtime dir, so
 only the daemon's owner can read it. The one-shot CLI auto-spawns the daemon
-and proxies through it transparently, so paniolo power hooks
+and proxies through it transparently, so panio power hooks
 (`zigplug -d <dev> on <ieee>`) don't change.
 """
 
@@ -80,17 +80,17 @@ DISCOVERY_NAME = "zigplug"
 def runtime_dir() -> Path:
     """The daemon's runtime dir (discovery, locks, log).
 
-    Paniolo passes the canonical location as `PANIOLO_RUNTIME_DIR` (the
+    Panio passes the canonical location as `PANIO_RUNTIME_DIR` (the
     helper state/runtime-dir API in the CLI's daemons.rs); the literal
     fallback below matches it byte-for-byte for standalone invocations:
-    `/tmp/paniolo-<uid>/zigplug`, created 0700 with an ownership check.
+    `/tmp/panio-<uid>/zigplug`, created 0700 with an ownership check.
     """
-    env = os.environ.get("PANIOLO_RUNTIME_DIR")
+    env = os.environ.get("PANIO_RUNTIME_DIR")
     if env:
         d = Path(env)
         d.mkdir(parents=True, exist_ok=True)
         return d
-    base = Path(f"/tmp/paniolo-{os.getuid()}")
+    base = Path(f"/tmp/panio-{os.getuid()}")
     try:
         base.mkdir(mode=0o700)
     except FileExistsError:

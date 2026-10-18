@@ -32,21 +32,21 @@ fn scratch(name: &str, lab: &str) -> PathBuf {
     dir
 }
 
-fn paniolo(dir: &Path, json: bool, args: &[&str]) -> Output {
-    paniolo_env(dir, json, args, &[])
+fn panio(dir: &Path, json: bool, args: &[&str]) -> Output {
+    panio_env(dir, json, args, &[])
 }
 
-fn paniolo_env(dir: &Path, json: bool, args: &[&str], env: &[(&str, String)]) -> Output {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_paniolo"));
+fn panio_env(dir: &Path, json: bool, args: &[&str], env: &[(&str, String)]) -> Output {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_panio"));
     cmd.arg("--lab")
         .arg(dir.join("lab.toml"))
         .args(args)
-        .env("PANIOLO_RUNTIME_BASE", dir.join("run"))
+        .env("PANIO_RUNTIME_BASE", dir.join("run"))
         .env("XDG_RUNTIME_DIR", dir.join("run"))
-        .env_remove("PANIOLO_JSON_ERRORS")
-        .env_remove("PANIOLO_LAB");
+        .env_remove("PANIO_JSON_ERRORS")
+        .env_remove("PANIO_LAB");
     if json {
-        cmd.env("PANIOLO_JSON_ERRORS", "1");
+        cmd.env("PANIO_JSON_ERRORS", "1");
     }
     for (k, v) in env {
         cmd.env(k, v);
@@ -74,7 +74,7 @@ fn expect(
     channel: Option<&str>,
 ) {
     let dir = scratch(name, LAB);
-    let out = paniolo(&dir, true, args);
+    let out = panio(&dir, true, args);
     assert_eq!(out.status.code(), Some(code), "{args:?}: {out:?}");
     let e = error_object(&out);
     assert_eq!(e["kind"], kind, "{e}");
@@ -140,7 +140,7 @@ fn missing_netboot_root_is_not_configured_without_touching_runtime_or_lab() {
              interface = \"test-netboot-interface\"\n{root}"
         );
         let dir = scratch(name, &lab);
-        let out = paniolo(&dir, true, &["netboot", "tftp-root", "dut"]);
+        let out = panio(&dir, true, &["netboot", "tftp-root", "dut"]);
         assert_eq!(out.status.code(), Some(3), "{out:?}");
         assert!(out.stdout.is_empty(), "{out:?}");
         let e = error_object(&out);
@@ -156,7 +156,7 @@ fn missing_netboot_root_is_not_configured_without_touching_runtime_or_lab() {
             .contains("--tftp-root <path>"));
 
         // A read-only preflight must flag this before probing the interface.
-        let out = paniolo(&dir, true, &["doctor", "dut"]);
+        let out = panio(&dir, true, &["doctor", "dut"]);
         assert_eq!(out.status.code(), Some(1), "{out:?}");
         let report = String::from_utf8_lossy(&out.stdout);
         assert!(report.contains("dut\tnetboot\t@control\tMISSING\tno tftp_root configured"));
@@ -172,7 +172,7 @@ fn configured_netboot_root_prints_bare_path_without_starting_a_service() {
         "[targets.dut.netboot]\ninterface = \"test-netboot-interface\"\n\
          tftp_root = \"/srv/tftp/dut\"\n",
     );
-    let out = paniolo(&dir, true, &["netboot", "tftp-root", "-t", "dut"]);
+    let out = panio(&dir, true, &["netboot", "tftp-root", "-t", "dut"]);
     assert_eq!(out.status.code(), Some(0), "{out:?}");
     assert_eq!(out.stdout, b"/srv/tftp/dut\n");
     assert!(out.stderr.is_empty(), "{out:?}");
@@ -196,7 +196,7 @@ fn netboot_start_and_netif_netboot_refuse_a_missing_root_as_not_configured() {
         ),
     ] {
         let dir = scratch(name, lab);
-        let out = paniolo(&dir, true, args);
+        let out = panio(&dir, true, args);
         assert_eq!(out.status.code(), Some(3), "{args:?}: {out:?}");
         assert!(out.stdout.is_empty(), "{args:?}: {out:?}");
         let e = error_object(&out);
@@ -231,7 +231,7 @@ fn missing_serial_interface_is_not_configured() {
 fn missing_lab_file_is_not_configured() {
     let dir = scratch("no_lab", LAB);
     std::fs::remove_file(dir.join("lab.toml")).unwrap();
-    let out = paniolo(&dir, true, &["power-cycle", "dut"]);
+    let out = panio(&dir, true, &["power-cycle", "dut"]);
     assert_eq!(out.status.code(), Some(3), "{out:?}");
     assert_eq!(error_object(&out)["kind"], "not_configured");
 }
@@ -239,7 +239,7 @@ fn missing_lab_file_is_not_configured() {
 #[test]
 fn ambiguous_target_is_usage() {
     let dir = scratch("two", "[targets.a]\n[targets.b]\n");
-    let out = paniolo(&dir, true, &["power-cycle"]);
+    let out = panio(&dir, true, &["power-cycle"]);
     assert_eq!(out.status.code(), Some(2), "{out:?}");
     assert_eq!(error_object(&out)["kind"], "usage");
 }
@@ -247,16 +247,16 @@ fn ambiguous_target_is_usage() {
 #[test]
 fn clap_usage_errors_exit_2_with_a_usage_object() {
     let dir = scratch("clap", LAB);
-    let out = paniolo(&dir, true, &["power-cycle", "--bogus"]);
+    let out = panio(&dir, true, &["power-cycle", "--bogus"]);
     assert_eq!(out.status.code(), Some(2), "{out:?}");
     let e = error_object(&out);
     assert_eq!(e["kind"], "usage");
     assert_eq!(e["message"], "unexpected argument '--bogus' found");
     // The flag form works too, though parsing (which reads it) failed.
-    let out = paniolo(&dir, false, &["--json-errors", "power-cycle", "--bogus"]);
+    let out = panio(&dir, false, &["--json-errors", "power-cycle", "--bogus"]);
     assert_eq!(error_object(&out)["code"], 2);
     // --help is not a failure: no object.
-    let out = paniolo(&dir, true, &["--help"]);
+    let out = panio(&dir, true, &["--help"]);
     assert_eq!(out.status.code(), Some(0));
     assert!(!String::from_utf8_lossy(&out.stderr).contains("\"error\""));
 }
@@ -287,7 +287,7 @@ fn serial_log_warns_when_the_daemon_is_stopped_and_can_require_it() {
         Some("serial"),
     );
     let dir = scratch("log_warn", LAB);
-    let out = paniolo(&dir, false, &["serial", "log", "-t", "dut"]);
+    let out = panio(&dir, false, &["serial", "log", "-t", "dut"]);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         stderr.starts_with("warning: serialcap daemon for 'dut' is not running"),
@@ -300,14 +300,14 @@ fn serial_log_warns_when_the_daemon_is_stopped_and_can_require_it() {
 #[test]
 fn a_missing_required_argument_names_it() {
     let dir = scratch("missing_arg", LAB);
-    let out = paniolo(&dir, true, &["hid", "set", "-t", "dut"]);
+    let out = panio(&dir, true, &["hid", "set", "-t", "dut"]);
     assert_eq!(out.status.code(), Some(2), "{out:?}");
     assert_eq!(
         error_object(&out)["message"],
         "the following required arguments were not provided: --cmd <CMD>"
     );
     // Several missing: all named, not just the first.
-    let out = paniolo(&dir, true, &["serial", "add", "-t", "dut"]);
+    let out = panio(&dir, true, &["serial", "add", "-t", "dut"]);
     assert_eq!(
         error_object(&out)["message"],
         "the following required arguments were not provided: --device <DEVICE>, <NAME>"
@@ -317,15 +317,15 @@ fn a_missing_required_argument_names_it() {
 #[test]
 fn no_json_unless_requested_and_the_flag_matches_the_variable() {
     let dir = scratch("opt_in", LAB);
-    let plain = paniolo(&dir, false, &["power-cycle", "nosuch"]);
+    let plain = panio(&dir, false, &["power-cycle", "nosuch"]);
     assert_eq!(plain.status.code(), Some(3));
     assert_eq!(
         String::from_utf8_lossy(&plain.stderr),
         "target 'nosuch' not found in lab\n",
         "without the opt-in, stderr is exactly the 0.4 text"
     );
-    let flag = paniolo(&dir, false, &["--json-errors", "power-cycle", "nosuch"]);
-    let var = paniolo(&dir, true, &["power-cycle", "nosuch"]);
+    let flag = panio(&dir, false, &["--json-errors", "power-cycle", "nosuch"]);
+    let var = panio(&dir, true, &["power-cycle", "nosuch"]);
     assert_eq!(flag.stderr, var.stderr);
     assert!(flag.stdout.is_empty(), "stdout stays clean");
 }
@@ -351,7 +351,7 @@ device = "/dev/ttyUSB1"
 host = "bench2"
 "#;
     let dir = scratch("two_hosts", lab);
-    let out = paniolo(&dir, true, &["serial", "log", "-t", "nuc"]);
+    let out = panio(&dir, true, &["serial", "log", "-t", "nuc"]);
     assert_eq!(out.status.code(), Some(2), "{out:?}");
     let e = error_object(&out);
     assert_eq!(e["kind"], "usage");
@@ -385,7 +385,7 @@ device = "/dev/ttyUSB1"
 power_button = true
 "#;
     let dir = scratch("dtr_two", lab);
-    let out = paniolo(&dir, true, &["serial", "dtr", "-t", "nuc"]);
+    let out = panio(&dir, true, &["serial", "dtr", "-t", "nuc"]);
     assert_eq!(out.status.code(), Some(2), "{out:?}");
     assert_eq!(error_object(&out)["kind"], "usage");
 }
@@ -393,7 +393,7 @@ power_button = true
 #[test]
 fn serial_watch_without_interfaces_is_not_configured() {
     let dir = scratch("watch_bare", "[targets.bare]\n");
-    let out = paniolo(&dir, true, &["serial", "watch", "-t", "bare"]);
+    let out = panio(&dir, true, &["serial", "watch", "-t", "bare"]);
     assert_eq!(out.status.code(), Some(3), "{out:?}");
     let e = error_object(&out);
     assert_eq!(e["target"], "bare");
@@ -403,7 +403,7 @@ fn serial_watch_without_interfaces_is_not_configured() {
 #[test]
 fn missing_subcommand_is_usage_with_a_plain_message() {
     let dir = scratch("no_sub", LAB);
-    let out = paniolo(&dir, true, &["power"]);
+    let out = panio(&dir, true, &["power"]);
     assert_eq!(out.status.code(), Some(2), "{out:?}");
     assert_eq!(error_object(&out)["message"], "a subcommand is required");
 }
@@ -411,7 +411,7 @@ fn missing_subcommand_is_usage_with_a_plain_message() {
 #[test]
 fn a_repeated_json_errors_flag_is_accepted() {
     let dir = scratch("repeat", LAB);
-    let out = paniolo(
+    let out = panio(
         &dir,
         false,
         &["--json-errors", "--json-errors", "power-cycle", "nosuch"],
@@ -429,7 +429,7 @@ fn power_lab(cycle_cmd: &str) -> String {
 #[test]
 fn a_failing_power_hook_is_helper_failed_with_its_code() {
     let dir = scratch("hook_7", &power_lab("exit 7"));
-    let out = paniolo(&dir, true, &["power-cycle", "nuc"]);
+    let out = panio(&dir, true, &["power-cycle", "nuc"]);
     assert_eq!(out.status.code(), Some(101), "{out:?}");
     let e = error_object(&out);
     assert_eq!(e["kind"], "helper_failed");
@@ -438,7 +438,7 @@ fn a_failing_power_hook_is_helper_failed_with_its_code() {
     assert_eq!(e["channel"], "power");
     // A hook exiting 2 no longer reads as a usage error.
     let dir = scratch("hook_2", &power_lab("exit 2"));
-    let out = paniolo(&dir, false, &["power-cycle", "nuc"]);
+    let out = panio(&dir, false, &["power-cycle", "nuc"]);
     assert_eq!(out.status.code(), Some(101), "{out:?}");
 }
 
@@ -448,7 +448,7 @@ fn a_failing_power_hook_is_helper_failed_with_its_code() {
 #[test]
 fn a_missing_power_hook_is_not_configured() {
     let dir = scratch("hook_127", &power_lab("/nonexistent/relay-script"));
-    let out = paniolo(&dir, true, &["power-cycle", "nuc"]);
+    let out = panio(&dir, true, &["power-cycle", "nuc"]);
     assert_eq!(out.status.code(), Some(3), "{out:?}");
     let e = error_object(&out);
     assert_eq!(e["kind"], "not_configured");
@@ -463,9 +463,9 @@ fn a_missing_power_hook_is_not_configured() {
 fn a_missing_hook_is_helper_failed_on_windows() {
     let dir = scratch(
         "hook_missing_win",
-        &power_lab("paniolo-no-such-relay-command"),
+        &power_lab("panio-no-such-relay-command"),
     );
-    let out = paniolo(&dir, true, &["power-cycle", "nuc"]);
+    let out = panio(&dir, true, &["power-cycle", "nuc"]);
     assert_eq!(out.status.code(), Some(101), "{out:?}");
     let e = error_object(&out);
     assert_eq!(e["kind"], "helper_failed");
@@ -476,7 +476,7 @@ fn a_missing_hook_is_helper_failed_on_windows() {
 #[test]
 fn a_hook_killed_by_a_signal_is_helper_failed_without_a_code() {
     let dir = scratch("hook_sig", &power_lab("kill -TERM $$"));
-    let out = paniolo(&dir, true, &["power-cycle", "nuc"]);
+    let out = panio(&dir, true, &["power-cycle", "nuc"]);
     assert_eq!(out.status.code(), Some(101), "{out:?}");
     assert!(error_object(&out)["child_exit"].is_null());
 }
@@ -498,19 +498,19 @@ fn power_cycle_waits_for_state_cmd_to_report_on() {
         "[targets.nuc]\n[targets.nuc.power]\ncycle_cmd = \"true\"\nstate_cmd = {state_cmd:?}\n"
     );
     std::fs::write(dir.join("lab.toml"), lab).unwrap();
-    let out = paniolo(&dir, true, &["power-cycle", "nuc"]);
+    let out = panio(&dir, true, &["power-cycle", "nuc"]);
     assert_eq!(out.status.code(), Some(0), "{out:?}");
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("back on"), "{stdout}");
     assert_eq!(std::fs::read_to_string(&count).unwrap().trim(), "3");
 }
 
-/// Without a `state_cmd`, paniolo cannot confirm the cycle, and says so
+/// Without a `state_cmd`, panio cannot confirm the cycle, and says so
 /// instead of claiming it is complete.
 #[test]
 fn power_cycle_without_state_cmd_does_not_claim_completion() {
     let dir = scratch("cycle_no_state", &power_lab("exit 0"));
-    let out = paniolo(&dir, true, &["power-cycle", "nuc"]);
+    let out = panio(&dir, true, &["power-cycle", "nuc"]);
     assert_eq!(out.status.code(), Some(0), "{out:?}");
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("requested"), "{stdout}");
@@ -521,7 +521,7 @@ fn power_cycle_without_state_cmd_does_not_claim_completion() {
 /// batch commands to `sftp.log` and succeeds (or fails with STUB_SFTP=fail);
 /// `ssh` records its argv in `ssh.args` and
 /// then behaves per STUB_SSH: `down` is a transport failure (255), `remote3`
-/// is a 0.5 remote paniolo reporting not_configured with its JSON line.
+/// is a 0.5 remote panio reporting not_configured with its JSON line.
 #[cfg(unix)]
 fn stub_bin(dir: &Path) -> String {
     use std::os::unix::fs::PermissionsExt;
@@ -574,7 +574,7 @@ fn ssh_transport_failure_is_unreachable_not_255() {
     let dir = scratch("ssh_down", REMOTE_LAB);
     let path = stub_bin(&dir);
     let env = [("PATH", path), ("STUB_SSH", "down".to_string())];
-    let out = paniolo_env(&dir, true, &["power-cycle", "nuc"], &env);
+    let out = panio_env(&dir, true, &["power-cycle", "nuc"], &env);
     assert_eq!(out.status.code(), Some(4), "{out:?}");
     let e = error_object(&out);
     assert_eq!(e["kind"], "unreachable");
@@ -594,7 +594,7 @@ fn a_missing_sftp_is_not_configured() {
     std::fs::remove_file(dir.join("bin").join("sftp")).unwrap();
     // Only the stub directory: no system sftp to fall back on.
     let bin = path.split(':').next().unwrap().to_string();
-    let out = paniolo_env(&dir, true, &["power-cycle", "nuc"], &[("PATH", bin)]);
+    let out = panio_env(&dir, true, &["power-cycle", "nuc"], &[("PATH", bin)]);
     assert_eq!(out.status.code(), Some(3), "{out:?}");
     assert_eq!(error_object(&out)["kind"], "not_configured");
 }
@@ -605,7 +605,7 @@ fn a_failed_slice_copy_is_unreachable() {
     let dir = scratch("sftp_down", REMOTE_LAB);
     let path = stub_bin(&dir);
     let env = [("PATH", path), ("STUB_SFTP", "fail".to_string())];
-    let out = paniolo_env(&dir, true, &["power-cycle", "nuc"], &env);
+    let out = panio_env(&dir, true, &["power-cycle", "nuc"], &env);
     assert_eq!(out.status.code(), Some(4), "{out:?}");
     assert_eq!(error_object(&out)["host"], "bench1");
 }
@@ -616,7 +616,7 @@ fn a_remote_failure_arrives_with_its_code_and_one_json_object() {
     let dir = scratch("remote3", REMOTE_LAB);
     let path = stub_bin(&dir);
     let env = [("PATH", path), ("STUB_SSH", "remote3".to_string())];
-    let out = paniolo_env(&dir, true, &["power-cycle", "nuc"], &env);
+    let out = panio_env(&dir, true, &["power-cycle", "nuc"], &env);
     assert_eq!(out.status.code(), Some(3), "{out:?}");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert_eq!(stderr.matches("\"error\"").count(), 1, "{stderr}");
@@ -635,24 +635,24 @@ fn a_passthrough_killed_by_a_signal_exits_128_plus_n() {
     std::fs::write(&editor, "#!/bin/sh\nkill -TERM $$\n").unwrap();
     std::fs::set_permissions(&editor, std::fs::Permissions::from_mode(0o755)).unwrap();
     let env = [("EDITOR", editor.display().to_string())];
-    let out = paniolo_env(&dir, false, &["config", "edit"], &env);
+    let out = panio_env(&dir, false, &["config", "edit"], &env);
     assert_eq!(out.status.code(), Some(143), "{out:?}");
     // And the editor's own status is kept (design D3).
     std::fs::write(&editor, "#!/bin/sh\nexit 5\n").unwrap();
-    let out = paniolo_env(&dir, false, &["config", "edit"], &env);
+    let out = panio_env(&dir, false, &["config", "edit"], &env);
     assert_eq!(out.status.code(), Some(5), "{out:?}");
 }
 
 /// Hooks do not inherit the JSON request (design D1, review N1): a hook that
-/// ran paniolo would print its own object ahead of ours. The hook exits 9 if
+/// ran panio would print its own object ahead of ours. The hook exits 9 if
 /// it can see the variable, 7 otherwise.
 #[test]
 fn hooks_do_not_inherit_the_json_request() {
     // Hooks run under `sh -c`, or `cmd.exe /C` on Windows.
     let hook = if cfg!(windows) {
-        "if defined PANIOLO_JSON_ERRORS (exit 9) else (exit 7)"
+        "if defined PANIO_JSON_ERRORS (exit 9) else (exit 7)"
     } else {
-        r#"[ -n "$PANIOLO_JSON_ERRORS" ] && exit 9; exit 7"#
+        r#"[ -n "$PANIO_JSON_ERRORS" ] && exit 9; exit 7"#
     };
     for (name, json, args) in [
         ("inherit_var", true, vec!["power-cycle", "nuc"]),
@@ -663,7 +663,7 @@ fn hooks_do_not_inherit_the_json_request() {
         ),
     ] {
         let dir = scratch(name, &power_lab(hook));
-        let out = paniolo(&dir, json, &args);
+        let out = panio(&dir, json, &args);
         assert_eq!(out.status.code(), Some(101), "{out:?}");
         assert_eq!(error_object(&out)["child_exit"], 7, "{name}");
     }
@@ -672,7 +672,7 @@ fn hooks_do_not_inherit_the_json_request() {
 #[test]
 fn serial_health_stopped_snapshot_is_read_only() {
     let dir = scratch("serial_health_stopped", LAB);
-    let out = paniolo(&dir, true, &["serial", "status", "dut"]);
+    let out = panio(&dir, true, &["serial", "status", "dut"]);
     assert_eq!(out.status.code(), Some(0), "{out:?}");
     let snapshot: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(snapshot["process_live"], false);
@@ -684,7 +684,7 @@ fn serial_health_stopped_snapshot_is_read_only() {
     assert_eq!(std::fs::read_dir(dir.join("run")).unwrap().count(), 0);
 }
 
-/// A reader that leaves early (`paniolo … | head -1`) is a quiet success, not
+/// A reader that leaves early (`panio … | head -1`) is a quiet success, not
 /// a panic and exit 101. The pipe's read end is closed before the child
 /// starts, so its first write fails every time rather than by timing.
 #[test]
@@ -692,11 +692,11 @@ fn a_closed_stdout_exits_zero_without_a_panic() {
     let dir = scratch("closed-stdout", LAB);
     let (reader, writer) = std::io::pipe().unwrap();
     drop(reader);
-    let out = Command::new(env!("CARGO_BIN_EXE_paniolo"))
+    let out = Command::new(env!("CARGO_BIN_EXE_panio"))
         .arg("--lab")
         .arg(dir.join("lab.toml"))
         .args(["config", "path"])
-        .env("PANIOLO_RUNTIME_BASE", dir.join("run"))
+        .env("PANIO_RUNTIME_BASE", dir.join("run"))
         .stdout(writer)
         .stderr(std::process::Stdio::piped())
         .output()
@@ -715,7 +715,7 @@ fn power_state_forwards_successful_hook_stderr_and_preserves_stdout() {
         let cmd = format!("printf '%s' '{verdict}'; printf '%s' 'insecure transport warning' >&2");
         let lab = format!("[targets.nuc.power]\nstate_cmd = {cmd:?}\n");
         let dir = scratch(&format!("state_warning_{expected}"), &lab);
-        let out = paniolo(&dir, true, &["power-state", "nuc"]);
+        let out = panio(&dir, true, &["power-state", "nuc"]);
         assert!(out.status.success(), "{out:?}");
         assert_eq!(
             String::from_utf8_lossy(&out.stdout),
@@ -733,7 +733,7 @@ fn power_state_failed_hook_reports_stderr_once_in_the_error() {
     let cmd = "printf 'on'; printf 'transport failed' >&2; exit 7";
     let lab = format!("[targets.nuc.power]\nstate_cmd = {cmd:?}\n");
     let dir = scratch("state_failure_stderr", &lab);
-    let out = paniolo(&dir, false, &["power-state", "nuc"]);
+    let out = panio(&dir, false, &["power-state", "nuc"]);
     assert_eq!(out.status.code(), Some(101), "{out:?}");
     assert!(out.stdout.is_empty(), "{out:?}");
     let stderr = String::from_utf8_lossy(&out.stderr);
@@ -744,7 +744,7 @@ fn power_state_failed_hook_reports_stderr_once_in_the_error() {
         1,
         "{stderr}"
     );
-    let out = paniolo(&dir, true, &["power-state", "nuc"]);
+    let out = panio(&dir, true, &["power-state", "nuc"]);
     let error = error_object(&out);
     assert_eq!(error["kind"], "helper_failed");
     assert_eq!(error["child_exit"], 7);

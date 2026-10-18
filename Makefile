@@ -12,28 +12,28 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Build and install paniolo: the Rust CLI (cli/) plus the daemons and helpers
+# Build and install panio: the Rust CLI (cli/) plus the daemons and helpers
 # (hdmicap, serialcap, netbootd, cambrionix, hidrig, ch9329, shellyplug,
 # amt), the OCR helper, and the zigplug Zigbee helper (Python, installed by
-# `paniolo setup` as a uv tool).
-# Only the `paniolo` CLI lands on PATH (~/.cargo/bin); the helpers install
-# into the private libexec dir (~/.local/libexec/paniolo/bin), run via
-# `paniolo helper <name> ...` when needed directly.
+# `panio setup` as a uv tool).
+# Only the `panio` CLI lands on PATH (~/.cargo/bin); the helpers install
+# into the private libexec dir (~/.local/libexec/panio/bin), run via
+# `panio helper <name> ...` when needed directly.
 # `make install` from a fresh clone is the only command you need; re-run it
 # after editing anything to rebuild and reinstall.
 
 CRATES = cli hdmicap serialcap netbootd cambrionix hidrig ch9329 shellyplug amt secret
 
-# The installed CLI, by absolute path: immune to a different `paniolo` shadowing
+# The installed CLI, by absolute path: immune to a different `panio` shadowing
 # ~/.cargo/bin earlier in PATH (e.g. a Homebrew keg from the tap).
-PANIOLO ?= $(HOME)/.cargo/bin/paniolo
+PANIO ?= $(HOME)/.cargo/bin/panio
 
 .PHONY: help install reinstall rust test fmt clean check-shadow check-deps
 
 help:
-	@echo "paniolo build targets:"
-	@echo "  make install    Build + install everything: the paniolo CLI, the daemons,"
-	@echo "                   and platform steps via 'paniolo setup' (OCR helper,"
+	@echo "panio build targets:"
+	@echo "  make install    Build + install everything: the panio CLI, the daemons,"
+	@echo "                   and platform steps via 'panio setup' (OCR helper,"
 	@echo "                   bpf-helper setuid on macOS, group setup on Linux)."
 	@echo "  make reinstall   Alias for 'make install' (install is already a full rebuild)."
 	@echo "  make rust        Fast path: build + install the Rust crates ($(CRATES)) only,"
@@ -42,12 +42,12 @@ help:
 	@echo "  make fmt         rustfmt every crate."
 	@echo "  make clean       cargo clean every crate."
 
-# Full build + install. Bootstrap the CLI with cargo, then let `paniolo setup`
+# Full build + install. Bootstrap the CLI with cargo, then let `panio setup`
 # do the rest — it rebuilds all crates and applies the platform-specific steps,
 # so all that logic lives in one place (cli/src/setup.rs).
 install: check-shadow check-deps
 	cargo install --path cli
-	$(PANIOLO) setup
+	$(PANIO) setup
 
 reinstall: install
 
@@ -83,14 +83,14 @@ check-deps:
 		[ "$$fail" = "0" ] || exit 1; \
 	fi
 
-# Warn when a different `paniolo` shadows the freshly installed one — e.g. a
+# Warn when a different `panio` shadows the freshly installed one — e.g. a
 # Homebrew keg from the tap winning over ~/.cargo/bin earlier in PATH.
 check-shadow:
-	@found=$$(command -v paniolo 2>/dev/null); \
-	if [ -n "$$found" ] && [ "$$found" != "$(PANIOLO)" ]; then \
-		echo "WARNING: 'paniolo' in PATH is $$found, not $(PANIOLO)."; \
+	@found=$$(command -v panio 2>/dev/null); \
+	if [ -n "$$found" ] && [ "$$found" != "$(PANIO)" ]; then \
+		echo "WARNING: 'panio' in PATH is $$found, not $(PANIO)."; \
 		echo "         Ensure ~/.cargo/bin precedes it in PATH, or remove the"; \
-		echo "         shadowing copy (e.g. 'brew uninstall paniolo')."; \
+		echo "         shadowing copy (e.g. 'brew uninstall panio')."; \
 	fi
 
 # Fast path for iterating on the Rust code without re-running the full setup.
@@ -99,11 +99,11 @@ check-shadow:
 # second toolchain (OCR, zigplug, the macOS setuid step, the Linux device-group
 # check); re-run `make install` when you need those. Bootstraps the CLI first so
 # install-layout changes in setup.rs take effect, then lets
-# `paniolo setup --rust-only` place the helpers and skills -- the
+# `panio setup --rust-only` place the helpers and skills -- the
 # libexec-vs-PATH layout logic lives in one place (cli/src/setup.rs).
 rust: check-deps
 	cargo install --path cli
-	$(PANIOLO) setup --rust-only
+	$(PANIO) setup --rust-only
 
 test:
 	@bash scripts/ci-coverage-check.sh

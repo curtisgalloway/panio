@@ -28,7 +28,7 @@ fn authenticated_stop_exits_and_removes_discovery() {
     let child = Command::new(env!("CARGO_BIN_EXE_serialcap"))
         .args(["daemon", "--port", "0", "--interface"])
         .arg(format!("console={}", dir.join("missing-device").display()))
-        .env("PANIOLO_RUNTIME_DIR", &dir)
+        .env("PANIO_RUNTIME_DIR", &dir)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
@@ -49,7 +49,7 @@ fn authenticated_stop_exits_and_removes_discovery() {
     }
     let result = Command::new(env!("CARGO_BIN_EXE_serialcap"))
         .arg("stop")
-        .env("PANIOLO_RUNTIME_DIR", &daemon.dir)
+        .env("PANIO_RUNTIME_DIR", &daemon.dir)
         .output()
         .unwrap();
     assert!(

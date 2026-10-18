@@ -25,7 +25,7 @@ use toml_edit::{value, ArrayOfTables, DocumentMut, Item, Table};
 
 use crate::model::{self, Lab, LabError};
 
-const HEADER: &str = "paniolo lab — managed by the `paniolo` CLI; hand-edits are preserved";
+const HEADER: &str = "panio lab — managed by the `panio` CLI; hand-edits are preserved";
 
 fn lab_err<T>(msg: impl Into<String>) -> Result<T, LabError> {
     Err(LabError(msg.into()))
@@ -99,7 +99,7 @@ impl LabFile {
         hostname: Option<&str>,
         identity: Option<&str>,
         control_path: Option<&str>,
-        paniolo_cmd: Option<&str>,
+        panio_cmd: Option<&str>,
         plugin_path: Option<&str>,
     ) -> Result<(), LabError> {
         model::validate_name("host", name)?;
@@ -113,7 +113,7 @@ impl LabFile {
         set_opt(&mut t, "hostname", hostname);
         set_opt(&mut t, "identity", identity);
         set_opt(&mut t, "control_path", control_path);
-        set_opt(&mut t, "paniolo_cmd", paniolo_cmd);
+        set_opt(&mut t, "panio_cmd", panio_cmd);
         set_opt(&mut t, "plugin_path", plugin_path);
         hosts.insert(name, Item::Table(t));
         Ok(())
@@ -128,7 +128,7 @@ impl LabFile {
         hostname: Option<&str>,
         identity: Option<&str>,
         control_path: Option<&str>,
-        paniolo_cmd: Option<&str>,
+        panio_cmd: Option<&str>,
         plugin_path: Option<&str>,
     ) -> Result<(), LabError> {
         model::validate_name("host", name)?;
@@ -144,7 +144,7 @@ impl LabFile {
         set_opt(t, "hostname", hostname);
         set_opt(t, "identity", identity);
         set_opt(t, "control_path", control_path);
-        set_opt(t, "paniolo_cmd", paniolo_cmd);
+        set_opt(t, "panio_cmd", panio_cmd);
         // An empty value clears the field, handing the host's plugin roots
         // back to its own environment.
         match plugin_path {

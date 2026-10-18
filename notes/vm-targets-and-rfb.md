@@ -14,7 +14,7 @@ SPDX-License-Identifier: Apache-2.0
 ## What prompted it
 
 A parallel effort (`~/src/windows-vm`) was automating a Windows 11 ARM64 guest
-under UTM on Apple Silicon, which raised the question of whether paniolo should
+under UTM on Apple Silicon, which raised the question of whether panio should
 treat a VM as a target at all, or whether that is redundant with what a
 hypervisor already gives you. The question was then re-asked for a Windows guest
 under **Proxmox**, which turns out to change the answer materially.
@@ -26,7 +26,7 @@ below is undecided.
 
 ## The redundancy argument, and where it fails
 
-The first instinct is that VMs are redundant: every paniolo channel exists
+The first instinct is that VMs are redundant: every panio channel exists
 because the physical world denies you direct access, and a hypervisor denies you
 none of it. Netboot is the clearest case — netbootd exists to reach a boot medium
 you cannot touch, and a VM's boot medium is a file you can edit. OCR'ing a
@@ -38,7 +38,7 @@ of the work and neither survives:
 
 - **"It's a local GUI app you'd be puppeting."** True of UTM, which is a sandboxed
   application on a laptop. A Proxmox node is a Debian box you SSH into with guests
-  attached — which is *exactly* paniolo's existing control-host model. `[hosts.pve1]
+  attached — which is *exactly* panio's existing control-host model. `[hosts.pve1]
   ssh = "root@pve1"`, channels bound to it, commands re-exec'd by the dispatch that
   already exists. No new architecture.
 - **"Video and HID are dead ends."** True of UTM: no screenshot API, and
@@ -49,7 +49,7 @@ of the work and neither survives:
 
 ## The reframing: this is not a VM feature
 
-The decision that actually matters is **not** "should paniolo support VMs." It is
+The decision that actually matters is **not** "should panio support VMs." It is
 "can video and HID come from RFB as well as from capture hardware."
 
 Framed as VM support it justifies one narrow feature. Framed as a transport it
@@ -91,7 +91,7 @@ Not uniform across channels, and the cheap parts are cheaper than expected:
 
 Not primarily to stop maintaining a bespoke web console. `hdmicap` serves `GET /`
 as an MJPEG video pane with an xterm.js serial pane below, and MJPEG ships whole
-frames on every refresh. RFB sends dirty rectangles. For the screens paniolo
+frames on every refresh. RFB sends dirty rectangles. For the screens panio
 actually looks at — a BIOS menu, a boot log, a mostly-static console — that is a
 large difference, and there is an existing latency complaint against the MJPEG
 path with a deferred PR behind it. Exporting RFB is a plausible **fix for an open
@@ -107,26 +107,26 @@ that for two windows. Three options, to be chosen before a codec is written:
 1. Keep a thin web page for serial only.
 2. Render serial into the framebuffer — worse than a real terminal, breaks
    copy/paste.
-3. Accept the split, on the grounds that a VNC viewer beside `paniolo serial watch`
+3. Accept the split, on the grounds that a VNC viewer beside `panio serial watch`
    is what you would have open anyway.
 
 ## What actually motivates VM support
 
 The best argument is not any capability comparison. It is that **the lab file is
 the single answer to "what can I drive,"** and a machine absent from it costs a
-second mental inventory forever. "This VM is another thing in our paniolo lab" is
+second mental inventory forever. "This VM is another thing in our panio lab" is
 the whole point.
 
 Note what that does *not* require. It is satisfied by a lab-file entry using
 existing channel kinds — power, serial, and eventually video and hid, pointed at
 different backends. The uniformity lives in the config and the naming, which is
-where paniolo already put it.
+where panio already put it.
 
 **Decision: no `vm` channel kind.** It would add model surface without adding any
 of the uniformity that motivates it. The `adb` precedent is instructive — a target
 class whose physical channels collapse into a software protocol got its own
-`ChannelKind` and its own command tree (`paniolo adb screencap`, not
-`paniolo video read`), and did *not* deliver cross-target workflow portability.
+`ChannelKind` and its own command tree (`panio adb screencap`, not
+`panio video read`), and did *not* deliver cross-target workflow portability.
 
 ### The one exception
 
@@ -166,7 +166,7 @@ from CPU time and qcow2 file size, and reached the wrong conclusion twice — fi
 NVMe disk. The actual cause was a missing `<ProductKey>` parking Setup on a screen
 that appears *before* disk selection. Being unable to see the screen is what made
 two wrong answers indistinguishable from the right one. That is a real cost with a
-number attached, but it is one incident and not on paniolo hardware.
+number attached, but it is one incident and not on panio hardware.
 
 ## Verification status
 
@@ -243,7 +243,7 @@ What genuinely landed, and is worth keeping separately from the RFB question:
   it. That is a real capability the note only predicted.
 - **The client direction is cheaper than estimated.** `vncdo` drove it with no
   Rust at all, and its verbs (`type`, `key`, `move`, `click`, `capture`) map
-  onto paniolo's vocabulary almost one to one.
+  onto panio's vocabulary almost one to one.
 
 Two cautions for whoever picks this up:
 

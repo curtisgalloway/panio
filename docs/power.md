@@ -5,14 +5,14 @@ management firmware; **TLS/HTTPS** encrypts traffic and verifies the server;
 a **CA** signs certificates; **PEM** is their text file format; **SAN** lists
 a certificate's valid names or addresses. See the [glossary](glossary.md).
 
-paniolo switches a target's power two ways:
+panio switches a target's power two ways:
 
 - **DTR via FTDI**: the serial cable's DTR line drives the target's J2
   power-button header. Wiring only. **Opt-in per serial interface**
   (`power_button = true`): `serial dtr` / `serial reset` refuse an interface
   that has not declared it.
 - **Generic power hooks**: four optional shell commands (`on_cmd`, `off_cmd`,
-  `cycle_cmd`, `state_cmd`), set with `paniolo power set` and run via `sh -c`.
+  `cycle_cmd`, `state_cmd`), set with `panio power set` and run via `sh -c`.
   Use them for a smart plug, a USB hub, Intel AMT, or a script. A target with
   more than one power layer can add named
   [power levels](#power-levels-soft-and-hard) (`soft`, `hard`) beside them.
@@ -53,7 +53,7 @@ The same FTDI adapter carries the target's serial console.
 # Add a serial interface. --power-button declares that this interface's DTR line
 # is wired to the J2 power button (this is what enables `serial dtr`/`reset`);
 # --sense records the modem-control input wired for power sensing (optional).
-paniolo serial add console -t target-machine \
+panio serial add console -t target-machine \
     --device /dev/tty.usbserial-0001 \
     --baud 115200 \
     --power-button \
@@ -61,35 +61,35 @@ paniolo serial add console -t target-machine \
 
 # Only needed when a target has MORE THAN ONE power_button interface: pick which
 # one DTR commands default to.
-paniolo power set -t target-machine --serial-interface console
+panio power set -t target-machine --serial-interface console
 ```
 
 To enable or revoke DTR on an existing interface:
 
 ```bash
-paniolo serial set console -t target-machine --power-button         # enable
-paniolo serial set console -t target-machine --power-button false   # revoke
+panio serial set console -t target-machine --power-button         # enable
+panio serial set console -t target-machine --power-button false   # revoke
 ```
 
 ### DTR commands
 
 ```bash
 # Pulse DTR on the default power serial interface (200 ms)
-paniolo serial dtr [target-machine]
+panio serial dtr [target-machine]
 
 # Explicit duration — short press signals the OS, long press hard-powers off
-paniolo serial dtr --ms 200 [target-machine]   # soft press
-paniolo serial dtr --ms 4000 [target-machine]  # hard power-off (PMIC)
+panio serial dtr --ms 200 [target-machine]   # soft press
+panio serial dtr --ms 4000 [target-machine]  # hard power-off (PMIC)
 
 # Target a specific interface with -i
-paniolo serial dtr -i bmc --ms 200 [target-machine]
+panio serial dtr -i bmc --ms 200 [target-machine]
 
 # Soft reset (convenience alias for a brief DTR pulse)
-paniolo serial reset [target-machine]
-paniolo serial reset -i console --ms 500 [target-machine]
+panio serial reset [target-machine]
+panio serial reset -i console --ms 500 [target-machine]
 
 # Show whether the target is powered on (requires sense signal + daemon running)
-paniolo power-state [target-machine]
+panio power-state [target-machine]
 ```
 
 | Press duration | Effect |
@@ -111,11 +111,11 @@ console.
 the daemon reconnects with DTR deasserted. Check the target before retrying:
 the physical press may have happened.
 
-> **"Reboot over serial" is not a DTR reset.** `paniolo serial send <target>
+> **"Reboot over serial" is not a DTR reset.** `panio serial send <target>
 > "reboot"` is a *software* reboot at a logged-in console. `serial reset` /
 > `serial dtr` toggle the J2 wiring. When a request says "use serial to
 > reboot" without naming DTR or the power button, use the console `reboot` (or
-> `paniolo power-cycle`), not DTR.
+> `panio power-cycle`), not DTR.
 
 ---
 
@@ -124,11 +124,11 @@ the physical press may have happened.
 All four hooks are optional and independent:
 
 ```bash
-paniolo power set -t <target> \
-    [--cycle-cmd <cmd>]   \   # paniolo power-cycle
-    [--on-cmd    <cmd>]   \   # paniolo power on
-    [--off-cmd   <cmd>]   \   # paniolo power off
-    [--state-cmd <cmd>]   \   # paniolo power-state (stdout: "on" or "off")
+panio power set -t <target> \
+    [--cycle-cmd <cmd>]   \   # panio power-cycle
+    [--on-cmd    <cmd>]   \   # panio power on
+    [--off-cmd   <cmd>]   \   # panio power off
+    [--state-cmd <cmd>]   \   # panio power-state (stdout: "on" or "off")
     [--serial-interface <name>]   # default DTR interface when several opt in
     [--host <labhost>]
 ```
@@ -143,11 +143,11 @@ helpers:
 | `shellyplug` | A Shelly Wi-Fi plug or relay | [Shelly smart plug control](#shelly-smart-plug-control-shellyplug) |
 | `amt` | An Intel AMT (vPro) machine's own power | [Intel AMT power control](#intel-amt-power-control-amt) |
 
-Helpers install into the private libexec dir (`~/.local/libexec/paniolo/bin`),
-not onto `PATH`. Hook strings name them bare; paniolo looks in libexec first.
-To run one by hand, use `paniolo helper <name> …`. List installed helpers
-with `paniolo helper`, then read a helper's own help with
-`paniolo helper amt --help`. Everything after the helper name, `--help`
+Helpers install into the private libexec dir (`~/.local/libexec/panio/bin`),
+not onto `PATH`. Hook strings name them bare; panio looks in libexec first.
+To run one by hand, use `panio helper <name> …`. List installed helpers
+with `panio helper`, then read a helper's own help with
+`panio helper amt --help`. Everything after the helper name, `--help`
 included, goes to the helper; a `--` before the name is accepted but not
 needed. Listing helpers and reading bundled helper help do not open hardware
 or start a daemon.
@@ -156,83 +156,83 @@ A helper runs on the local machine unless you say where the hardware is.
 Put these flags **before** the helper name:
 
 ```bash
-paniolo helper -t target-machine --channel power cambrionix -d /dev/ttyUSB0 state
-paniolo helper --host bench1 zigplug -d /dev/ttyUSB1 list
+panio helper -t target-machine --channel power cambrionix -d /dev/ttyUSB0 state
+panio helper --host bench1 zigplug -d /dev/ttyUSB1 list
 ```
 
 `-t T --channel K` runs on the host the lab binds that target's channel to
 (`-i NAME` picks a serial interface when they span hosts); `-t T` alone
 works when all of the target's channels share one host; `--host H` names a
-lab host. It re-execs `paniolo helper` on that host over SSH, so the helper
+lab host. It re-execs `panio helper` on that host over SSH, so the helper
 gets that host's own state and runtime dirs, as a hook would.
 
 ### Out-of-tree helpers and skills (plugin roots)
 
-A helper or skill paniolo does not ship (a lab's own board-control tool, a
+A helper or skill panio does not ship (a lab's own board-control tool, a
 power script, a skill describing one lab's targets) can live in its own
 checkout instead of being copied into `~/.local`. Point
-`PANIOLO_PLUGIN_PATH` at one or more **plugin roots**: install prefixes laid
-out like paniolo's own.
+`PANIO_PLUGIN_PATH` at one or more **plugin roots**: install prefixes laid
+out like panio's own.
 
 ```text
 /opt/lab-plugins/
-  libexec/paniolo/bin/labctl                 # a helper
-  share/paniolo/skills/lab-targets/SKILL.md  # a skill
+  libexec/panio/bin/labctl                 # a helper
+  share/panio/skills/lab-targets/SKILL.md  # a skill
 ```
 
 ```bash
-export PANIOLO_PLUGIN_PATH=/opt/lab-plugins:/srv/more-plugins   # ';' on Windows
-paniolo helper                 # labctl<TAB>plugin: /opt/lab-plugins
-paniolo helper labctl status
-paniolo skill lab-targets
-paniolo --plugin-path /opt/lab-plugins helper   # one command, without the variable
+export PANIO_PLUGIN_PATH=/opt/lab-plugins:/srv/more-plugins   # ';' on Windows
+panio helper                 # labctl<TAB>plugin: /opt/lab-plugins
+panio helper labctl status
+panio skill lab-targets
+panio --plugin-path /opt/lab-plugins helper   # one command, without the variable
 ```
 
-- **Plugins add; they never shadow.** paniolo searches its own helper dirs
+- **Plugins add; they never shadow.** panio searches its own helper dirs
   first and the plugin roots after them, in list order, then `PATH`. A plugin
   helper or skill with the same name as a bundled one is never used, so a
-  daemon always runs the binary paniolo installed. There is no setting to
+  daemon always runs the binary panio installed. There is no setting to
   change that; give the plugin a different name.
 - **Hooks name plugin helpers bare.** Hook commands (`*_cmd`, the hid and usb
   `cmd`, actions) run with the plugin helper dirs on `PATH` after the bundled
   ones, so `--cycle-cmd "labctl cycle"` works.
-- **Listing shows the source.** `paniolo helper` and `paniolo skill` print a
+- **Listing shows the source.** `panio helper` and `panio skill` print a
   bundled entry as its bare name and a plugin entry as the name, a tab, and
   `plugin: <root>`. The name is always the first field.
 - **Empty entries are skipped; relative ones are ignored** with a warning on
-  stderr, since they would resolve against whatever directory paniolo started
+  stderr, since they would resolve against whatever directory panio started
   in.
-- **`paniolo doctor`** prints one `plugins` line per root on this machine: `ok`,
-  `MISSING` (counted as a problem), or `incomplete` (no `libexec/paniolo/bin`
-  or `share/paniolo/skills` inside, or a relative entry). It also names a
+- **`panio doctor`** prints one `plugins` line per root on this machine: `ok`,
+  `MISSING` (counted as a problem), or `incomplete` (no `libexec/panio/bin`
+  or `share/panio/skills` inside, or a relative entry). It also names a
   plugin helper that a bundled helper shadows.
 - **The variable is read on the host that runs the command.** For a remote
-  control host, set the host's `plugin_path` in the lab file (`paniolo host set
+  control host, set the host's `plugin_path` in the lab file (`panio host set
   bench1 --plugin-path /opt/lab-plugins`); see
   [Distributed control](distributed-control.md#plugin-roots-on-a-control-host).
-- `paniolo daemons` does not treat a process running out of a plugin root as
+- `panio daemons` does not treat a process running out of a plugin root as
   a stray, so `daemons stop --all` leaves it alone.
 
 The `hidrig` control board can also switch a DUT power relay
 (`hidrig power off|on|cycle`) behind these hooks (see
-[`hidrig/README.md`](https://github.com/curtisgalloway/paniolo/blob/main/hidrig/README.md)).
+[`hidrig/README.md`](https://github.com/curtisgalloway/panio/blob/main/hidrig/README.md)).
 
 ### Commands backed by hooks
 
 ```bash
-paniolo power on  [target]        # run on_cmd; error with config hint when unset
-paniolo power off [target]        # run off_cmd; error with config hint when unset
-paniolo power-cycle [target]      # run cycle_cmd
-paniolo power-state [target]      # state_cmd if set; else serial sense-line
+panio power on  [target]        # run on_cmd; error with config hint when unset
+panio power off [target]        # run off_cmd; error with config hint when unset
+panio power-cycle [target]      # run cycle_cmd
+panio power-state [target]      # state_cmd if set; else serial sense-line
 ```
 
 **`power-cycle`** runs `cycle_cmd` with no built-in timing; the script owns the
 sequence. A script may return before the cycle ends (a relay board that times
 the off period itself), so when `state_cmd` is set, `power-cycle` then reads it
 every 500 ms until it reports `on` and only then prints `Power cycle complete`.
-If it still reports `off` after 30 s, paniolo exits 22 (`timeout`, outcome
+If it still reports `off` after 30 s, panio exits 22 (`timeout`, outcome
 unknown). Without `state_cmd` it cannot check, and prints `Power cycle
-requested` instead. A failing script makes paniolo exit 101 (`helper_failed`), with the
+requested` instead. A failing script makes panio exit 101 (`helper_failed`), with the
 script's code as `child_exit` in the `--json-errors` object. A missing or
 non-executable script (shell code 127/126) exits 3 (`not_configured`). See
 [Exit status and errors](errors.md).
@@ -273,19 +273,19 @@ Set and remove levels with the CLI, which keeps the rest of the file and its
 comments as they are:
 
 ```bash
-paniolo power set -t target-machine --level hard \
+panio power set -t target-machine --level hard \
     --cycle-cmd "~/scripts/hard-cycle.sh" --state-cmd "shellyplug -d 192.0.2.10 state"
-paniolo power rm -t target-machine --level hard   # only that level
-paniolo power rm -t target-machine                # the whole channel, levels included
+panio power rm -t target-machine --level hard   # only that level
+panio power rm -t target-machine                # the whole channel, levels included
 ```
 
 Then pick a level with `--level` on any power verb:
 
 ```bash
-paniolo power-cycle target-machine --level hard
-paniolo power on    target-machine --level hard
-paniolo power off   target-machine --level hard
-paniolo power-state target-machine --level hard
+panio power-cycle target-machine --level hard
+panio power on    target-machine --level hard
+panio power off   target-machine --level hard
+panio power-state target-machine --level hard
 ```
 
 Rules:
@@ -326,15 +326,15 @@ Rules:
   an action's `requires_power` check. Use the CLI or the MCP tools for the
   others.
 
-### `paniolo doctor` hook probing
+### `panio doctor` hook probing
 
-`paniolo doctor` probes every hook, over SSH for remote hosts: `test -e` for an
+`panio doctor` probes every hook, over SSH for remote hosts: `test -e` for an
 absolute path, `command -v` for a bare name, in the runtime lookup order:
 
-1. the per-user libexec dir (`~/.local/libexec/paniolo/bin`);
-2. the system package dir (`/usr/libexec/paniolo/bin`);
-3. each plugin root's `libexec/paniolo/bin` (for a remote host, its lab
-   `plugin_path`, else its own `PANIOLO_PLUGIN_PATH`; see
+1. the per-user libexec dir (`~/.local/libexec/panio/bin`);
+2. the system package dir (`/usr/libexec/panio/bin`);
+3. each plugin root's `libexec/panio/bin` (for a remote host, its lab
+   `plugin_path`, else its own `PANIO_PLUGIN_PATH`; see
    [plugin roots](#out-of-tree-helpers-and-skills-plugin-roots));
 4. `PATH`.
 
@@ -351,10 +351,10 @@ A helper with a `doctor` subcommand can check the hardware too, read-only.
 Opt the channel in:
 
 ```bash
-paniolo power set -t target-machine --doctor      # --no-doctor turns it off
+panio power set -t target-machine --doctor      # --no-doctor turns it off
 ```
 
-`paniolo doctor` then runs the hook's program with the hook's own transport
+`panio doctor` then runs the hook's program with the hook's own transport
 options and ` doctor --json` in place of the verb. For
 `shellyplug -d 192.0.2.10 cycle 0` that is
 `shellyplug -d 192.0.2.10 doctor --json`. The check runs once per distinct
@@ -389,8 +389,8 @@ target-machine  power doctor (level hard)          @bench1  no-check  helper has
 ### Example: Home Assistant script (cycle_cmd)
 
 ```bash
-paniolo power set -t target-machine \
-    --cycle-cmd /Users/you/.config/paniolo/scripts/power-cycle-target-machine.sh
+panio power set -t target-machine \
+    --cycle-cmd /Users/you/.config/panio/scripts/power-cycle-target-machine.sh
 ```
 
 ```bash
@@ -413,23 +413,23 @@ curl -sf -X POST "$HA_URL/api/services/switch/turn_on" \
   -d "{\"entity_id\": \"$ENTITY\"}"
 ```
 
-Never hardcode `HA_TOKEN` in the script or the paniolo config. Inject it at
+Never hardcode `HA_TOKEN` in the script or the panio config. Inject it at
 call time:
 
 ```bash
 # 1Password CLI (op): reads secrets from a .env file or vault and injects them
 #    .env file format:  HA_TOKEN=op://vault/item/field
-op run --env-file .env -- paniolo power-cycle target-machine
+op run --env-file .env -- panio power-cycle target-machine
 
 # direnv: place "export HA_TOKEN=..." in an .envrc in your working directory;
 #    direnv loads it automatically when you cd there
-paniolo power-cycle target-machine   # HA_TOKEN already in environment via direnv
+panio power-cycle target-machine   # HA_TOKEN already in environment via direnv
 
 # Inline export (quick/manual use — clears from shell history if prefixed with space)
-HA_TOKEN="$(cat ~/.secrets/ha_token)" paniolo power-cycle target-machine
+HA_TOKEN="$(cat ~/.secrets/ha_token)" panio power-cycle target-machine
 
 # SSH with env forwarding (when running from a remote agent host)
-ssh -o SendEnv=HA_TOKEN control-mac "paniolo power-cycle target-machine"
+ssh -o SendEnv=HA_TOKEN control-mac "panio power-cycle target-machine"
 # (requires AcceptEnv HA_TOKEN in sshd_config on control-mac)
 ```
 
@@ -442,8 +442,8 @@ The `cambrionix` helper drives a Cambrionix USB hub's control UART: 115200
 
 ### Installation
 
-`make install` / `paniolo setup` installs it into the private libexec dir. Run
-it by hand via `paniolo helper cambrionix …`.
+`make install` / `panio setup` installs it into the private libexec dir. Run
+it by hand via `panio helper cambrionix …`.
 
 ### Commands
 
@@ -467,21 +467,21 @@ cambrionix -d <device> cycle <port> [--delay-ms 3000]
 - **Bounded responses:** 3 s and 64 KiB each; a hub error line fails the
   command, so a wrong `-d` fails fast instead of hanging the hook.
 
-### Wiring into paniolo power hooks
+### Wiring into panio power hooks
 
 Example: a Raspberry Pi 5 on hub port 4, hub UART at
 `/dev/cu.usbserial-AA00BB11`:
 
 ```bash
-paniolo power set -t pi5 \
+panio power set -t pi5 \
     --cycle-cmd "cambrionix -d /dev/cu.usbserial-AA00BB11 cycle 4" \
     --on-cmd    "cambrionix -d /dev/cu.usbserial-AA00BB11 on 4" \
     --off-cmd   "cambrionix -d /dev/cu.usbserial-AA00BB11 off 4" \
     --state-cmd "cambrionix -d /dev/cu.usbserial-AA00BB11 state 4"
 ```
 
-`paniolo power on pi5`, `paniolo power off pi5`, `paniolo power-cycle pi5`, and
-`paniolo power-state pi5` then work.
+`panio power on pi5`, `panio power off pi5`, `panio power-cycle pi5`, and
+`panio power-state pi5` then work.
 
 ---
 
@@ -492,7 +492,7 @@ coordinator dongle (e.g. Sonoff ZBDongle-P), using
 [zigpy-znp](https://github.com/zigpy/zigpy-znp).
 
 Device data lives in a sqlite DB at
-`~/.config/paniolo/helpers/zigplug/zigbee.db` (`--db` to override). A DB at the
+`~/.config/panio/helpers/zigplug/zigbee.db` (`--db` to override). A DB at the
 pre-0.3 location is migrated automatically.
 
 **Operations run through a persistent daemon** that the CLI starts on first
@@ -502,8 +502,8 @@ coordinator, which can lose its network NVRAM. The daemon opens the port once,
 serializes operations, and gives each a hard timeout.
 
 It follows the standard daemon contract
-(`/tmp/paniolo-<uid>/zigplug/daemon.json`, localhost HTTP, OS-assigned port)
-and shows in `paniolo daemons`. Every request must present the per-run bearer
+(`/tmp/panio-<uid>/zigplug/daemon.json`, localhost HTTP, OS-assigned port)
+and shows in `panio daemons`. Every request must present the per-run bearer
 token in the discovery file (mode 0600).
 
 Manual control: `zigplug serve` / `stop` / `status` (`stop` and `status` need
@@ -511,20 +511,20 @@ no `-d`). `--no-daemon` forces the direct path, for debugging only.
 
 ### Installation
 
-`paniolo setup` / `make install` installs `zigplug/` as a uv tool when `uv` is
+`panio setup` / `make install` installs `zigplug/` as a uv tool when `uv` is
 on `PATH`, with its shim in the private libexec dir. Run it by hand via
-`paniolo helper zigplug …`.
+`panio helper zigplug …`.
 
 ```bash
 # manual equivalent
-UV_TOOL_BIN_DIR=~/.local/libexec/paniolo/bin uv tool install --force ~/src/paniolo/zigplug
+UV_TOOL_BIN_DIR=~/.local/libexec/panio/bin uv tool install --force ~/src/panio/zigplug
 ```
 
 ### One-time setup: form the network
 
 ```bash
-paniolo helper zigplug -d /dev/cu.usbserial-XXXX form              # channel picked by energy scan
-paniolo helper zigplug -d /dev/cu.usbserial-XXXX form --channel 25 # or explicit (25-26 avoid Wi-Fi)
+panio helper zigplug -d /dev/cu.usbserial-XXXX form              # channel picked by energy scan
+panio helper zigplug -d /dev/cu.usbserial-XXXX form --channel 25 # or explicit (25-26 avoid Wi-Fi)
 ```
 
 `form` is idempotent: an existing network prints its channel/PAN and exits.
@@ -537,10 +537,10 @@ devices. To factory-reset stale dongle state, run
 ### Pairing plugs
 
 ```bash
-paniolo helper zigplug -d <device> permit --time 120   # open a join window
+panio helper zigplug -d <device> permit --time 120   # open a join window
 # put the plug in pairing mode (hold button until LED blinks; factory-fresh
 # plugs usually enter pairing mode on first power-up)
-paniolo helper zigplug -d <device> list                # IEEE, NWK, manufacturer, model, state
+panio helper zigplug -d <device> list                # IEEE, NWK, manufacturer, model, state
 ```
 
 `permit` prints each join and exits non-zero if nothing paired. A plug paired
@@ -548,7 +548,7 @@ to another hub needs a full factory reset (often a ~10 s button hold).
 
 ### Commands
 
-As hook strings (or after `paniolo helper` when run by hand):
+As hook strings (or after `panio helper` when run by hand):
 
 ```bash
 zigplug -d <device> list                  # table of joined plugs + live state
@@ -573,9 +573,9 @@ The device DB holds an automatic network backup. If a formed dongle reports
 `coordinator has no Zigbee network`, recover **without re-pairing**:
 
 ```bash
-paniolo helper zigplug -d <device> stop      # restore needs the port exclusively
-paniolo helper zigplug -d <device> restore   # newest auto-backup from zigbee.db
-paniolo helper zigplug -d <device> list      # verify the plugs answer
+panio helper zigplug -d <device> stop      # restore needs the port exclusively
+panio helper zigplug -d <device> restore   # newest auto-backup from zigbee.db
+panio helper zigplug -d <device> list      # verify the plugs answer
 ```
 
 `restore` bumps the frame counter (`--counter-increment`, default 10000) so
@@ -583,10 +583,10 @@ joined devices accept it. A long-orphaned plug may not answer until it
 rescans; power-cycling it at the wall forces a rejoin (and cycles its load).
 Keep an off-host copy with `zigplug backup -o <file>`.
 
-### Wiring into paniolo power hooks
+### Wiring into panio power hooks
 
 ```bash
-paniolo power set -t target-machine \
+panio power set -t target-machine \
     --cycle-cmd "zigplug -d /dev/cu.usbserial-XXXX cycle ff:ff:b4:0e:06:04:ea:b7" \
     --on-cmd    "zigplug -d /dev/cu.usbserial-XXXX on    ff:ff:b4:0e:06:04:ea:b7" \
     --off-cmd   "zigplug -d /dev/cu.usbserial-XXXX off   ff:ff:b4:0e:06:04:ea:b7" \
@@ -614,8 +614,8 @@ daemon: each invocation makes one `GET /rpc/<Method>` call.
 
 ### Installation
 
-`make install` / `paniolo setup` installs it into the private libexec dir. Run
-it by hand via `paniolo helper shellyplug …`.
+`make install` / `panio setup` installs it into the private libexec dir. Run
+it by hand via `panio helper shellyplug …`.
 
 ### Addressing
 
@@ -635,7 +635,7 @@ shellyplug -d <host> on     [id]          # switch on, confirm by read-back
 shellyplug -d <host> off    [id]          # switch off, confirm by read-back
 shellyplug -d <host> cycle  [id] [--delay-ms 3000]
                                           # off → confirm → delay → on → confirm
-shellyplug -d <host> doctor [id] [--json] # read-only health check (paniolo doctor)
+shellyplug -d <host> doctor [id] [--json] # read-only health check (panio doctor)
 ```
 
 `state` reads `Switch.GetStatus` live on every call and fails if the device is
@@ -645,13 +645,13 @@ unreachable.
 (`Shelly.GetDeviceInfo` answers; model and firmware), `auth` (fails when the
 device has authentication enabled, which shellyplug does not support yet), and
 `switch` (the switches `Shelly.GetStatus` lists, or the one `[id]` names). A
-failed check ends the list. `--json` prints the report `paniolo doctor` reads
+failed check ends the list. `--json` prints the report `panio doctor` reads
 and exits 0; without it, one line per check and exit 1 if any failed.
 
-### Wiring into paniolo power hooks
+### Wiring into panio power hooks
 
 ```bash
-paniolo power set -t target-machine \
+panio power set -t target-machine \
     --cycle-cmd "shellyplug -d 10.0.0.5 cycle 0" \
     --on-cmd    "shellyplug -d 10.0.0.5 on 0" \
     --off-cmd   "shellyplug -d 10.0.0.5 off 0" \
@@ -659,7 +659,7 @@ paniolo power set -t target-machine \
     --doctor
 ```
 
-`--doctor` makes `paniolo doctor` run `shellyplug -d 10.0.0.5 doctor --json`
+`--doctor` makes `panio doctor` run `shellyplug -d 10.0.0.5 doctor --json`
 (see [Helper health checks](#helper-health-checks-doctor)).
 
 ### Gotcha: macOS Local Network privacy
@@ -701,7 +701,7 @@ can exceed that budget.
 
 Trust starts with **built-in public roots**, not the operating system's
 certificate store. For private provisioning, add a PEM file containing one
-or more trusted certificates with `--tls-ca-file /etc/paniolo/amt-ca.pem`.
+or more trusted certificates with `--tls-ca-file /etc/panio/amt-ca.pem`.
 This adds trust to the public roots. `AMT_TLS_CA_FILE` supplies the default
 when the flag is absent; the explicit flag wins. An unreadable, empty, or
 malformed file fails before any network request.
@@ -715,7 +715,7 @@ than disabling checks.
 
 The CA path and environment fallback are read **where the helper executes**.
 For a remote power channel, install the file on the control host and put its
-path in every hook. Paniolo does **not** forward `AMT_TLS_CA_FILE` over SSH.
+path in every hook. Panio does **not** forward `AMT_TLS_CA_FILE` over SSH.
 Unlike the password, a CA certificate is not secret.
 
 Firmware must support TLS 1.2 or newer **and** a cipher/signature combination
@@ -747,7 +747,7 @@ fallback) is incompatible with HTTP.
 For a legacy HTTP deployment, use `amt --allow-insecure-http -d
 http://amt-host.example state` and add the same flag to every power hook.
 The warning appears on stderr on each invocation, including successful
-`paniolo power-state`; the helper's stdout stays exactly `on` or `off`.
+`panio power-state`; the helper's stdout stays exactly `on` or `off`.
 HTTP exposes the password exchange to offline guessing and lets an attacker
 alter commands or state replies. Do not select it as an automatic response
 to a certificate or connectivity failure.
@@ -770,7 +770,7 @@ single trailing newline is dropped. The helper warns (but proceeds) when the
 file is readable by group or others. It runs the command through `sh -c`
 (`cmd /C` on Windows) with no stdin, uses its stdout, lets its stderr through,
 and kills it after 30 s. A missing file, a failing or silent command, or no
-source at all exits **3** (not configured); paniolo reports the hook as
+source at all exits **3** (not configured); panio reports the hook as
 `helper_failed` with `child_exit: 3` and the helper's message.
 
 ### Setting up the credential source
@@ -782,10 +782,10 @@ unattended runner with nothing in the environment:
   environment for unattended use), or the macOS Keychain:
 
   ```bash
-  paniolo power set -t nuc \
+  panio power set -t nuc \
       --state-cmd "amt state -d amt-host.example --password-command 'op read op://lab/amt/password'"
-  # macOS Keychain (add once: security add-generic-password -s paniolo-amt -a admin -w)
-  --state-cmd "amt state -d amt-host.example --password-command 'security find-generic-password -s paniolo-amt -w'"
+  # macOS Keychain (add once: security add-generic-password -s panio-amt -a admin -w)
+  --state-cmd "amt state -d amt-host.example --password-command 'security find-generic-password -s panio-amt -w'"
   ```
 
 - **A file** — a plain `0600` file, or a systemd credential for a runner that
@@ -796,7 +796,7 @@ unattended runner with nothing in the environment:
   ```ini
   # the runner's unit
   [Service]
-  LoadCredential=amt-password:/etc/paniolo/amt-password
+  LoadCredential=amt-password:/etc/panio/amt-password
   ```
 
   ```bash
@@ -808,19 +808,19 @@ unattended runner with nothing in the environment:
 
   ```bash
   # .env:  AMT_PASSWORD=op://<vault>/<item>/password
-  op run --env-file .env -- bash -c 'paniolo power-state <target>'
+  op run --env-file .env -- bash -c 'panio power-state <target>'
   ```
 
   The single quotes stop the parent shell expanding `$AMT_PASSWORD` before
   `op run` sets it (same for `HA_TOKEN` under
   [Generic power hooks](#generic-power-hooks)). A fetch-and-exec wrapper
-  (`AMT_PASSWORD="$(fetch-secret …)" exec "$@"`) around `paniolo` also still
+  (`AMT_PASSWORD="$(fetch-secret …)" exec "$@"`) around `panio` also still
   works, but `--password-command` does the same job without a script to
   install.
 
 **Where each source is read.** A file path or command in a hook is resolved on
 the host where the hook runs, which for a remote power channel is the control
-host. `AMT_PASSWORD` instead is set on the machine you type on: paniolo
+host. `AMT_PASSWORD` instead is set on the machine you type on: panio
 forwards it to a remote control host over the remote command's **stdin**,
 never argv, so `ps` there never shows it. Since the environment comes first,
 a forwarded `AMT_PASSWORD` overrides a hook's file or command. Two limits:
@@ -881,8 +881,8 @@ it: `!` in double quotes is shell history expansion.
 
 ```bash
 AMT_PASSWORD=… AMT_RFB_PASSWORD='Ab3!defG' amt -d <host> kvm enable
-amt -d <host> --password-file ~/.config/paniolo/amt \
-    kvm enable --rfb-password-file ~/.config/paniolo/amt-rfb
+amt -d <host> --password-file ~/.config/panio/amt \
+    kvm enable --rfb-password-file ~/.config/panio/amt-rfb
 ```
 
 Defaults: `OptInPolicy=false` (no local consent prompt) and
@@ -898,21 +898,21 @@ Before relying on KVM:
   There KVM needs the 16994/16995 redirection protocol, which this helper does
   not implement. Check `amt -d <host> status` first.
 
-### Wiring into paniolo power hooks
+### Wiring into panio power hooks
 
 ```bash
-paniolo power set -t target-machine \
+panio power set -t target-machine \
     --cycle-cmd "amt cycle -d amt-host.example -u admin --delay-ms 5000" \
     --on-cmd    "amt on -d amt-host.example -u admin" \
     --off-cmd   "amt off -d amt-host.example -u admin" \
     --state-cmd "amt state -d amt-host.example -u admin"
 ```
 
-For a private CA, add `--tls-ca-file /etc/paniolo/amt-ca.pem` to **each**
+For a private CA, add `--tls-ca-file /etc/panio/amt-ca.pem` to **each**
 hook. Each hook also needs a password source: add `--password-file` or
 `--password-command` to it (see
 [Setting up the credential source](#setting-up-the-credential-source)), or run
-`paniolo` with `AMT_PASSWORD` set on the machine you type on.
+`panio` with `AMT_PASSWORD` set on the machine you type on.
 
 ### Gotchas
 

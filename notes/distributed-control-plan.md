@@ -2,9 +2,9 @@
 
 > **Status: historical — Phases 0–5 shipped** (#20 for 0–3, #22 for 4–5;
 > 2026-06-01), **then superseded by the Rust control plane** (see
-> [config-redesign.md](https://github.com/curtisgalloway/paniolo/blob/main/notes/config-redesign.md)). This doc records the original
+> [config-redesign.md](https://github.com/curtisgalloway/panio/blob/main/notes/config-redesign.md)). This doc records the original
 > *Python* phasing; the mechanisms it names (`@remote_capable`,
-> `PANIOLO_TARGET_CONFIG`, the `targets/*.toml` fallback) are not how the Rust
+> `PANIO_TARGET_CONFIG`, the `targets/*.toml` fallback) are not how the Rust
 > CLI works — dispatch now ships a lab slice as a temp file and re-invokes with
 > `--lab` (`cli/src/dispatch.rs`), and the legacy targets dir is never read.
 > This sequences the build of the
@@ -15,20 +15,20 @@
 > **Shipped in 0–3:** `_ssh.py` transport, `_lab.py` lab model + `--lab`,
 > `@remote_capable` transparent re-exec (`_remote.py`), and the tunnelled remote
 > `console`. Two refinements emerged during the build and are in the code: a
-> per-host **`paniolo_cmd`** (the remote PATH problem) and the guidance to set a
+> per-host **`panio_cmd`** (the remote PATH problem) and the guidance to set a
 > per-host **`identity`** (ssh-agent key-spray vs. `MaxAuthTries`) — both folded
 > into "Open decisions" below.
 
 ## Backbone
 
-Two facts about the current code (verified against `src/paniolo/`) shape the
+Two facts about the current code (verified against `src/panio/`) shape the
 whole plan:
 
-1. **`_resolve(name)` in `src/paniolo/_cli.py` is the single chokepoint** every
+1. **`_resolve(name)` in `src/panio/_cli.py` is the single chokepoint** every
    one of the ~20 target-bearing commands passes through to load its
    `TargetConfig`. That means **one interception point can make all the one-shot
    commands location-aware at once** — when the target's host is remote, re-exec
-   the entire `paniolo` invocation on that host and never run the local body.
+   the entire `panio` invocation on that host and never run the local body.
    Only the four streaming commands (`console`, `video preview`, `serial watch`,
    `serial connect`) need bespoke handling.
 2. **Control hosts are stateless** (design principle 3), so a re-exec'd command
@@ -51,7 +51,7 @@ runner's own key to `authorized_keys` and exercises a `localhost` host.
 
 ## Phase 0 — SSH foundation ✅ (shipped, #20)
 
-**New:** `src/paniolo/_ssh.py`. Pure infrastructure; nothing user-facing.
+**New:** `src/panio/_ssh.py`. Pure infrastructure; nothing user-facing.
 
 Owns one **ControlMaster** connection per host (so only the first call per host
 pays the SSH handshake; the socket path comes from the host's lab config). API:
@@ -71,7 +71,7 @@ file. **Delivers:** the transport primitives, unused so far.
 
 ## Phase 1 — Lab file model ✅ (shipped, #20)
 
-**New:** `src/paniolo/_lab.py`. **Touches:** `_config.py`, `_cli.py`.
+**New:** `src/panio/_lab.py`. **Touches:** `_config.py`, `_cli.py`.
 
 Parse the single git-tracked lab file: `[hosts.*]` plus nested `[targets.*]`
 with `[targets.X.netboot]`, `[[targets.X.serial]]`, `[targets.X.video]`,
@@ -85,10 +85,10 @@ The compatibility hinge: `_lab` resolves a target down to the **existing flat
 they keep consuming `TargetConfig` exactly as today. `_resolve()` is widened to
 return `(TargetConfig, host)`.
 
-- "Point paniolo at the lab": a `--lab` global option / `PANIOLO_LAB` env var /
+- "Point panio at the lab": a `--lab` global option / `PANIO_LAB` env var /
   conventional default path (exact spelling is an open decision — see below).
-- **Backward compatibility:** with no lab configured, paniolo reads the legacy
-  `~/.config/paniolo/targets/*.toml` as today and `host` is always `local`, so
+- **Backward compatibility:** with no lab configured, panio reads the legacy
+  `~/.config/panio/targets/*.toml` as today and `host` is always `local`, so
   behavior is byte-for-byte identical. Migration into a lab file is opt-in.
 
 **Tests:** lab round-trip; target-default `host` inheritance by resources;
@@ -106,8 +106,8 @@ if remote it:
 
 1. Serializes the resolved `TargetConfig` to a temp TOML and ships it over the
    ControlMaster connection.
-2. Re-execs `paniolo <same subcommand + args>` on the host with
-   `PANIOLO_TARGET_CONFIG=<tmp>` — a new env var the loader honors so the
+2. Re-execs `panio <same subcommand + args>` on the host with
+   `PANIO_TARGET_CONFIG=<tmp>` — a new env var the loader honors so the
    stateless remote runs against the injected slice.
 3. Streams stdout/stderr, propagates the exit code, cleans up the temp file.
 
@@ -151,7 +151,7 @@ local.
 **Touches:** `_cli.py`.
 
 `setup` builds the Rust daemons and installs helpers, which must happen on the
-host wired to the hardware. The remote variant re-execs `paniolo setup` on the
+host wired to the hardware. The remote variant re-execs `panio setup` on the
 named host over SSH. Small. **Delivers:** provision a control host from the dev
 machine.
 
@@ -159,7 +159,7 @@ machine.
 
 **Touches:** `_cli.py`, `_lab.py`.
 
-`paniolo configure <target> --serial <host> --video <host>` runs discovery on the
+`panio configure <target> --serial <host> --video <host>` runs discovery on the
 named hosts over SSH (enumerate serial devices, USB-Ethernet interfaces, capture
 devices), merges the inventories into a **proposed** target block, prints a
 **diff** against the lab file, and writes nothing until approved. Because the lab
@@ -189,20 +189,20 @@ own tests and doc updates.
 ## Decisions (resolved during the build)
 
 - **Config-shipping mechanism (Phase 2).** ✅ Temp TOML over SSH +
-  `PANIOLO_TARGET_CONFIG` (keeps stdin free, avoids arg-quoting fragility).
-- **How to "point at the lab"** ✅ `--lab` global option with `envvar=PANIOLO_LAB`;
-  no lab configured → the legacy `~/.config/paniolo/targets/*.toml` (host = local),
+  `PANIO_TARGET_CONFIG` (keeps stdin free, avoids arg-quoting fragility).
+- **How to "point at the lab"** ✅ `--lab` global option with `envvar=PANIO_LAB`;
+  no lab configured → the legacy `~/.config/panio/targets/*.toml` (host = local),
   so existing behavior is byte-for-byte unchanged.
 - **Per-resource schema carried ahead of use.** ✅ Done — Phase 1 parses
   per-resource `host` (and rejects cross-host targets) so the multi-host phase
   needs no schema migration.
-- **Remote `paniolo` discovery.** ✅ New finding: re-exec runs over a
-  *non-interactive* ssh whose PATH may omit `~/.local/bin`, so bare `paniolo`
-  can fail to resolve. Added a per-host **`paniolo_cmd`** (default `"paniolo"`)
+- **Remote `panio` discovery.** ✅ New finding: re-exec runs over a
+  *non-interactive* ssh whose PATH may omit `~/.local/bin`, so bare `panio`
+  can fail to resolve. Added a per-host **`panio_cmd`** (default `"panio"`)
   to pin an absolute path. Caught by the localhost integration test.
 - **ssh-agent key-spray.** ✅ New finding: an agent offering many keys (1Password)
   trips `MaxAuthTries` on the first connect. Setting a per-host **`identity`**
-  makes paniolo pass `-i <key> -o IdentitiesOnly=yes`. This is the user's ssh
+  makes panio pass `-i <key> -o IdentitiesOnly=yes`. This is the user's ssh
   config concern; the lab field is the lever.
 
 ## Validation status

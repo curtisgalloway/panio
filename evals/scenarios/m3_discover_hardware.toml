@@ -7,16 +7,16 @@ conditions = ["cold", "warm", "preloaded"]
 capabilities = ["discover"]
 goal = """
 I just plugged a USB-serial adapter and an HDMI capture dongle into this control
-machine. What does paniolo detect on this box that I could wire into the lab?
+machine. What does panio detect on this box that I could wire into the lab?
 List the exact command(s) you would run.
 """
 traps = [
-  "`paniolo discover` lists THIS host's hardware for authoring — not `doctor` (validates an existing target's config against reality) and not `config show` (prints the lab you already have)",
+  "`panio discover` lists THIS host's hardware for authoring — not `doctor` (validates an existing target's config against reality) and not `config show` (prints the lab you already have)",
   "it is read-only; add `--json` for machine-readable output",
 ]
 reference = [
-  'paniolo discover',
-  'paniolo discover --json',
+  'panio discover',
+  'panio discover --json',
 ]
 seed = ""
 

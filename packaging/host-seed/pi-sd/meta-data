@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 Curtis Galloway
 # SPDX-License-Identifier: Apache-2.0
 #
-# paniolo control-host seed — pi-sd flavor. Goes on the FAT `bootfs`
+# panio control-host seed — pi-sd flavor. Goes on the FAT `bootfs`
 # partition as `meta-data`. Derived from the stock Raspberry Pi OS file.
 
 # Datasource mode "local": user-data is acted upon before the network comes
@@ -15,4 +15,4 @@ dsmode: local
 # Re-seeding a card that has already booted therefore takes TWO edits: change
 # `user-data`, AND bump this id. Editing user-data alone looks like it did
 # nothing.
-instance_id: paniolo-seed-1
+instance_id: panio-seed-1

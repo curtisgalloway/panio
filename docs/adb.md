@@ -4,13 +4,13 @@ The **adb channel** drives a phone, tablet, or Android board that `adb` can
 reach: console (`adb shell`), screen (`adb exec-out screencap`), and input
 (`adb shell input`), over one transport.
 
-paniolo runs the host's `adb` binary itself (core CLI, `cli/src/adb.rs`; no
+panio runs the host's `adb` binary itself (core CLI, `cli/src/adb.rs`; no
 helper). The device is named by its `adb -s <serial>` id and bound to the
 control host it is plugged into, reached locally or over SSH
 ([dispatch](distributed-control.md)).
 
 > **Power:** use the [power hooks](power.md):
-> `paniolo power set -t pixel --off-cmd "adb -s <id> reboot -p" --cycle-cmd "adb -s <id> reboot"`.
+> `panio power set -t pixel --off-cmd "adb -s <id> reboot -p" --cycle-cmd "adb -s <id> reboot"`.
 
 ---
 
@@ -18,37 +18,37 @@ control host it is plugged into, reached locally or over SSH
 
 ```bash
 # Discover attached devices (their serials), locally or on a control host
-paniolo adb devices
-paniolo adb devices -H bench1          # over SSH on a remote control host
+panio adb devices
+panio adb devices -H bench1          # over SSH on a remote control host
 
-# Or let paniolo propose a whole target block from discovered hardware —
+# Or let panio propose a whole target block from discovered hardware —
 # `adb` appears alongside the serial/video/netboot it finds (authorized
-# devices only). Review and paste it into the lab; paniolo never writes it.
-paniolo configure pixel -H bench1
-paniolo discover                       # raw inventory of the local host
+# devices only). Review and paste it into the lab; panio never writes it.
+panio configure pixel -H bench1
+panio discover                       # raw inventory of the local host
 
 # Bind a device to a target in the lab file
-paniolo target add pixel
-paniolo adb set -t pixel --serial 33271JEGR02033
+panio target add pixel
+panio adb set -t pixel --serial 33271JEGR02033
 
 # Sole attached device? Omit --serial.
-paniolo adb set -t pixel
+panio adb set -t pixel
 
 # Device on a remote control host (adb runs there; reached over SSH)
-paniolo adb set -t pixel --serial 33271JEGR02033 --host bench1
+panio adb set -t pixel --serial 33271JEGR02033 --host bench1
 
 # Pin a non-PATH adb binary
-paniolo adb set -t pixel --adb /opt/platform-tools/adb
+panio adb set -t pixel --adb /opt/platform-tools/adb
 
 # Remove the channel
-paniolo adb rm -t pixel
+panio adb rm -t pixel
 ```
 
 **Prerequisite:** authorize the device first (USB debugging on, host key
-accepted); paniolo does not pair. `adb devices` must show `device`, not
+accepted); panio does not pair. `adb devices` must show `device`, not
 `unauthorized`/`offline`.
 
-`paniolo doctor` runs `adb get-state` on the channel's host and reports:
+`panio doctor` runs `adb get-state` on the channel's host and reports:
 
 - `ok` when the device answers in the `device` state;
 - `MISSING` when it does not;
@@ -60,23 +60,23 @@ accepted); paniolo does not pair. `adb devices` must show `device`, not
 
 ```bash
 # Console
-paniolo adb shell pixel                       # interactive `adb shell` (PTY)
-paniolo adb run -t pixel getprop ro.product.model   # one-shot, captured
-paniolo adb run -t pixel -- logcat -d -t 50         # `--` guards leading flags
+panio adb shell pixel                       # interactive `adb shell` (PTY)
+panio adb run -t pixel getprop ro.product.model   # one-shot, captured
+panio adb run -t pixel -- logcat -d -t 50         # `--` guards leading flags
 
 # Screen
-paniolo adb screencap pixel -o shot.png       # PNG to a file — always this machine's
-paniolo adb screencap pixel -o - > shot.png   # PNG to stdout
+panio adb screencap pixel -o shot.png       # PNG to a file — always this machine's
+panio adb screencap pixel -o - > shot.png   # PNG to stdout
 
 # Input
-paniolo adb input -t pixel keyevent KEYCODE_HOME
-paniolo adb input -t pixel text "hello world"
-paniolo adb input -t pixel tap 540 1200
-paniolo adb input -t pixel swipe 540 1800 540 600 200
+panio adb input -t pixel keyevent KEYCODE_HOME
+panio adb input -t pixel text "hello world"
+panio adb input -t pixel tap 540 1200
+panio adb input -t pixel swipe 540 1800 540 600 200
 
 # Discovery (no configured channel required)
-paniolo adb devices [-H <host>]
-paniolo adb show pixel                         # config + live device state
+panio adb devices [-H <host>]
+panio adb show pixel                         # config + live device state
 ```
 
 - `run` is the one-shot: it captures output and returns the command's exit code.

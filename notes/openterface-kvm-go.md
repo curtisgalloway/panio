@@ -3,10 +3,10 @@ SPDX-FileCopyrightText: 2026 Curtis Galloway
 SPDX-License-Identifier: Apache-2.0
 -->
 
-# Openterface KVM-Go — architecture and paniolo support
+# Openterface KVM-Go — architecture and panio support
 
 *Status: **bench-verified 2026-08-24; microSD mux driven from software
-2026-08-30.** Both paniolo channels work with no code changes, and the microSD
+2026-08-30.** Both panio channels work with no code changes, and the microSD
 mux is now switchable over the existing control port — protocol in
 [openterface-usb-mux-spec.md](openterface-usb-mux-spec.md), bench results in
 "microSD mux switching" below. Sibling of the
@@ -25,7 +25,7 @@ documentation, or our own bench probing and USB captures — with one deliberate
 exception. The mux protocol in
 [openterface-usb-mux-spec.md](openterface-usb-mux-spec.md) was obtained by a
 **clean-room investigation**: a separate investigator context read the vendor
-host applications and returned facts and mechanism prose only, and paniolo's
+host applications and returned facts and mechanism prose only, and panio's
 implementation was written from that report rather than from the applications.
 No vendor source, identifier, or code structure crossed into the implementation
 context, and the report was leak-scanned before it did. That is the sanctioned
@@ -34,7 +34,7 @@ an implementation context remains forbidden. They are AGPL-3.0, except
 `Openterface_Core`, which carries **no licence at all** and is therefore more
 encumbered, not less.
 
-## Bottom line for paniolo
+## Bottom line for panio
 
 | Channel | Helper | Status |
 |---|---|---|
@@ -45,8 +45,8 @@ encumbered, not less.
 Wiring it into a target needs nothing new:
 
 ```bash
-paniolo video set -t <target> --device "<uniqueID from hdmicap devices>"
-paniolo hid   set -t <target> --cmd "ch9329 -d /dev/cu.usbmodemXXXXX"
+panio video set -t <target> --device "<uniqueID from hdmicap devices>"
+panio hid   set -t <target> --cmd "ch9329 -d /dev/cu.usbmodemXXXXX"
 ```
 
 ## Architecture
@@ -116,7 +116,7 @@ Key parts (from the published BOMs):
    which is what dead-ended **OTF-3** — though that turned out on 2026-08-30 to
    be reachable after all, by a register write rather than the firmware patch we
    had assumed (see the correction at the top of the deep-control notes). Here
-   it sits behind a serial port paniolo already talks to.
+   it sits behind a serial port panio already talks to.
 
 3. **The switched device is onboard** — a microSD reader rather than an
    external USB-A port. True hands-free virtual media with no stick to plug.
@@ -173,7 +173,7 @@ dwMaxVideoFrameSize=4147200   = 1920×1080×2
 dwMaxPayloadTransferSize=16384
 ```
 
-**Consequence:** the capture chip is a plain UVC device. paniolo needs no
+**Consequence:** the capture chip is a plain UVC device. panio needs no
 reverse-engineered handshake, and the clean-room wall never has to be crossed
 for the video path.
 
@@ -213,7 +213,7 @@ capture stalled (4s with no new frames) — exiting for restart
 no frames in 12s after device open — exiting for restart
 ```
 
-The daemon then exits. Under paniolo supervision this becomes a restart loop
+The daemon then exits. Under panio supervision this becomes a restart loop
 for as long as the target's screen is asleep. It is *correct* fault detection —
 50 minutes of continuous clean streaming was observed once a signal was
 present — but the no-signal state arguably wants to be a state rather than a
@@ -295,7 +295,7 @@ unmount path needs `diskutil unmount force`, or a Spotlight exclusion.
 
 ## Not yet done
 
-- [x] Drive the microSD mux from paniolo (`USB_SW` via the CH32V208) — **done
+- [x] Drive the microSD mux from panio (`USB_SW` via the CH32V208) — **done
       2026-08-30**, and it needed no USB capture. A clean-room investigation of
       the vendor applications produced the command directly; see
       [openterface-usb-mux-spec.md](openterface-usb-mux-spec.md).

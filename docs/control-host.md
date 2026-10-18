@@ -10,8 +10,8 @@ capture, HID, netboot link, power). Your dev machine drives it over SSH
 ([distributed control](distributed-control.md)).
 
 Flash a card, plug it in, power on: the box comes up with your key
-authorized, the right groups set, and `paniolo` on `PATH`. It holds no target
-config, so it is **disposable**: re-image it, re-run `paniolo setup`, and it
+authorized, the right groups set, and `panio` on `PATH`. It holds no target
+config, so it is **disposable**: re-image it, re-run `panio setup`, and it
 resumes from the lab file.
 
 ## Picking the hardware
@@ -45,11 +45,11 @@ cloud-init, so the stock image plus four files on its boot partition is
 enough. **The exact commands are in the bundled `control-host` skill:**
 
 ```bash
-paniolo skill control-host
+panio skill control-host
 ```
 
 It covers macOS and Linux
-([on GitHub](https://github.com/curtisgalloway/paniolo/blob/main/skills/control-host/SKILL.md)).
+([on GitHub](https://github.com/curtisgalloway/panio/blob/main/skills/control-host/SKILL.md)).
 The outline:
 
 1. **Download** Raspberry Pi OS Lite arm64, Trixie or newer.
@@ -57,17 +57,17 @@ The outline:
    disk; confirm the device node by size and removability first.
 3. **Write the image**, then mount the FAT boot partition.
 4. **Install the seed** from
-   [`packaging/host-seed/pi-sd/`](https://github.com/curtisgalloway/paniolo/tree/main/packaging/host-seed/pi-sd):
+   [`packaging/host-seed/pi-sd/`](https://github.com/curtisgalloway/panio/tree/main/packaging/host-seed/pi-sd):
    three cloud-init files plus an empty `ssh` file (which enables sshd).
    Names must be exact; cloud-init silently ignores a misnamed file.
 5. **Fill the five placeholders** in `user-data` (hostname, account, GECOS
-   full name, public key, paniolo version) and check none remain.
+   full name, public key, panio version) and check none remain.
 6. **Eject and boot.** First boot takes several minutes and reboots itself.
-   Then `ssh <user>@<hostname> paniolo --version` should answer.
-7. **Enroll it**: `paniolo host add`, then `paniolo configure <target> -H
+   Then `ssh <user>@<hostname> panio --version` should answer.
+7. **Enroll it**: `panio host add`, then `panio configure <target> -H
    <name>` to get a proposed target block you review and commit.
 
-A seeded host does not need `paniolo setup`: the seed already adds the
+A seeded host does not need `panio setup`: the seed already adds the
 `dialout` and `video` groups and installs `tesseract-ocr`. It carries no lab
 config and no credential beyond your public key.
 
@@ -97,4 +97,4 @@ If you edit the seed on a card that has **already booted once**, also change
 
 Not built yet: install Ubuntu Server by hand and apply the same account,
 group, and package steps as the Pi seed. The planned autoinstall USB is in
-[the design note](https://github.com/curtisgalloway/paniolo/blob/main/notes/control-host-provisioning.md).
+[the design note](https://github.com/curtisgalloway/panio/blob/main/notes/control-host-provisioning.md).

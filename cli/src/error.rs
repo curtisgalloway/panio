@@ -1,9 +1,9 @@
 // SPDX-FileCopyrightText: 2026 Curtis Galloway
 // SPDX-License-Identifier: Apache-2.0
 
-//! The error contract: every paniolo failure has a [`Kind`], and the kind
+//! The error contract: every panio failure has a [`Kind`], and the kind
 //! decides the exit status (and, when asked for, a one-line JSON object on
-//! stderr), so a program driving paniolo can branch on the failure without
+//! stderr), so a program driving panio can branch on the failure without
 //! parsing its message. See `docs/dev/error-contract/design.md`.
 
 use std::fmt;
@@ -13,12 +13,12 @@ use serde_json::json;
 /// Set to `1` to request the JSON error object (or pass `--json-errors`).
 /// Read once at startup by [`take_json_request`] and then removed from this
 /// process's environment, so hooks, helpers and daemons never inherit it: a
-/// hook that runs paniolo would otherwise print its own object ahead of this
+/// hook that runs panio would otherwise print its own object ahead of this
 /// process's, and the contract is exactly one. Dispatch passes
-/// `--json-errors` to a remote paniolo instead.
-pub const JSON_ERRORS_ENV: &str = "PANIOLO_JSON_ERRORS";
+/// `--json-errors` to a remote panio instead.
+pub const JSON_ERRORS_ENV: &str = "PANIO_JSON_ERRORS";
 
-/// The exit-status section of `paniolo --help`: every code paniolo emits, and
+/// The exit-status section of `panio --help`: every code panio emits, and
 /// no others (a test checks it against [`Kind::ALL`]). The full contract is in
 /// `docs/errors.md`.
 pub const EXIT_STATUS_HELP: &str = "\
@@ -36,7 +36,7 @@ Exit status:
   109  internal          not yet classified
 Passthroughs (helper, config edit, video shot/devices, adb run/input/devices,
 adb shell, serial connect, setup --host) exit with their program's own status.
-PANIOLO_JSON_ERRORS=1, or --json-errors before any trailing arguments, adds a
+PANIO_JSON_ERRORS=1, or --json-errors before any trailing arguments, adds a
 one-line JSON object as the last line of stderr:
 {\"error\": {kind, code, message, target, channel, host, child_exit}}.";
 
@@ -49,7 +49,7 @@ pub enum Kind {
     /// or host; missing required channel configuration; a hook or helper
     /// that is missing or not executable.
     NotConfigured,
-    /// A control host that cannot be reached (paniolo does not probe device
+    /// A control host that cannot be reached (panio does not probe device
     /// nodes itself; the daemons report those).
     Unreachable,
     /// No answer within a deadline; the outcome is unknown.
@@ -105,8 +105,8 @@ impl Kind {
         }
     }
 
-    /// The kind a paniolo exit status reports, for a status read back from a
-    /// remote paniolo; `None` for a code no kind uses.
+    /// The kind a panio exit status reports, for a status read back from a
+    /// remote panio; `None` for a code no kind uses.
     pub fn from_exit_code(code: i32) -> Option<Kind> {
         Some(match code {
             2 => Kind::Usage,
@@ -137,7 +137,7 @@ impl Kind {
 /// A classified failure. Its `Display` is just `message`, so wrapping an
 /// existing `anyhow!` site in one leaves the printed text unchanged.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PanioloError {
+pub struct PanioError {
     pub kind: Kind,
     pub message: String,
     pub target: Option<String>,
@@ -146,9 +146,9 @@ pub struct PanioloError {
     pub child_exit: Option<i32>,
 }
 
-impl PanioloError {
+impl PanioError {
     pub fn new(kind: Kind, message: impl Into<String>) -> Self {
-        PanioloError {
+        PanioError {
             kind,
             message: message.into(),
             target: None,
@@ -188,7 +188,7 @@ impl PanioloError {
 /// returned unchanged. Call it on the error as the lower layer returned it:
 /// the by-value downcast would drop `.context()` added on top.
 pub fn with_target(err: anyhow::Error, target: &str) -> anyhow::Error {
-    match err.downcast::<PanioloError>() {
+    match err.downcast::<PanioError>() {
         Ok(mut e) => {
             if e.target.is_none() {
                 e.target = Some(target.to_string());
@@ -200,16 +200,16 @@ pub fn with_target(err: anyhow::Error, target: &str) -> anyhow::Error {
 }
 
 /// `target '<t>' not found in lab`, classified.
-pub fn target_not_found(target: &str) -> PanioloError {
-    PanioloError::not_configured(format!("target '{target}' not found in lab")).target(target)
+pub fn target_not_found(target: &str) -> PanioError {
+    PanioError::not_configured(format!("target '{target}' not found in lab")).target(target)
 }
 
 /// A target lacking a channel, a channel lacking a required field, a named
 /// interface the target does not have, or a channel configured on another
 /// host than the one running the command: `not_configured`, carrying the
 /// target and the channel kind.
-pub fn channel_missing(target: &str, channel: &str, message: String) -> PanioloError {
-    PanioloError::not_configured(message)
+pub fn channel_missing(target: &str, channel: &str, message: String) -> PanioError {
+    PanioError::not_configured(message)
         .target(target)
         .channel(channel)
 }
@@ -239,20 +239,20 @@ pub fn shell_code(status: std::process::ExitStatus) -> i32 {
 /// a script's own failure, so there a missing hook is `helper_failed`.
 /// Anything else is `helper_failed`, with the child's code in `child_exit`
 /// (null when a signal killed it).
-pub fn hook_failed(status: std::process::ExitStatus, message: String) -> PanioloError {
+pub fn hook_failed(status: std::process::ExitStatus, message: String) -> PanioError {
     let kind = match status.code() {
         Some(126 | 127) => Kind::NotConfigured,
         _ => Kind::HelperFailed,
     };
-    PanioloError::new(kind, message).child_exit(status.code())
+    PanioError::new(kind, message).child_exit(status.code())
 }
 
 /// A bundled helper binary (serialcap, hdmicap, …) that is not installed.
-pub fn helper_missing(name: &str) -> PanioloError {
-    PanioloError::not_configured(format!("{name} not found"))
+pub fn helper_missing(name: &str) -> PanioError {
+    PanioError::not_configured(format!("{name} not found"))
 }
 
-/// The channel a paniolo daemon serves, for the JSON `channel` field.
+/// The channel a panio daemon serves, for the JSON `channel` field.
 pub fn daemon_channel(daemon: &str) -> &str {
     match daemon {
         "serialcap" => "serial",
@@ -263,15 +263,15 @@ pub fn daemon_channel(daemon: &str) -> &str {
 }
 
 /// `daemon` (serialcap, hdmicap, …) is not running and the command needs it.
-pub fn daemon_down(daemon: &str, message: impl Into<String>) -> PanioloError {
-    PanioloError::new(Kind::DaemonDown, message).channel(daemon_channel(daemon))
+pub fn daemon_down(daemon: &str, message: impl Into<String>) -> PanioError {
+    PanioError::new(Kind::DaemonDown, message).channel(daemon_channel(daemon))
 }
 
 /// A daemon did not become ready within its start deadline (the caller puts
 /// the deadline and the daemon's last stderr in `message`) and is still
 /// running: `timeout`, since it may yet come up.
-pub fn daemon_start_timeout(daemon: &str, message: String) -> PanioloError {
-    PanioloError::new(Kind::Timeout, message).channel(daemon_channel(daemon))
+pub fn daemon_start_timeout(daemon: &str, message: String) -> PanioError {
+    PanioError::new(Kind::Timeout, message).channel(daemon_channel(daemon))
 }
 
 /// A failed HTTP request to a running daemon's discovery endpoint, classified:
@@ -281,7 +281,7 @@ pub fn daemon_start_timeout(daemon: &str, message: String) -> PanioloError {
 /// (`helper_failed`, with the daemon's own explanation, stripped of control
 /// characters and capped, since whatever answers on a stale port is not
 /// authenticated). `what` names the request (`"serialcap /input"`).
-pub fn daemon_request_failed(daemon: &str, what: &str, e: ureq::Error) -> PanioloError {
+pub fn daemon_request_failed(daemon: &str, what: &str, e: ureq::Error) -> PanioError {
     let kind = match &e {
         ureq::Error::Status(..) => Kind::HelperFailed,
         ureq::Error::Transport(t) => match t.kind() {
@@ -304,7 +304,7 @@ pub fn daemon_request_failed(daemon: &str, what: &str, e: ureq::Error) -> Paniol
         }
         e => format!("{what} failed: {e}"),
     };
-    PanioloError::new(kind, message).channel(daemon_channel(daemon))
+    PanioError::new(kind, message).channel(daemon_channel(daemon))
 }
 
 /// `s` with control characters (ANSI escapes included) replaced by spaces
@@ -353,36 +353,36 @@ pub fn ssh_255_message(host: &str) -> String {
 
 /// The control host `host` could not be reached (ssh exited 255, or the lab
 /// slice could not be copied to it).
-pub fn unreachable_host(host: &str, message: String) -> PanioloError {
-    PanioloError::new(Kind::Unreachable, message).host(host)
+pub fn unreachable_host(host: &str, message: String) -> PanioError {
+    PanioError::new(Kind::Unreachable, message).host(host)
 }
 
-impl fmt::Display for PanioloError {
+impl fmt::Display for PanioError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.message)
     }
 }
 
-impl std::error::Error for PanioloError {}
+impl std::error::Error for PanioError {}
 
-/// Classify an error for `main()`: the first [`PanioloError`] in the chain
+/// Classify an error for `main()`: the first [`PanioError`] in the chain
 /// wins (its fields are kept, with the full chain as the message); a
 /// [`crate::model::LabError`] is `not_configured`; anything else is
 /// `internal`.
-pub fn classify(err: &anyhow::Error) -> PanioloError {
+pub fn classify(err: &anyhow::Error) -> PanioError {
     let message = format!("{err:#}");
     for cause in err.chain() {
-        if let Some(pe) = cause.downcast_ref::<PanioloError>() {
-            return PanioloError {
+        if let Some(pe) = cause.downcast_ref::<PanioError>() {
+            return PanioError {
                 message,
                 ..pe.clone()
             };
         }
         if cause.downcast_ref::<crate::model::LabError>().is_some() {
-            return PanioloError::not_configured(message);
+            return PanioError::not_configured(message);
         }
     }
-    PanioloError::new(Kind::Internal, message)
+    PanioError::new(Kind::Internal, message)
 }
 
 static JSON_REQUESTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -444,13 +444,13 @@ pub fn report_parse_error(err: &clap::Error, args: &[std::ffi::OsString]) -> i32
                     first.to_string()
                 }
             };
-        eprintln!("{}", to_json(&PanioloError::new(Kind::Usage, message)));
+        eprintln!("{}", to_json(&PanioError::new(Kind::Usage, message)));
     }
     code
 }
 
 /// The one-line JSON error object.
-pub fn to_json(e: &PanioloError) -> String {
+pub fn to_json(e: &PanioError) -> String {
     json!({
         "error": {
             "kind": e.kind.as_str(),
@@ -477,7 +477,7 @@ pub fn report(err: &anyhow::Error) -> i32 {
 
 /// Make a closed stdout a quiet success instead of a panic.
 ///
-/// Rust ignores SIGPIPE, so when the reader goes away early (`paniolo skill |
+/// Rust ignores SIGPIPE, so when the reader goes away early (`panio skill |
 /// head -1`, `| grep -q`) the next `println!` panics with "failed printing to
 /// stdout: Broken pipe" and the process exits 101, a status outside the
 /// contract. The reader has already taken what it wanted, so exit 0 silently,
@@ -571,7 +571,7 @@ mod tests {
     #[test]
     fn classify_finds_a_wrapped_error_and_keeps_the_chain() {
         let inner: anyhow::Result<()> =
-            Err(PanioloError::not_configured("target 'x' not found in lab")
+            Err(PanioError::not_configured("target 'x' not found in lab")
                 .target("x")
                 .into());
         let err = inner.context("power cycle").unwrap_err();
@@ -673,7 +673,7 @@ mod tests {
 
     #[test]
     fn json_has_every_field() {
-        let e = PanioloError::not_configured("m").target("t");
+        let e = PanioError::not_configured("m").target("t");
         let v: serde_json::Value = serde_json::from_str(&to_json(&e)).unwrap();
         let o = &v["error"];
         assert_eq!(o["kind"], "not_configured");

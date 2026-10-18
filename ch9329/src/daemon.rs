@@ -14,12 +14,12 @@
 
 //! Daemon lifecycle for `ch9329 serve`: advisory lock, discovery file, tokio
 //! runtime, graceful shutdown. Mirrors hidrig (and serialcap/hdmicap) so they
-//! all read the same way and paniolo discovers them identically.
+//! all read the same way and panio discovers them identically.
 //!
 //! The discovery directory is the **channel** name `hid` (not `ch9329`), under
-//! `/tmp/paniolo-<uid>/hid/daemon.json`, so paniolo finds the daemon without
+//! `/tmp/panio-<uid>/hid/daemon.json`, so panio finds the daemon without
 //! knowing which helper implements the channel — a `ch9329` daemon and a
-//! `hidrig` daemon are interchangeable from paniolo's side. The file records
+//! `hidrig` daemon are interchangeable from panio's side. The file records
 //! the owned `device` so a CLI one-shot can tell whether the running daemon
 //! owns *its* UART before routing through it.
 
@@ -35,7 +35,7 @@ use tracing::{info, warn};
 use crate::server::{self, AppState};
 use crate::uart::HidHandle;
 
-/// Discovery subdir = the paniolo channel name, not the binary name.
+/// Discovery subdir = the panio channel name, not the binary name.
 pub const DISCOVERY_NAME: &str = "hid";
 
 /// How long shutdown waits for the release of held keys and buttons before
@@ -55,19 +55,19 @@ pub struct Discovery {
     pub device: String,
 }
 
-/// The daemon's runtime dir. Paniolo passes the canonical location as
-/// `PANIOLO_RUNTIME_DIR` (named for the hid *channel*, not this binary — any
+/// The daemon's runtime dir. Panio passes the canonical location as
+/// `PANIO_RUNTIME_DIR` (named for the hid *channel*, not this binary — any
 /// conforming injector helper serves the same discovery dir); the literal
 /// fallback below is for standalone invocations and matches it:
-/// `/tmp/paniolo-<uid>/hid`.
+/// `/tmp/panio-<uid>/hid`.
 pub fn runtime_dir() -> Result<PathBuf> {
-    if let Some(dir) = std::env::var_os("PANIOLO_RUNTIME_DIR") {
+    if let Some(dir) = std::env::var_os("PANIO_RUNTIME_DIR") {
         let dir = PathBuf::from(dir);
         fs::create_dir_all(&dir)?;
         return Ok(dir);
     }
     let uid = crate::platform::current_uid();
-    let base = crate::platform::runtime_root().join(format!("paniolo-{uid}"));
+    let base = crate::platform::runtime_root().join(format!("panio-{uid}"));
     crate::platform::ensure_private_dir(&base)?;
     let dir = base.join(DISCOVERY_NAME);
     fs::create_dir_all(&dir)?;
@@ -254,7 +254,7 @@ mod tests {
     #[test]
     fn shutdown_cleanup_leaves_the_lock_file_locked() {
         let dir =
-            std::env::temp_dir().join(format!("paniolo-ch9329-lock-test-{}", std::process::id()));
+            std::env::temp_dir().join(format!("panio-ch9329-lock-test-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let lock_path = dir.join("daemon.lock");

@@ -14,13 +14,13 @@
 
 //! shellyplug — power control for Shelly Gen2+ smart plugs and relays.
 //!
-//! A one-shot paniolo power helper: each invocation makes a single stateless
+//! A one-shot panio power helper: each invocation makes a single stateless
 //! HTTP RPC call to the device and exits. Hook-facing subcommands follow the
-//! paniolo helper conventions (docs/dev/adding-power-helpers.md):
+//! panio helper conventions (docs/dev/adding-power-helpers.md):
 //!   state <id>    prints exactly `on` or `off`
 //!   on/off <id>   switch + read-back confirm
 //!   cycle <id>    off → confirm → delay → on → confirm
-//!   doctor --json read-only health report for `paniolo doctor`
+//!   doctor --json read-only health report for `panio doctor`
 
 mod rpc;
 
@@ -111,19 +111,19 @@ enum Cmd {
         #[arg(default_value_t = 0)]
         id: u32,
     },
-    /// Read-only health check (paniolo doctor): is the device reachable, does
+    /// Read-only health check (panio doctor): is the device reachable, does
     /// it demand authentication, and does it have the switch. Never switches
     /// the relay.
     ///
     /// Without an id it lists every switch the device has; with one it checks
-    /// that switch. `--json` prints paniolo's doctor report
+    /// that switch. `--json` prints panio's doctor report
     /// (`{"checks": [{"name", "status": "ok|warn|fail", "detail"}]}`) and
     /// exits 0 whatever the checks found; without it, one line per check and
     /// exit 1 if any failed.
     Doctor {
         /// Switch component id to check (default: list them all).
         id: Option<u32>,
-        /// Print the JSON report paniolo doctor reads.
+        /// Print the JSON report panio doctor reads.
         #[arg(long)]
         json: bool,
     },
@@ -555,7 +555,7 @@ mod tests {
         assert_eq!(checks[2].detail, "switch:0, switch:1 present");
         assert_read_only(&seen);
 
-        // The JSON is exactly the contract paniolo parses.
+        // The JSON is exactly the contract panio parses.
         let v = doctor_json(&checks);
         assert_eq!(v["checks"][2]["name"], "switch");
         assert_eq!(v["checks"][2]["status"], "ok");

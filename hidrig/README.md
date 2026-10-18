@@ -45,9 +45,9 @@ Here it is the *external* interface only; the boards see only binary frames.
 
 ## Host CLI (`hidrig`)
 
-`hidrig` installs into paniolo's private libexec dir (off PATH) with
-`make install`, or `cargo install --path hidrig --root ~/.local/libexec/paniolo`.
-Run it via `paniolo helper hidrig …`, or bare inside a `paniolo hid set --cmd`
+`hidrig` installs into panio's private libexec dir (off PATH) with
+`make install`, or `cargo install --path hidrig --root ~/.local/libexec/panio`.
+Run it via `panio helper hidrig …`, or bare inside a `panio hid set --cmd`
 hook string.
 
 `-d` is the control board's **data CDC port**: the *second* `usbmodem` of its
@@ -89,12 +89,12 @@ hidrig stop                                      # stop the daemon
 ```
 
 While a daemon runs, every `hidrig -d <device> …` one-shot routes through it
-(over `POST /send`). `paniolo console` starts the daemon on demand (see
+(over `POST /send`). `panio console` starts the daemon on demand (see
 [`../docs/hid.md`](../docs/hid.md)).
 
 Every request needs the token the daemon publishes in its discovery file
 (`Authorization: Bearer <token>` or `?token=<token>`), from a loopback
-`Host`/`Origin` only. One-shots and `paniolo console` supply it themselves.
+`Host`/`Origin` only. One-shots and `panio console` supply it themselves.
 
 > The control board is a **USB-CDC** device, so there is **no baud
 > negotiation**; the nominal "baud" is ignored.
@@ -113,7 +113,7 @@ every held key, modifier and mouse button, bounded by a short timeout.
 ### DUT power and serial console
 
 **Power.** `hidrig power off|on|cycle [secs]` switches the DUT through the
-relay; use it as a normal paniolo `power` hook. A `cycle` acks immediately, then
+relay; use it as a normal panio `power` hook. A `cycle` acks immediately, then
 holds power off for the given seconds (firmware default 2 s).
 
 - The relay **state persists across a control-board reset** (stored in NVM;
@@ -122,22 +122,22 @@ holds power off for the given seconds (firmware default 2 s).
   wired or is powered off.
 
 **Console.** The `serve` daemon also bridges the DUT's serial console (control
-board UART0) and **re-exports it as a PTY**, so paniolo's `serial` channel
+board UART0) and **re-exports it as a PTY**, so panio's `serial` channel
 attaches to it. The console exists only while the daemon runs; any
-`paniolo hid …` or `paniolo console` for the target starts it.
+`panio hid …` or `panio console` for the target starts it.
 
 Point the lab file's `serial` channel `device =` at the daemon's stable symlink,
-`/tmp/paniolo-<uid>/hid/console`:
+`/tmp/panio-<uid>/hid/console`:
 
 ```toml
 [[targets.pi5.serial]]
 name   = "console"
-device = "/tmp/paniolo-501/hid/console"   # the hidrig daemon's console PTY
+device = "/tmp/panio-501/hid/console"   # the hidrig daemon's console PTY
 baud   = 115200                            # nominal; the UART rate is fixed in firmware
 # no power_sense_signal — a PTY has no modem-control lines (use `hidrig power` instead)
 ```
 
-Then `paniolo serial watch/connect/send/log` work as usual. A PTY has no
+Then `panio serial watch/connect/send/log` work as usual. A PTY has no
 DTR/CTS, so `serial dtr`/`reset` and `power_sense_signal` don't apply.
 
 If the symlink can't be created (e.g. a stale non-symlink is there), `console`
@@ -149,18 +149,18 @@ in `daemon.json` falls back to the underlying device. Programs should read
 > bridge** is **not yet** verified; confirm the PTY round trip through
 > `tio`/serialcap before relying on it (design §6).
 
-## paniolo integration
+## panio integration
 
-paniolo calls the tool through the per-target `hid` channel, a command prefix
+panio calls the tool through the per-target `hid` channel, a command prefix
 like the power hooks.
 
 ```bash
-paniolo hid set -t pi5 --cmd "hidrig -d /dev/cu.usbmodemXXXX"
-paniolo hid send -t pi5 type hello
-paniolo hid send -t pi5 key ENTER
+panio hid set -t pi5 --cmd "hidrig -d /dev/cu.usbmodemXXXX"
+panio hid send -t pi5 type hello
+panio hid send -t pi5 key ENTER
 ```
 
-`paniolo hid send` appends its arguments to the command and runs it on the
+`panio hid send` appends its arguments to the command and runs it on the
 control host that owns the channel. See [`../docs/hid.md`](../docs/hid.md).
 
 ## Wire protocol (host ↔ rig)
@@ -251,7 +251,7 @@ hidrig/
   src/compose.rs    # HID composition: command vocabulary -> report bytes -> binary frames
   src/proto.rs      # control-link transport (binary frames over CDC) + command-file parser
   src/uart.rs       # daemon: the single control-link owner (HID/control + console demux)
-  src/pty.rs        # daemon: PTY that re-exports the DUT console into paniolo's serial channel
+  src/pty.rs        # daemon: PTY that re-exports the DUT console into panio's serial channel
   src/server.rs     # daemon: axum WebSocket /hid + POST /send
   src/daemon.rs     # daemon: lock, discovery file, console PTY symlink, lifecycle
   host/hid_capture_usb.m   # macOS leak-safe HID capture (IOUSBHost device-capture)

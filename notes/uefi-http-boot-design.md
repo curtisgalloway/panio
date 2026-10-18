@@ -22,7 +22,7 @@ SPDX-License-Identifier: Apache-2.0
 ## 1. Why HTTP/IPv4
 
 The Nova's EDK2 firmware can netboot four ways (PXE/HTTP × IPv4/IPv6). Of those,
-**UEFI HTTP Boot over IPv4** is the right first target for paniolo:
+**UEFI HTTP Boot over IPv4** is the right first target for panio:
 
 - **It reuses almost everything.** `netbootd` is already a DHCPv4 server plus a
   file server over the dedicated point-to-point USB-Ethernet link. HTTP Boot
@@ -76,7 +76,7 @@ vendor class (§5.5).
 ## 3. The UEFI HTTP Boot/IPv4 protocol
 
 UEFI HTTP Boot is a two-step exchange in the single-server (no separate DHCP)
-model paniolo uses, where `netbootd` is *both* the address server and the boot
+model panio uses, where `netbootd` is *both* the address server and the boot
 server.
 
 ### 3.1 DHCP handshake
@@ -258,11 +258,11 @@ deliberately; see §8).
 CLI examples (proposed):
 
 ```bash
-paniolo netboot set -t nova \
+panio netboot set -t nova \
     --interface en7 \
     --tftp-root ~/nova/boot-root \
     --boot-file grubaa64.efi
-paniolo netboot start nova
+panio netboot start nova
 # netbootd now answers an HTTPClient DISCOVER with
 #   option 60 = HTTPClient, option 67 = http://192.168.99.1/grubaa64.efi
 # and serves grubaa64.efi (and grub.cfg, …) over HTTP.
@@ -298,13 +298,13 @@ purely additive.
 
 **Hardware bring-up (the Nova):**
 
-1. `paniolo netboot set`/`start` as in §5.4 with a real ARM64 NBP in the root.
+1. `panio netboot set`/`start` as in §5.4 with a real ARM64 NBP in the root.
 2. In EDK2's boot menu choose **HTTP Boot (IPv4)**.
-3. `paniolo netboot logs -f nova` should show: a `DISCOVER` carrying
+3. `panio netboot logs -f nova` should show: a `DISCOVER` carrying
    `HTTPClient:Arch:00019`, the OFFER/ACK, then `HEAD` + `GET /grubaa64.efi`, then
    the transfer completing.
 4. Confirm the NBP executes (GRUB menu / iPXE prompt / kernel banner on the
-   serial console via `paniolo serial`/`console`).
+   serial console via `panio serial`/`console`).
 
 ---
 
@@ -359,7 +359,7 @@ Settled 2026-06-13:
 - **HTTP/IPv6 and PXE/IPv6** — need a **DHCPv6** server (UDP 547, multicast
   `ff02::1:2`, a different wire format; boot URL in option 59) and almost
   certainly an **ICMPv6 Router Advertisement** sender so the client forms a
-  routable address + default route on the point-to-point link. paniolo's only
+  routable address + default route on the point-to-point link. panio's only
   IPv6 today is `netif`'s `fe80::1/64` link-local for Fuchsia ffx — no RA, no
   DHCPv6. A genuine new subsystem; defer until an IPv6 requirement is concrete.
 - **HTTP Range requests / keep-alive tuning** — only if a payload needs them.
@@ -374,7 +374,7 @@ Per the repo's standing PR checklist, the implementation PR must also update:
   fields, and that one `netbootd` serves Pi/PXE/HTTP from one config; revise the
   TFTP-starvation note to point at HTTP as the robust path for UEFI clients.
 - **[AGENTS.md](../AGENTS.md)** — netboot capabilities / lab schema.
-- **`skills/paniolo/SKILL.md`** — the `netboot set --boot-file/--http-port` surface.
+- **`skills/panio/SKILL.md`** — the `netboot set --boot-file/--http-port` surface.
 - **README** — if the feature list mentions netboot methods.
 - **mkdocs.yml** — this design record is added to `exclude_docs` (a point-in-time
   design doc, like `config-redesign.md`); the *user-facing* HTTP Boot
@@ -434,4 +434,4 @@ The Nova's RTL8168H shipped with a **blank MAC eFuse** → UEFI read `00:00:00:0
 → DHCP completed but the zero MAC broke unicast (ARP/TCP), so even fixes #1–#2
 stalled until a real MAC was burned into the eFuse. That's a board bring-up step,
 documented in the companion `nova-bringup` repo (`docs/ethernet-mac-efuse.md`,
-`scripts/nova-macburn.sh`), not in paniolo.
+`scripts/nova-macburn.sh`), not in panio.

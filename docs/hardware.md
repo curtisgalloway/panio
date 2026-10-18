@@ -29,14 +29,14 @@ See the [serial guide](serial.md).
 
 ## HID injection
 
-See the [HID guide](hid.md) and [`hidrig/README.md`](https://github.com/curtisgalloway/paniolo/blob/main/hidrig/README.md).
+See the [HID guide](hid.md) and [`hidrig/README.md`](https://github.com/curtisgalloway/panio/blob/main/hidrig/README.md).
 
 | Device | Role |
 |---|---|
-| 2× Adafruit KB2040 | Reference HID injector: a **control** board (host USB-CDC, I2C1 controller) and a **target** board (DUT USB-HID, I2C1 peripheral) joined by I2C1 (GP10 SDA / GP19 SCL). Any CircuitPython RP2040 board with a free I2C1 works with minor pin edits. Host CLI: [`hidrig/`](https://github.com/curtisgalloway/paniolo/blob/main/hidrig/README.md); firmware: [`paniolo-hardware`](https://github.com/curtisgalloway/paniolo-hardware) under [`hidrig-kb2040/`](https://github.com/curtisgalloway/paniolo-hardware/tree/main/hidrig-kb2040). |
+| 2× Adafruit KB2040 | Reference HID injector: a **control** board (host USB-CDC, I2C1 controller) and a **target** board (DUT USB-HID, I2C1 peripheral) joined by I2C1 (GP10 SDA / GP19 SCL). Any CircuitPython RP2040 board with a free I2C1 works with minor pin edits. Host CLI: [`hidrig/`](https://github.com/curtisgalloway/panio/blob/main/hidrig/README.md); firmware: [`paniolo-hardware`](https://github.com/curtisgalloway/paniolo-hardware) under [`hidrig-kb2040/`](https://github.com/curtisgalloway/paniolo-hardware/tree/main/hidrig-kb2040). |
 | 2× 4.7 kΩ resistors | I2C1 pull-ups (SDA→3.3 V, SCL→3.3 V). Required: the control board won't open the bus without them. [Wiring diagram](https://github.com/curtisgalloway/paniolo-hardware/blob/main/hidrig-kb2040/README.md). |
-| [Openterface KVM-Go (HDMI)](https://openterface.com/product/kvm-go/) | CH32V208 emulating the CH9329 protocol over USB-CDC. Works with the [`ch9329`](https://github.com/curtisgalloway/paniolo/blob/main/ch9329/README.md) helper unmodified; reports `chip_version=0x01` (a real CH9329 reports `0x38`). [KVM-Go notes](https://github.com/curtisgalloway/paniolo/blob/main/notes/openterface-kvm-go.md). |
-| [Openterface Mini-KVM](https://openterface.com/) | A real CH9329 behind a CH340C adapter; same `ch9329` helper. [Deep-control notes](https://github.com/curtisgalloway/paniolo/blob/main/notes/openterface-deep-control.md). |
+| [Openterface KVM-Go (HDMI)](https://openterface.com/product/kvm-go/) | CH32V208 emulating the CH9329 protocol over USB-CDC. Works with the [`ch9329`](https://github.com/curtisgalloway/panio/blob/main/ch9329/README.md) helper unmodified; reports `chip_version=0x01` (a real CH9329 reports `0x38`). [KVM-Go notes](https://github.com/curtisgalloway/panio/blob/main/notes/openterface-kvm-go.md). |
+| [Openterface Mini-KVM](https://openterface.com/) | A real CH9329 behind a CH340C adapter; same `ch9329` helper. [Deep-control notes](https://github.com/curtisgalloway/panio/blob/main/notes/openterface-deep-control.md). |
 
 ## Video capture
 

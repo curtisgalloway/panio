@@ -380,7 +380,7 @@ func TestServerStatusAndVersion(t *testing.T) {
 
 func TestCLIWithoutPasswordExitsThree(t *testing.T) {
 	t.Setenv(passwordEnv, "")
-	t.Setenv("PANIOLO_RUNTIME_DIR", t.TempDir())
+	t.Setenv("PANIO_RUNTIME_DIR", t.TempDir())
 	var out, errb strings.Builder
 	code := run([]string{"-d", "192.0.2.10", "ping"}, strings.NewReader(""), &out, &errb)
 	if code != exitNotConfigured || !strings.Contains(errb.String(), "JETKVM_PASSWORD") {
@@ -389,7 +389,7 @@ func TestCLIWithoutPasswordExitsThree(t *testing.T) {
 }
 
 func TestCLIUsageErrorsExitTwo(t *testing.T) {
-	t.Setenv("PANIOLO_RUNTIME_DIR", t.TempDir())
+	t.Setenv("PANIO_RUNTIME_DIR", t.TempDir())
 	for _, args := range [][]string{
 		{},
 		{"ping"}, // no -d
@@ -430,7 +430,7 @@ func TestSplitHost(t *testing.T) {
 
 func TestDirectOneShotAndRunFile(t *testing.T) {
 	d := newFakeDevice(t, "pw")
-	t.Setenv("PANIOLO_RUNTIME_DIR", t.TempDir()) // no daemon here
+	t.Setenv("PANIO_RUNTIME_DIR", t.TempDir()) // no daemon here
 	t.Setenv(passwordEnv, "")
 	pwFile := writeSecretFile(t, "pw\n", 0o600)
 	seq := writeSecretFile(t, "# comment\ntype x\ndelay 1\nclick right\n", 0o600)

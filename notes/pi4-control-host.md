@@ -9,13 +9,13 @@
 > deployment uses external injectors (`ch9329` KVM devices) over the normal
 > `hid` channel instead.
 
-This is a bring-up plan for running the **entire** paniolo control host on a single
+This is a bring-up plan for running the **entire** panio control host on a single
 Raspberry Pi 4 (Linux, ARM64) sitting next to one target — netboot, HDMI capture +
 OCR, serial console, HID injection, and power control, with the Pi reachable as a
 remote control host over the normal lab-file/SSH path. The motivation is a cheap,
 always-on box per bench instead of tying up a workstation.
 
-paniolo's daemons are already cross-platform, so most of this is configuration. The
+panio's daemons are already cross-platform, so most of this is configuration. The
 **one piece that needs building** is a Linux USB-HID-gadget backend — today HID is
 delegated to an external KB2040 over serial (see [hid.md](../docs/hid.md)); on a Pi 4 the
 control host can *be* the HID device on its own USB-C port. That backend is small
@@ -147,7 +147,7 @@ match, or you need a shifter inline:
 Then it's just a normal serial interface in the lab file:
 
 ```bash
-paniolo serial add console -t <target> --device /dev/ttyAMA0 --baud 115200
+panio serial add console -t <target> --device /dev/ttyAMA0 --baud 115200
 ```
 
 ---
@@ -160,14 +160,14 @@ This is the only software that doesn't exist yet. The shape:
   `/sys/kernel/config/usb_gadget/` (vendor/product ids, a boot-keyboard report
   descriptor, optionally a mouse), binds it to the dwc2 UDC, and yields `/dev/hidg0`
   (+ `/dev/hidg1`). This is standard Linux configfs gadget plumbing.
-- **paniolo backend** — a new HID transport that writes raw HID reports to the hidg
+- **panio backend** — a new HID transport that writes raw HID reports to the hidg
   character device. Crucially, this **reuses the existing Rust report-composition
   code** (the same logic that today frames reports to the KB2040's CDC, per
   [hid-dual-board-design.md](../docs/dev/hid-dual-board-design.md)); only the output sink changes
   from "frame to serial" to "write to `/dev/hidg0`". No external board, no firmware, no
   baud negotiation — arguably simpler than the current path.
 - **Wiring into the lab file** — exposed on the target's `hid` channel like any other
-  HID backend, so the web-console KVM and `paniolo hid` drive it unchanged.
+  HID backend, so the web-console KVM and `panio hid` drive it unchanged.
 
 > **Test this first (the one real unknown).** With the Pi self-powered over GPIO and the
 > USB-C plugged into the target, confirm the Pi enumerates as a keyboard *before*
@@ -185,14 +185,14 @@ This is the only software that doesn't exist yet. The shape:
 Validate each layer on its own so a failure points at one thing:
 
 1. **Base OS + uplink + SSH.** Add the Pi to the lab file as a host; confirm the dev
-   machine reaches it (`paniolo --lab … <cmd> --host <pi>`).
-2. **Serial.** Configure the GPIO UART (level-match first!), `paniolo serial watch`,
+   machine reaches it (`panio --lab … <cmd> --host <pi>`).
+2. **Serial.** Configure the GPIO UART (level-match first!), `panio serial watch`,
    confirm boot log capture from the target.
-3. **Video.** Plug the UVC dongle, `paniolo video devices` → `video set` → `video watch`,
+3. **Video.** Plug the UVC dongle, `panio video devices` → `video set` → `video watch`,
    confirm `/preview` and a `shot`. Sanity-check `video read` (Tesseract) accuracy.
 4. **Power.** Wire the chosen helper (zigplug/shellyplug/relay), confirm
-   `paniolo power-cycle` and `power-state`.
-5. **Netboot.** Bring up the secondary NIC as the direct link, `paniolo netboot`,
+   `panio power-cycle` and `power-state`.
+5. **Netboot.** Bring up the secondary NIC as the direct link, `panio netboot`,
    confirm the target TFTP-boots.
 6. **HID (after the backend exists).** Run the gadget VBUS/enumeration test, then the
    `/dev/hidg0` backend, then KVM from the web console.

@@ -7,15 +7,15 @@ conditions = ["cold", "warm", "preloaded"]
 capabilities = ["power"]
 goal = """
 Before I kick anything off, just tell me whether the Pi `pico` is currently
-powered on or off — do NOT change its power state. List the exact paniolo
+powered on or off — do NOT change its power state. List the exact panio
 command(s) you would run.
 """
 traps = [
-  "this is a READ: `paniolo power-state pico`, NOT `power on` / `power-cycle` (which would change state)",
+  "this is a READ: `panio power-state pico`, NOT `power on` / `power-cycle` (which would change state)",
   "power-state answers via the configured state_cmd or the serial sense line — it needs one of those configured to report",
 ]
 reference = [
-  'paniolo power-state pico',
+  'panio power-state pico',
 ]
 seed = "bench.toml"
 

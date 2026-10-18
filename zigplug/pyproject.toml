@@ -1,7 +1,7 @@
 [project]
 name = "zigplug"
 version = "0.3.0"
-description = "Zigbee smart plug control via a CC2652 (ZNP) coordinator dongle — paniolo power-hook helper"
+description = "Zigbee smart plug control via a CC2652 (ZNP) coordinator dongle — panio power-hook helper"
 requires-python = ">=3.11"
 license = { text = "Apache-2.0" }
 dependencies = [

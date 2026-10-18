@@ -14,30 +14,30 @@ transitions; a real TFTP boot — Fuchsia shim + ZBI on the Pi 5 — verified
 2026-06-04). Remaining: live remote-host dispatch test (needs a second control
 host) and docs/cutover. (The Openterface CH9329 HID backend, formerly listed
 here as deferred, shipped as the `ch9329` helper crate — see
-notes/ch9329-spec.md. OCR landed 2026-06-05: `paniolo video read` wraps the
+notes/ch9329-spec.md. OCR landed 2026-06-05: `panio video read` wraps the
 hdmicap daemon's `GET /ocr`.)
 
-Helper state/runtime-dir API (landed 2026-06-05): paniolo exports
-`PANIOLO_STATE_DIR` (`~/.config/paniolo/helpers/<name>/`) and
-`PANIOLO_RUNTIME_DIR` (`/tmp/paniolo-<uid>/<name>/`) — directories created —
-whenever it invokes a helper (hooks, `paniolo helper`, daemon spawns).
+Helper state/runtime-dir API (landed 2026-06-05): panio exports
+`PANIO_STATE_DIR` (`~/.config/panio/helpers/<name>/`) and
+`PANIO_RUNTIME_DIR` (`/tmp/panio-<uid>/<name>/`) — directories created —
+whenever it invokes a helper (hooks, `panio helper`, daemon spawns).
 Helpers prefer the env vars and fall back to the same literal paths when run
 standalone; hdmicap/serialcap/hidrig/zigplug all read them, and zigplug
-auto-migrated its `zigbee.db` from the top of `~/.config/paniolo/` into its
+auto-migrated its `zigbee.db` from the top of `~/.config/panio/` into its
 namespaced dir. Contract documented in docs/dev/adding-power-helpers.md.
 The Python Stages 1–4 were the original tested reference; the Python tree
-(`src/paniolo/` + its pytest suite) has since been **removed** now that the Rust
+(`src/panio/` + its pytest suite) has since been **removed** now that the Rust
 `cli/` crate is the only control-plane implementation.
 
 ## Why
 
-Paniolo's configuration today is split-brained:
+Panio's configuration today is split-brained:
 
-- **Legacy** per-target files (`~/.config/paniolo/targets/<name>.toml`) are
+- **Legacy** per-target files (`~/.config/panio/targets/<name>.toml`) are
   read *and* written — `target set`, `serial setup`, the video/HID setup
   commands all call `_config.save_target()` through a hand-rolled `_to_toml()`
   serializer. They always run on the local host.
-- **Lab** files (`--lab` / `PANIOLO_LAB`) describe all hosts and targets with
+- **Lab** files (`--lab` / `PANIO_LAB`) describe all hosts and targets with
   per-resource host binding, but are **read-only**: there is a parser and no
   writer.
 
@@ -75,8 +75,8 @@ Lab
                          └── hid       (singleton; added after this design — opaque injector cmd)
 ```
 
-- **Host** — a machine paniolo reaches over SSH. Fields: `ssh` (required;
-  `"local"` = dev machine), `identity`, `control_path`, `paniolo_cmd`. Hosts
+- **Host** — a machine panio reaches over SSH. Fields: `ssh` (required;
+  `"local"` = dev machine), `identity`, `control_path`, `panio_cmd`. Hosts
   carry **connection info only** — never device paths.
 - **Target** — a logical device. Has a default `host`, an optional `note`, and a
   set of channels. A channel omitting `host` inherits the target's `host`, which
@@ -112,10 +112,10 @@ runtime channel multiplexing.
 Retiring legacy means the lab file needs a default — requiring `--lab` on every
 call would kill the "simple on one host" goal.
 
-Discovery order: `--lab PATH` > `$PANIOLO_LAB` > `~/.config/paniolo/lab.toml`.
+Discovery order: `--lab PATH` > `$PANIO_LAB` > `~/.config/panio/lab.toml`.
 
-`paniolo init` creates an empty lab at the default path. Commands that need
-config but find none fail with a hint (`run paniolo target add ...`), not a
+`panio init` creates an empty lab at the default path. Commands that need
+config but find none fail with a hint (`run panio target add ...`), not a
 stack trace.
 
 ## Round-trip: tomlkit surgical edits
@@ -141,33 +141,33 @@ The verb asymmetry is the singleton/collection split surfacing exactly where it
 belongs: collections get `add`/`rm` with a name; singletons get `set`/`rm`.
 
 ```
-read    paniolo config show                whole lab as a tree
-        paniolo config path                print the active lab file path
-        paniolo config edit                open the raw lab file in $EDITOR
-        paniolo target list | show NAME    show = RESOLVED: each channel + host
-        paniolo host   list | show NAME    inverse index: channels here, targets served
-        paniolo doctor [TARGET|--host H]   probe reality vs config over SSH
+read    panio config show                whole lab as a tree
+        panio config path                print the active lab file path
+        panio config edit                open the raw lab file in $EDITOR
+        panio target list | show NAME    show = RESOLVED: each channel + host
+        panio host   list | show NAME    inverse index: channels here, targets served
+        panio doctor [TARGET|--host H]   probe reality vs config over SSH
 
-write   paniolo init
-        paniolo host   add  NAME --ssh ... [--identity] [--control-path] [--paniolo-cmd]
-        paniolo host   set  NAME [--ssh] [--identity] ...
-        paniolo host   rm   NAME
-        paniolo target add  NAME [--host H] [--note ...]
-        paniolo target set  NAME [--host H] [--note ...]
-        paniolo target rm   NAME
-        paniolo serial  add NAME -t TARGET --device ... [--host] [--baud] [--sense]
-        paniolo serial  set NAME -t TARGET [--device] [--baud] [--sense] [--host]
-        paniolo serial  rm  NAME -t TARGET
-        paniolo netboot set -t TARGET --interface ... [--host] [--host-ip] [--tftp-root]
-        paniolo netboot rm  -t TARGET
-        paniolo power   set -t TARGET [--cycle-cmd] [--serial-interface] [--host]
-        paniolo power   rm  -t TARGET
-        paniolo video   set -t TARGET --device ... [--host]
-        paniolo video   rm  -t TARGET
+write   panio init
+        panio host   add  NAME --ssh ... [--identity] [--control-path] [--panio-cmd]
+        panio host   set  NAME [--ssh] [--identity] ...
+        panio host   rm   NAME
+        panio target add  NAME [--host H] [--note ...]
+        panio target set  NAME [--host H] [--note ...]
+        panio target rm   NAME
+        panio serial  add NAME -t TARGET --device ... [--host] [--baud] [--sense]
+        panio serial  set NAME -t TARGET [--device] [--baud] [--sense] [--host]
+        panio serial  rm  NAME -t TARGET
+        panio netboot set -t TARGET --interface ... [--host] [--host-ip] [--tftp-root]
+        panio netboot rm  -t TARGET
+        panio power   set -t TARGET [--cycle-cmd] [--serial-interface] [--host]
+        panio power   rm  -t TARGET
+        panio video   set -t TARGET --device ... [--host]
+        panio video   rm  -t TARGET
 ```
 
-*Since this design, the surface also grew `paniolo hid set/rm` (the `hid`
-channel), `paniolo adb set/rm` (the `adb` channel for Android DUTs, with its
+*Since this design, the surface also grew `panio hid set/rm` (the `hid`
+channel), `panio adb set/rm` (the `adb` channel for Android DUTs, with its
 runtime verbs `adb shell/run/screencap/input/show/devices`),
 `power set --on-cmd/--off-cmd/--state-cmd`, the runtime verbs
 that consume them (`power on/off`, `power-state`, `hid send/serve/stop`),
@@ -244,7 +244,7 @@ without reshaping it.
    to live inside `setup` commands.
 5. **Per-channel dispatch.** Reusable primitive; per-host slice; composite
    co-location guard; remove the multi-host rejection in resolution.
-6. **Retire legacy + docs/tests.** Delete the `~/.config/paniolo/targets` path
+6. **Retire legacy + docs/tests.** Delete the `~/.config/panio/targets` path
    and the user-facing `_to_toml`; migrate tests; update `AGENTS.md`, `docs/`,
    and `README`.
 
@@ -282,7 +282,7 @@ slice is single-host with `host` normalized to local, the remote sees everything
 local and never re-dispatches.
 
 **Dispatch flow** per command:
-1. If invoked with an injected slice (the `PANIOLO_TARGET_CONFIG` env, set by the
+1. If invoked with an injected slice (the `PANIO_TARGET_CONFIG` env, set by the
    dispatcher) → run the body locally; it reads the shipped slice.
 2. Else resolve the channel's host. If `local` → run the body locally against
    `host_slice(target, local)`. Otherwise ship `host_slice(target, host)` to that
@@ -305,7 +305,7 @@ Python `_dhcp`/`_tftp` engines, `hdmicap` replaced the Python video path, `seria
 is the Rust serial daemon. The CLI + orchestration + device glue is the last large
 Python holdout. Two forces make finishing it in Rust the right call: deploying *both*
 a Python env and Rust binaries to every control host is the friction the re-exec model
-keeps fighting (`paniolo_cmd`, PATH notes in AGENTS.md), and a single static binary
+keeps fighting (`panio_cmd`, PATH notes in AGENTS.md), and a single static binary
 deployed beside the daemons removes it; and the dispatch logic gains real safety from
 Rust's enums/exhaustive matching exactly where it felt brittle in Python.
 
@@ -316,7 +316,7 @@ superseded `_dhcp`/`_tftp`).
 
 ### Rust port plan
 
-- **R1 — crate + config model.** New `paniolo` CLI crate (`clap` derive). Lab data
+- **R1 — crate + config model.** New `panio` CLI crate (`clap` derive). Lab data
   model with `serde` for the typed/read side; **`toml_edit`** for comment-preserving
   lab editing (the `cargo`-grade analog of `tomlkit`). `validate()` shared by load and
   save. Port `init` + the read surface (`config show`, `target/host list/show`) and the
@@ -334,8 +334,8 @@ superseded `_dhcp`/`_tftp`).
 
 - **Workspace vs standalone.** The three daemon crates currently build standalone and
   CI gates them individually; converting the repo to a Cargo workspace changes the
-  shared `target/` layout and could disrupt `make install`/CI. R1 starts the `paniolo`
+  shared `target/` layout and could disrupt `make install`/CI. R1 starts the `panio`
   crate **standalone** to avoid touching working infrastructure; a workspace (to share
-  types with the daemons via a `paniolo-core` crate) is a deliberate later step, not a
+  types with the daemons via a `panio-core` crate) is a deliberate later step, not a
   prerequisite.
-- **Binary name.** The crate produces the `paniolo` binary, same UX as today.
+- **Binary name.** The crate produces the `panio` binary, same UX as today.

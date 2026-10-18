@@ -14,8 +14,8 @@
 
 //! Hardware discovery for lab authoring.
 //!
-//! `paniolo discover` lists this host's lab-relevant hardware (USB-Ethernet,
-//! serial, capture devices, adb devices); `paniolo configure` runs it over SSH on a lab host
+//! `panio discover` lists this host's lab-relevant hardware (USB-Ethernet,
+//! serial, capture devices, adb devices); `panio configure` runs it over SSH on a lab host
 //! and renders a proposed `[targets.<name>]` block for review. The proposal is
 //! never written — the human approves it by adding it to the lab and committing.
 
@@ -114,7 +114,7 @@ fn str_at<'a>(v: &'a Value, key: &str) -> Option<&'a str> {
 
 /// Render a proposed `[targets.<name>]` lab block from a host's inventory.
 /// Best-guesses one value per channel; alternatives become comments. Meant to
-/// be reviewed and pasted into the lab — paniolo never writes it.
+/// be reviewed and pasted into the lab — panio never writes it.
 pub fn propose_target_block(name: &str, host: &str, inv: &Value) -> String {
     let mut out: Vec<String> = Vec::new();
     out.push(format!("[targets.{name}]"));

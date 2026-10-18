@@ -717,11 +717,11 @@ async fn preview(State(s): State<AppState>) -> Response {
         .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
 
-/// Locate the OCR tool: `PANIOLO_VISIONOCR` (paniolo sets this) wins, then a
-/// `visionocr` installed next to our own executable (`paniolo setup` puts both
+/// Locate the OCR tool: `PANIO_VISIONOCR` (panio sets this) wins, then a
+/// `visionocr` installed next to our own executable (`panio setup` puts both
 /// in the libexec dir), then a bare name resolved via PATH.
 fn visionocr_bin() -> std::ffi::OsString {
-    if let Some(bin) = std::env::var_os("PANIOLO_VISIONOCR") {
+    if let Some(bin) = std::env::var_os("PANIO_VISIONOCR") {
         return bin;
     }
     if let Ok(me) = std::env::current_exe() {
@@ -877,7 +877,7 @@ async fn ocr(State(s): State<AppState>) -> Response {
                 let text = String::from_utf8_lossy(&out.stdout);
                 tracing::warn!(
                     "OCR helper {name} did not emit a v1 envelope; \
-                     treating its output as plain text (upgrade it with `paniolo setup`)"
+                     treating its output as plain text (upgrade it with `panio setup`)"
                 );
                 legacy_envelope(&name, &text, fw, fh)
             }
@@ -896,24 +896,22 @@ async fn ocr(State(s): State<AppState>) -> Response {
     }
 }
 
-/// PANIOLO_TARGET (set by `paniolo video watch`/`console <target>`), or None
+/// PANIO_TARGET (set by `panio video watch`/`console <target>`), or None
 /// when unset/empty.
 fn power_target() -> Option<String> {
-    std::env::var("PANIOLO_TARGET")
-        .ok()
-        .filter(|t| !t.is_empty())
+    std::env::var("PANIO_TARGET").ok().filter(|t| !t.is_empty())
 }
 
 /// The 501 power endpoints return when no target is configured.
 fn no_target_response() -> Response {
     (
         StatusCode::NOT_IMPLEMENTED,
-        "PANIOLO_TARGET not set — start the daemon with: paniolo video watch <target>",
+        "PANIO_TARGET not set — start the daemon with: panio video watch <target>",
     )
         .into_response()
 }
 
-/// Ceiling on one power-hook subprocess (`paniolo power on|off`, `power-cycle`,
+/// Ceiling on one power-hook subprocess (`panio power on|off`, `power-cycle`,
 /// `power-state`). Deliberately generous next to OCR's 30s: a real hook may
 /// toggle a relay, wait on a smart plug's HTTP RPC, or power-cycle hardware and
 /// poll it back up, none of which is instant. But a wedged hook must not pin
@@ -922,18 +920,13 @@ fn no_target_response() -> Response {
 /// cycle with room to spare while still bounding the hang.
 const POWER_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// Spawn `paniolo <args…>`, wait up to `timeout`, and map the outcome to a
+/// Spawn `panio <args…>`, wait up to `timeout`, and map the outcome to a
 /// Response for the power *action* endpoints (on/off/cycle). `label` names the
 /// action for error messages. `kill_on_drop(true)` plus [`wait_with_timeout`]
 /// means a hook that outruns `timeout` is killed (its `Child` is dropped) and
 /// answered with 504 rather than holding the request open forever (Issue #171).
-async fn run_paniolo_action(
-    paniolo: &str,
-    args: &[&str],
-    label: &str,
-    timeout: Duration,
-) -> Response {
-    let child = match tokio::process::Command::new(paniolo)
+async fn run_panio_action(panio: &str, args: &[&str], label: &str, timeout: Duration) -> Response {
+    let child = match tokio::process::Command::new(panio)
         .args(args)
         .kill_on_drop(true)
         .spawn()
@@ -942,7 +935,7 @@ async fn run_paniolo_action(
         Err(e) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("failed to run {paniolo}: {e}"),
+                format!("failed to run {panio}: {e}"),
             )
                 .into_response()
         }
@@ -951,23 +944,23 @@ async fn run_paniolo_action(
         Ok(out) if out.status.success() => (StatusCode::OK, "ok").into_response(),
         Ok(out) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            format!("paniolo {label} exited with {}", out.status),
+            format!("panio {label} exited with {}", out.status),
         )
             .into_response(),
         Err(WaitError::TimedOut) => (
             StatusCode::GATEWAY_TIMEOUT,
-            format!("paniolo {label} timed out after {timeout:?}\n"),
+            format!("panio {label} timed out after {timeout:?}\n"),
         )
             .into_response(),
         Err(WaitError::Io(e)) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            format!("failed to run {paniolo}: {e}"),
+            format!("failed to run {panio}: {e}"),
         )
             .into_response(),
     }
 }
 
-/// Run `paniolo <action…> <target>` and map its exit status to a Response. The
+/// Run `panio <action…> <target>` and map its exit status to a Response. The
 /// action endpoints (on/off/cycle) all funnel through here, so a request is the
 /// only thing that ever changes the target's power.
 async fn run_power_action(action: &[&str]) -> Response {
@@ -975,43 +968,43 @@ async fn run_power_action(action: &[&str]) -> Response {
         Some(t) => t,
         None => return no_target_response(),
     };
-    let paniolo = std::env::var("PANIOLO_BIN").unwrap_or_else(|_| "paniolo".to_string());
+    let panio = std::env::var("PANIO_BIN").unwrap_or_else(|_| "panio".to_string());
     let mut args: Vec<&str> = action.to_vec();
     args.push(&target);
-    run_paniolo_action(&paniolo, &args, &action.join(" "), POWER_TIMEOUT).await
+    run_panio_action(&panio, &args, &action.join(" "), POWER_TIMEOUT).await
 }
 
-/// `POST /power-cycle` — `paniolo power-cycle <target>`.
+/// `POST /power-cycle` — `panio power-cycle <target>`.
 async fn power_cycle() -> Response {
     run_power_action(&["power-cycle"]).await
 }
 
-/// `POST /power-on` — `paniolo power on <target>`.
+/// `POST /power-on` — `panio power on <target>`.
 async fn power_on() -> Response {
     run_power_action(&["power", "on"]).await
 }
 
-/// `POST /power-off` — `paniolo power off <target>`.
+/// `POST /power-off` — `panio power off <target>`.
 async fn power_off() -> Response {
     run_power_action(&["power", "off"]).await
 }
 
 /// `GET /power` — capability + current state WITHOUT acting, so the dashboard
 /// can probe availability and drive the on/off toggle on a timer without ever
-/// toggling the target. 501 if no target; otherwise runs `paniolo power-state
+/// toggling the target. 501 if no target; otherwise runs `panio power-state
 /// <target>` and returns "on", "off", or "unknown".
 async fn power_state() -> Response {
     let target = match power_target() {
         Some(t) => t,
         None => return no_target_response(),
     };
-    let paniolo = std::env::var("PANIOLO_BIN").unwrap_or_else(|_| "paniolo".to_string());
+    let panio = std::env::var("PANIO_BIN").unwrap_or_else(|_| "panio".to_string());
     // Unlike the action hooks, this one needs stdout, so spawn with a piped
     // stdout and read it back through `wait_with_timeout` (Issue #171): same
-    // `kill_on_drop(true)` + timeout treatment as `run_paniolo_action` and
+    // `kill_on_drop(true)` + timeout treatment as `run_panio_action` and
     // `ocr`, so a wedged `power-state` hook is killed rather than holding the
     // request forever.
-    let child = match tokio::process::Command::new(&paniolo)
+    let child = match tokio::process::Command::new(&panio)
         .args(["power-state", &target])
         .stdout(Stdio::piped())
         .kill_on_drop(true)
@@ -1021,7 +1014,7 @@ async fn power_state() -> Response {
         Err(e) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("failed to run {paniolo}: {e}"),
+                format!("failed to run {panio}: {e}"),
             )
                 .into_response()
         }
@@ -1034,12 +1027,12 @@ async fn power_state() -> Response {
         Ok(_) => (StatusCode::OK, "unknown").into_response(),
         Err(WaitError::TimedOut) => (
             StatusCode::GATEWAY_TIMEOUT,
-            format!("paniolo power-state timed out after {POWER_TIMEOUT:?}\n"),
+            format!("panio power-state timed out after {POWER_TIMEOUT:?}\n"),
         )
             .into_response(),
         Err(WaitError::Io(e)) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            format!("failed to run {paniolo}: {e}"),
+            format!("failed to run {panio}: {e}"),
         )
             .into_response(),
     }
@@ -1082,7 +1075,7 @@ fn signal_name(s: Signal) -> &'static str {
 #[allow(unused_imports)]
 use watch as _watch;
 
-/// The dashboard's verdict from `paniolo power-state` output: `on`, `off` or
+/// The dashboard's verdict from `panio power-state` output: `on`, `off` or
 /// `unknown`. It prints a human line like "Power ON  (pi5)"; the on/off token
 /// is pulled out of the *first* line only (case-insensitive,
 /// position-independent). A target with named power levels gets one line per
@@ -1737,7 +1730,7 @@ mod tests {
         let start = Instant::now();
         // Args as run_power_action builds them: the resolved target is the
         // trailing arg (here it becomes $0 for `sh -c`, harmlessly).
-        let resp = run_paniolo_action(
+        let resp = run_panio_action(
             "sh",
             &["-c", "sleep 30", "target"],
             "power on",
@@ -1757,10 +1750,10 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn power_action_maps_exit_status_within_the_timeout() {
-        let ok = run_paniolo_action("true", &[], "power on", Duration::from_secs(5)).await;
+        let ok = run_panio_action("true", &[], "power on", Duration::from_secs(5)).await;
         assert_eq!(ok.status(), StatusCode::OK);
 
-        let bad = run_paniolo_action("false", &[], "power off", Duration::from_secs(5)).await;
+        let bad = run_panio_action("false", &[], "power off", Duration::from_secs(5)).await;
         assert_eq!(bad.status(), StatusCode::INTERNAL_SERVER_ERROR);
     }
 
@@ -1999,6 +1992,6 @@ mod tests {
         let html = include_str!("../assets/index.html");
         assert!(html.contains("/novnc.js"));
         assert!(html.contains("/rfb"));
-        assert!(html.contains("paniolo-video-mode"));
+        assert!(html.contains("panio-video-mode"));
     }
 }

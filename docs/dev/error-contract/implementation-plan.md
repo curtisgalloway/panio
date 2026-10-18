@@ -25,7 +25,7 @@ Project checks (from `cli/`): `cargo fmt --check`, `cargo clippy --all-targets
 - Commit identity: the repo's noreply address (see `git log`). Public repo:
   no private hostnames, addresses or home paths anywhere.
 - Integration tests live in `cli/tests/error_contract.rs` (proposed) and run
-  `env!("CARGO_BIN_EXE_paniolo")` against a temp lab; no new dependencies.
+  `env!("CARGO_BIN_EXE_panio")` against a temp lab; no new dependencies.
 
 ## Status
 
@@ -65,7 +65,7 @@ with one JSON object; passthroughs keep the child's code, 128+N on a signal.
 **Status:** complete — [evidence](evidence/M2.md). **Open limitations:** hook
 paths other than power are covered by construction, not by integration tests
 (they need real helpers). Design D1 changed: hooks no longer inherit
-`PANIOLO_JSON_ERRORS` (review N1, user decision).
+`PANIO_JSON_ERRORS` (review N1, user decision).
 
 ## M3 — Daemons, timeouts, `serial log`
 
@@ -73,7 +73,7 @@ paths other than power are covered by construction, not by integration tests
 at its deadline, or a timed-out daemon request or port forward, exits 22; a
 daemon that exited non-zero during startup or answered an error status exits
 101; `serial log` warns when serialcap is stopped and `--require-live` makes
-it exit 100. No exit 4 for device nodes (paniolo never probes them).
+it exit 100. No exit 4 for device nodes (panio never probes them).
 **Status:** complete — [evidence](evidence/M3.md). **Open limitations:** the
 untracked-daemon case of `serial log` is covered by construction, not by a
 test. A non-timeout transport error to a daemon (connection reset) is still
@@ -81,8 +81,8 @@ test. A non-timeout transport error to a daemon (connection reset) is still
 
 ## M4 — Documentation and final verification
 
-**Outcome:** `paniolo --help` ends with an exit-status table pinned by a test
-to `Kind::ALL`; `docs/errors.md` (in nav), `skills/paniolo/SKILL.md`,
+**Outcome:** `panio --help` ends with an exit-status table pinned by a test
+to `Kind::ALL`; `docs/errors.md` (in nav), `skills/panio/SKILL.md`,
 `AGENTS.md`, `README.md` and the serial/power/distributed-control guides
 describe the contract; no eval scenario asserted an exit code, so none
 changed. **Status:** complete — [evidence](evidence/M4.md). **Open
@@ -101,7 +101,7 @@ serialcap) and record code and JSON for each. A silent path that survives
 reopens the design (R6) before release. Then run `RELEASE-TRAIN.md` for 0.5.0
 (breaking: errors no longer exit 1). Push, tag and publish only on the user's
 explicit go-ahead and the public-repo schedule. After `apt upgrade` on a
-control host: `paniolo daemons restart --stale`. Report the version to the
+control host: `panio daemons restart --stale`. Report the version to the
 user for the consumer.
 **Design coverage:** R6 (control host), R1–R3 end to end.
 **Dependencies:** M4; a reachable control host with a lab file (the user

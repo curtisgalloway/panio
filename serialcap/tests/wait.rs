@@ -93,7 +93,7 @@ impl Fixture {
                 "4096",
             ])
             .args(args)
-            .env("PANIOLO_RUNTIME_DIR", &self.dir)
+            .env("PANIO_RUNTIME_DIR", &self.dir)
             .output()
             .unwrap()
     }
@@ -154,7 +154,7 @@ fn timeout_follow_retains_fresh_raw_faults_and_pending() {
             "--include-pending",
             "--follow",
         ])
-        .env("PANIOLO_RUNTIME_DIR", &fixture.dir)
+        .env("PANIO_RUNTIME_DIR", &fixture.dir)
         .output()
         .unwrap();
     let final_result = result(&output);
@@ -213,7 +213,7 @@ fn daemon_failure_keeps_already_acquired_evidence() {
             "5000",
             "--include-pending",
         ])
-        .env("PANIOLO_RUNTIME_DIR", &fixture.dir)
+        .env("PANIO_RUNTIME_DIR", &fixture.dir)
         .output()
         .unwrap();
     let final_result = result(&output);

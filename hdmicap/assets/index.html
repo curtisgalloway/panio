@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>paniolo · video + serial</title>
+  <title>panio · video + serial</title>
   <link rel="stylesheet" href="/xterm.css">
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -179,7 +179,7 @@
     // page, same token) and sends its own keyboard/pointer events, which the
     // daemon turns into hid commands. MJPEG mode is today's <img> plus the
     // "Capture input" overlay. The bundle is vendored (no CDN), like xterm.js.
-    const MODE_KEY = 'paniolo-video-mode';
+    const MODE_KEY = 'panio-video-mode';
     const videoEl = document.getElementById('video');
     const vncEl = document.getElementById('vnc');
     const feed = document.getElementById('feed');
@@ -287,7 +287,7 @@
           startMjpeg();
         }
         // Tell the hid-capture code to let go when leaving MJPEG mode.
-        window.dispatchEvent(new CustomEvent('paniolo-video-mode', { detail: m }));
+        window.dispatchEvent(new CustomEvent('panio-video-mode', { detail: m }));
       }
       modeBtns.forEach(b => b.classList.toggle('on', b.dataset.mode === m));
     }
@@ -318,7 +318,7 @@
   </script>
   <script>
     // ── auth ──
-    // The daemon issues a per-start token (auth.rs); paniolo puts it in this
+    // The daemon issues a per-start token (auth.rs); panio puts it in this
     // page's URL, and every request back to the daemon carries it as ?token=
     // (a page load, an <img> or a WebSocket cannot set a header).
     const params = new URLSearchParams(location.search);
@@ -341,7 +341,7 @@
 
     // ── layout toggle ──
     const layoutBtn = document.getElementById('layoutbtn');
-    const LAYOUT_KEY = 'paniolo-serial-layout';
+    const LAYOUT_KEY = 'panio-serial-layout';
     const allFits = [];
     function fitAll() { allFits.forEach(f => { try { f.fit(); } catch (e) {} }); }
     function setLayout(layout) {
@@ -365,7 +365,7 @@
     function pollVideo() {
       fetch(withToken('/status')).then(r => {
         if (r.status === 401) {
-          vst.textContent = 'unauthorized — this page needs the token in its URL; run `paniolo video preview` and open that URL';
+          vst.textContent = 'unauthorized — this page needs the token in its URL; run `panio video preview` and open that URL';
           vst.style.color = '#f44';
           return;
         }
@@ -468,13 +468,13 @@
     pwrCycleBtn.onclick = () => askPower('Power cycle the target?', 'Power cycle', () => doPower('/power-cycle'));
 
     // ── serial: xterm.js panes fed by serialcap WebSocket (cross-port) ──
-    // ?serialws=URL is what `paniolo console` passes: serialcap's /stream with
+    // ?serialws=URL is what `panio console` passes: serialcap's /stream with
     // that daemon's own ?token= inside. ?serial=PORT is the hand-opened form;
     // it carries no token, so only a daemon without one accepts it. Either
     // way the URL must be loopback, or the terminal is refused.
     // ?interface=NAME locks to a single interface (single-pane mode).
     // Without ?interface, all daemon interfaces get their own pane side-by-side.
-    // ?serial=none is what `paniolo console` passes for a target with no
+    // ?serial=none is what `panio console` passes for a target with no
     // serial channel (video + hid only): a KVM-only page, no terminal (#223).
     const serialAbsent = params.get('serial') === 'none';
     const serialPort = (!serialAbsent && params.get('serial')) || '8724';
@@ -585,7 +585,7 @@
     }
 
     // ── KVM: keyboard + absolute mouse to the target via the hid daemon ──
-    // ?hidws=URL (what `paniolo console` passes: the daemon's /hid with its
+    // ?hidws=URL (what `panio console` passes: the daemon's /hid with its
     // own ?token= inside) or ?hid=PORT (hand-opened, no token) enable the HID
     // leg; a non-loopback URL is refused. The
     // "Capture input" header button toggles capture; while engaged, all
@@ -685,7 +685,7 @@
       }
       btn.onclick = () => (captured ? disengage() : engage());
       // Leaving MJPEG mode (to noVNC, which has its own input) drops capture.
-      window.addEventListener('paniolo-video-mode', ev => {
+      window.addEventListener('panio-video-mode', ev => {
         if (ev.detail === 'vnc' && captured) disengage();
       });
       // Drop capture (and release held keys) if the window loses focus.

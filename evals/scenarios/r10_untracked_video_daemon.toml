@@ -6,23 +6,23 @@ core = false
 conditions = ["cold", "warm", "preloaded"]
 capabilities = ["daemons", "video"]
 goal = """
-`paniolo video show` on this target says the daemon is stopped, but
-`paniolo video watch` fails with `another hdmicap daemon is already running`.
+`panio video show` on this target says the daemon is stopped, but
+`panio video watch` fails with `another hdmicap daemon is already running`.
 Get the video daemon running again, and say what caused the contradiction.
-List the exact paniolo commands you would run.
+List the exact panio commands you would run.
 """
 traps = [
   "the two messages are not in conflict: a daemon that outlived its discovery file is running but untracked",
-  "paniolo reports it — `video show` says `running, untracked (pid N)`, `paniolo daemons` lists it under Untracked daemons",
-  "`paniolo video watch` reaps the orphan itself; ps/kill is not the answer",
+  "panio reports it — `video show` says `running, untracked (pid N)`, `panio daemons` lists it under Untracked daemons",
+  "`panio video watch` reaps the orphan itself; ps/kill is not the answer",
   "on Linux the cause is a /tmp age sweep deleting the discovery file, not a crash or a bad upgrade",
 ]
 reference = [
-  'paniolo daemons                      # the orphan, listed as an untracked daemon',
-  'paniolo video show                   # running, untracked (pid N)',
-  'paniolo video watch                  # reaps the orphan, then starts a fresh daemon',
+  'panio daemons                      # the orphan, listed as an untracked daemon',
+  'panio video show                   # running, untracked (pid N)',
+  'panio video watch                  # reaps the orphan, then starts a fresh daemon',
 ]
-# The serial channel behaves identically (`paniolo serial show` / `watch` /
+# The serial channel behaves identically (`panio serial show` / `watch` /
 # `stop`); the same reasoning has to transfer.
 
 seed = "bench.toml"

@@ -6,21 +6,21 @@ core = false
 conditions = ["cold", "warm", "preloaded"]
 capabilities = ["video", "hid", "skill:kvm-puppeting"]
 goal = """
-On a UEFI board configured in paniolo as `board`, I can only see the screen
+On a UEFI board configured in panio as `board`, I can only see the screen
 over the HDMI capture and only act through the emulated USB keyboard and mouse.
 Walk into the BIOS setup menu and enable network boot. Describe exactly how
-you'd do it with paniolo, including which guidance you'd read first.
+you'd do it with panio, including which guidance you'd read first.
 """
 traps = [
-  "this needs the companion `kvm-puppeting` skill — discover it via `paniolo skill kvm-puppeting`",
+  "this needs the companion `kvm-puppeting` skill — discover it via `panio skill kvm-puppeting`",
   "absolute mouse uses `moveabs <x> <y>` in 0..32767 logical space, not pixel coordinates",
   "apply the look-act-settle-verify loop (read screen, act, wait, re-read)",
 ]
 reference = [
-  'paniolo skill kvm-puppeting          # read the GUI-puppeting doctrine first',
-  'paniolo console board                # KVM dashboard, or drive headless:',
-  'paniolo video read board --stable    # see current screen',
-  'paniolo hid send -t board key DOWN_ARROW / key ENTER / moveabs <x> <y> / click left',
+  'panio skill kvm-puppeting          # read the GUI-puppeting doctrine first',
+  'panio console board                # KVM dashboard, or drive headless:',
+  'panio video read board --stable    # see current screen',
+  'panio hid send -t board key DOWN_ARROW / key ENTER / moveabs <x> <y> / click left',
 ]
 
 seed = "bench.toml"

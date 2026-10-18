@@ -380,7 +380,7 @@ func TestEndToEndDaemonViaCLI(t *testing.T) {
 		t.Skip("spawns the daemon")
 	}
 	d := newFakeDevice(t, "pw")
-	t.Setenv("PANIOLO_RUNTIME_DIR", t.TempDir())
+	t.Setenv("PANIO_RUNTIME_DIR", t.TempDir())
 	t.Setenv(passwordEnv, "pw")
 
 	// Run the daemon's pieces directly (a real SIGTERM handler would be

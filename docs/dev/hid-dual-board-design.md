@@ -14,15 +14,15 @@ SPDX-License-Identifier: Apache-2.0
 > thinking crosses cleanly into implementation. It supersedes the role-based ASCII
 > firmware previously on the branch (`code.py`, now the retired single-board firmware
 > at [`hidrig-kb2040/firmware/single-board/`](https://github.com/curtisgalloway/paniolo-hardware/tree/main/hidrig-kb2040/firmware/single-board)
-> in the paniolo-hardware repo). The **external** paniolo
+> in the paniolo-hardware repo). The **external** panio
 > HID interface — the `hidrig` CLI and [`hid-serial-protocol.md`](hid-serial-protocol.md)
 > v1 — is unchanged; only the daemon↔firmware wire format changes.
 >
 > **Rev. 2026-06-14** adds two capabilities to the control board so a *single* USB-attached
 > device drives the DUT completely: a **serial-console bridge** (control-board hardware UART
-> ↔ DUT console, multiplexed up to the host and re-exported into paniolo's existing `serial`
+> ↔ DUT console, multiplexed up to the host and re-exported into panio's existing `serial`
 > channel) and a concrete **relay power-cut** for DUT power-cycling. Both ride the existing
-> CDC link as new/extended frame types; neither requires a change to paniolo's CLI.
+> CDC link as new/extended frame types; neither requires a change to panio's CLI.
 
 ---
 
@@ -118,9 +118,9 @@ relay GPIO on command, but it parses neither.
 over it. Composition layer: translate the existing v1 ASCII commands (`type`, `key`, `move`,
 `moveabs`, `click`, …) into HID report bytes and `0x01` frames. Control layer: emit `0x02`
 control/power commands and read their replies. **Console layer (new):** demultiplex the
-`0x03` console stream coming up from the DUT and re-export it as a PTY so paniolo's `serial`
+`0x03` console stream coming up from the DUT and re-export it as a PTY so panio's `serial`
 channel can attach (§6). Everything *above* the daemon is unchanged — `hidrig` one-shots,
-`paniolo hid send`, the web console — so this stays internal to the daemon and firmware.
+`panio hid send`, the web console — so this stays internal to the daemon and firmware.
 
 **Control board.** Presents a USB CDC ("data") interface to the control host and is the
 rig's independently-powered supervisor. It demultiplexes type-tagged frames:
@@ -246,21 +246,21 @@ The control board's hardware UART (UART0, GP0/GP1) connects to the DUT's serial 
 Console traffic rides the **same single CDC "data" stream** as everything else, namespaced
 as `0x03` frames (this resolves the one-stream-vs-two-endpoints question in favor of one
 stream — see §9). The host daemon owns the CDC port, demultiplexes `0x03`, and must
-**re-export the console so it plumbs into paniolo's existing `serial` channel with no
-paniolo code changes.**
+**re-export the console so it plumbs into panio's existing `serial` channel with no
+panio code changes.**
 
 ### Why a PTY (the constraint that drives the design)
 
-paniolo's `serial` channel is **device-path-only**. `serialcap` hands the configured
+panio's `serial` channel is **device-path-only**. `serialcap` hands the configured
 `device` straight to `tokio_serial::new(device, baud).open_native_async()` — there is no
-socket, command, or network backend. And `paniolo serial connect` `exec`s `tio <device>`,
+socket, command, or network backend. And `panio serial connect` `exec`s `tio <device>`,
 which needs a real terminal device, not a socket. So the only re-export that satisfies the
 *entire* serial surface — `watch`, `send`, `log`, **and** interactive `connect`/tio — with
-zero paniolo changes is a **pseudo-terminal (PTY)**:
+zero panio changes is a **pseudo-terminal (PTY)**:
 
 - the `hidrig` daemon allocates a PTY, writes demuxed `0x03` bytes to the master, and reads
   host→DUT input from the master back into `0x03` frames;
-- it publishes the slave at a **stable symlink** under `/tmp/paniolo-<uid>/…` (the same
+- it publishes the slave at a **stable symlink** under `/tmp/panio-<uid>/…` (the same
   discovery convention the hid daemon already uses for `daemon.json`), because PTY slave
   names are allocated dynamically;
 - the lab file points the target's serial channel at that symlink:
@@ -268,12 +268,12 @@ zero paniolo changes is a **pseudo-terminal (PTY)**:
   ```toml
   [[targets.DUT.serial]]
   name   = "console"
-  device = "/tmp/paniolo-<uid>/hid/console"   # hidrig PTY symlink, not a physical tty
+  device = "/tmp/panio-<uid>/hid/console"   # hidrig PTY symlink, not a physical tty
   baud   = 115200                              # nominal; the real rate is set on the UART
   # no power_sense_signal — modem-control lines don't exist on a PTY (see caveats)
   ```
 
-paniolo then opens it exactly like a USB-serial dongle: `serial watch` captures it,
+panio then opens it exactly like a USB-serial dongle: `serial watch` captures it,
 `serial send` types into it, `serial log` reads the capture, `serial connect` attaches tio.
 The framing is honest: **hidrig becomes "a USB-serial adapter that also does HID and
 power."**
@@ -295,7 +295,7 @@ power."**
 
 ### Remote control hosts
 
-The PTY lives on the **control host** (where the USB device is). paniolo's existing SSH
+The PTY lives on the **control host** (where the USB device is). panio's existing SSH
 dispatch ships a single-target lab slice to that host and runs `serialcap` there against the
 local PTY, so a remote console works identically to a remote physical serial device — set
 `host =` on the serial channel as usual.
@@ -303,8 +303,8 @@ local PTY, so a remote console works identically to a remote physical serial dev
 ## 7. Power & recovery
 
 **DUT power-cycle (the immediate goal).** The control board switches power to the DUT. This
-overlaps with paniolo's existing power helpers (zigplug/shellyplug) by design — it is a
-*backend swap*, not a new core concept. It surfaces to paniolo as **another power-helper
+overlaps with panio's existing power helpers (zigplug/shellyplug) by design — it is a
+*backend swap*, not a new core concept. It surfaces to panio as **another power-helper
 behind the existing `power` hook**, keeping device-specific logic out of the core. It is
 worth doing where it *replaces something flaky or consolidates cabling* — e.g. the pi5
 bench currently runs on a Zigbee plug that is finicky (formation fails near USB video,
@@ -355,16 +355,16 @@ inter-board link.
    opcode tables — this is the answer to why the old two-board design was abandoned.
 2. **Two boards, native USB both ends.** Control board vends CDC to the host; target board
    vends device-mode HID to the DUT.
-3. **External interface unchanged.** paniolo and `hidrig` keep speaking v1 ASCII to the
-   daemon; only the daemon↔rig wire format is binary frames. The console reuses paniolo's
+3. **External interface unchanged.** panio and `hidrig` keep speaking v1 ASCII to the
+   daemon; only the daemon↔rig wire format is binary frames. The console reuses panio's
    existing `serial` channel as-is.
 4. **One CDC stream, namespaced by a type byte** — `0x01` HID, `0x02` control/power, `0x03`
    console — with the daemon as the single port owner.
 5. **DUT power is owned by the control board** as a hard-cut relay on a GPIO, exposed as
    `hidrig power …` behind the existing power hook.
 6. **DUT serial console is bridged on the control board's hardware UART** (UART0, GP0/GP1),
-   multiplexed as `0x03`, and re-exported by the daemon as a **PTY** that paniolo's `serial`
-   channel attaches to — no paniolo code changes.
+   multiplexed as `0x03`, and re-exported by the daemon as a **PTY** that panio's `serial`
+   channel attaches to — no panio code changes.
 7. **Blast radius is daemon + firmware (+ lab-file config) only** (see §11).
 
 ## 9. Open decisions
@@ -412,8 +412,8 @@ inter-board link.
 ## 11. Blast radius
 
 ```
-unchanged: paniolo `hid send` · `hidrig` CLI · web console · hid-serial-protocol.md (v1 ASCII)
-           paniolo `serial` CLI (watch/send/log/connect) — attaches the hidrig PTY as-is
+unchanged: panio `hid send` · `hidrig` CLI · web console · hid-serial-protocol.md (v1 ASCII)
+           panio `serial` CLI (watch/send/log/connect) — attaches the hidrig PTY as-is
            |
            v
   CHANGED: host daemon  -- composition (keycodes/layout/mouse math) + binary framing
@@ -428,9 +428,9 @@ unchanged: paniolo `hid send` · `hidrig` CLI · web console · hid-serial-proto
   CHANGED: target firmware   -- relay -> send_report  (unchanged by this revision)
 
   CONFIG ONLY: lab file gains a `serial` channel pointing at the hidrig PTY symlink
-               (and a `power` hook pointing at `hidrig power`) — no paniolo code change
+               (and a `power` hook pointing at `hidrig power`) — no panio code change
 ```
 
 Nothing above the daemon moves. The daemon absorbs the protocol translation, the console
-demux, and the power command; the control firmware gains the UART bridge and relay; paniolo
+demux, and the power command; the control firmware gains the UART bridge and relay; panio
 gains only lab-file configuration. The change stays contained to the daemon and firmware.

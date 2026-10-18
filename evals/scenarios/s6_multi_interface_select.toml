@@ -7,7 +7,7 @@ conditions = ["cold", "warm", "preloaded"]
 capabilities = ["serial"]
 goal = """
 `dut` has both a main console and a separate BMC console configured. Show me the
-last 20 lines from the BMC console specifically. List the exact paniolo commands
+last 20 lines from the BMC console specifically. List the exact panio commands
 you would run.
 """
 traps = [
@@ -15,8 +15,8 @@ traps = [
   "with more than one interface, `-i <name>` is required — omitting it errors and lists the names",
 ]
 reference = [
-  'paniolo serial watch dut          # one daemon captures both interfaces',
-  'paniolo serial log dut -i bmc --tail 20',
+  'panio serial watch dut          # one daemon captures both interfaces',
+  'panio serial log dut -i bmc --tail 20',
 ]
 seed = "dut_dual_console.toml"
 

@@ -11,5 +11,5 @@ baud = 115200
 
 [targets.pico.video]
 device = "NoSuchCam"
-# paniolo lab — managed by the `paniolo` CLI; hand-edits are preserved
+# panio lab — managed by the `panio` CLI; hand-edits are preserved
 

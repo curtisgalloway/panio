@@ -8,16 +8,16 @@ capabilities = ["video"]
 goal = """
 Boot the board `pico` and let me know the moment the boot screen actually comes
 up — I don't want you to just sleep for a fixed time and guess. List the exact
-paniolo commands you would run and explain the mechanism.
+panio commands you would run and explain the mechanism.
 """
 traps = [
   "discover the frame-hash mechanism: `video shot` prints `hash=...`, then `video shot --changed-since <hash> --timeout <ms>` blocks until the frame differs",
   "avoid a busy-loop of `video read`",
 ]
 reference = [
-  'paniolo video watch pico',
-  'paniolo video shot pico               # note the hash=... printed on stderr',
-  'paniolo video shot pico --changed-since <hash> --timeout 30000',
+  'panio video watch pico',
+  'panio video shot pico               # note the hash=... printed on stderr',
+  'panio video shot pico --changed-since <hash> --timeout 30000',
 ]
 
 seed = "bench.toml"

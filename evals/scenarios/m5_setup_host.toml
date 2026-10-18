@@ -1,21 +1,21 @@
 # Copyright 2026 Curtis Galloway — Licensed under the Apache License, Version 2.0.
 id = "m5"
-title = "Rebuild and install paniolo's Rust binaries on a control host"
+title = "Rebuild and install panio's Rust binaries on a control host"
 tier = "t0"
 core = false
 conditions = ["cold", "warm", "preloaded"]
 capabilities = ["setup", "host"]
 goal = """
-I edited paniolo's Rust source. Rebuild and install just the Rust binaries on the
+I edited panio's Rust source. Rebuild and install just the Rust binaries on the
 control host `bench1` — I don't need the OCR / zigplug extras rebuilt. List the
 exact command(s) you would run.
 """
 traps = [
-  "`paniolo setup` builds + installs from a source clone; `--rust-only` skips the steps needing sudo or a second toolchain (OCR, zigplug, macOS setuid, Linux device groups) and still installs the bundled skills",
+  "`panio setup` builds + installs from a source clone; `--rust-only` skips the steps needing sudo or a second toolchain (OCR, zigplug, macOS setuid, Linux device groups) and still installs the bundled skills",
   "`--host bench1` provisions that lab host over SSH (the source + CLI must already be there); it is NOT a per-target command",
 ]
 reference = [
-  'paniolo setup --rust-only --host bench1',
+  'panio setup --rust-only --host bench1',
 ]
 seed = ""
 

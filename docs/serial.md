@@ -19,39 +19,39 @@ Both modes need the port exclusively. Run one at a time.
 ## Setup
 
 ```bash
-paniolo serial add console -t target-machine \
+panio serial add console -t target-machine \
     --device /dev/tty.usbserial-0001 \
     --baud 115200
 
 # Optional: also wire a power sense signal on this interface (see power.md)
-paniolo serial set console -t target-machine --sense cts
+panio serial set console -t target-machine --sense cts
 
 # Optional: declare this interface's DTR line is wired to the J2 power button,
 # which enables `serial dtr` / `serial reset` on it (opt-in; see power.md)
-paniolo serial set console -t target-machine --power-button
+panio serial set console -t target-machine --power-button
 
 # Optional: a fixed port for this target's serialcap daemon (set on any one
 # interface; 0 clears). See dashboard.md "Fixed ports".
-paniolo serial set console -t target-machine --port 8724
+panio serial set console -t target-machine --port 8724
 ```
 
 A target can have several named interfaces (e.g. `console`, `bmc`). Remove
 one with:
 
 ```bash
-paniolo serial rm console -t target-machine
+panio serial rm console -t target-machine
 ```
 
 List detected serial devices:
 
 ```bash
-paniolo serial devices
+panio serial devices
 ```
 
 Show a target's configured interfaces:
 
 ```bash
-paniolo serial show [target-machine]
+panio serial show [target-machine]
 ```
 
 ---
@@ -71,15 +71,15 @@ utmctl attach <vm-name>          # UTM: prints "PTTY: /dev/ttys006"
 Configure it as an ordinary interface:
 
 ```bash
-paniolo serial add console -t winvm --device /dev/ttys006 --baud 115200
-paniolo serial watch winvm
-paniolo serial log winvm --tail 50
+panio serial add console -t winvm --device /dev/ttys006 --baud 115200
+panio serial watch winvm
+panio serial log winvm --tail 50
 ```
 
 After a VM restart, re-point the interface:
 
 ```bash
-paniolo serial set console -t winvm --device "$(utmctl attach winvm | sed -n 's/^PTTY: //p')"
+panio serial set console -t winvm --device "$(utmctl attach winvm | sed -n 's/^PTTY: //p')"
 ```
 
 - **`--baud` is recorded but not applied.** A pty has no line rate; the
@@ -94,7 +94,7 @@ paniolo serial set console -t winvm --device "$(utmctl attach winvm | sed -n 's/
   in a loop:
 
   ```bash
-  for i in $(seq 120); do paniolo serial send winvm " "; sleep 1; done
+  for i in $(seq 120); do panio serial send winvm " "; sleep 1; done
   ```
 
 - **Input works in firmware only**: bootloader menus, the UEFI Shell, boot
@@ -109,7 +109,7 @@ translates `utmctl status` into `on`/`off`.
 ## Interactive mode
 
 ```bash
-paniolo serial connect [-i console] [target-machine]
+panio serial connect [-i console] [target-machine]
 ```
 
 Opens a foreground `tio` session. Exit with Ctrl+T Q. It conflicts with the
@@ -120,8 +120,8 @@ daemon.
 ## Daemon mode
 
 ```bash
-paniolo serial watch [target-machine]   # start serialcap daemon
-paniolo serial stop  [target-machine]   # stop it (on the target's host)
+panio serial watch [target-machine]   # start serialcap daemon
+panio serial stop  [target-machine]   # stop it (on the target's host)
 ```
 
 There is **one serialcap daemon per target**, owning all its interfaces, so
@@ -129,9 +129,9 @@ several targets can capture at once on one host. It prints its URL on start;
 the [dashboard](dashboard.md) shows it too.
 
 **Stale daemons.** A proven difference between the running and installed
-executable content shows as **stale** in `paniolo serial show` and
-`paniolo daemons`. `paniolo serial watch` restarts it automatically, or run
-`paniolo daemons restart --stale`. An identical reinstall, path change, or
+executable content shows as **stale** in `panio serial show` and
+`panio daemons`. `panio serial watch` restarts it automatically, or run
+`panio daemons restart --stale`. An identical reinstall, path change, or
 modification time change does not count as changed content.
 
 A successful content comparison reports **binary content matches installed**
@@ -139,7 +139,7 @@ when the bytes are equal, including after an identical reinstall.
 
 If executable content cannot be compared, the commands report **binary identity
 unknown** with the reason. Unknown identity never triggers automatic restart and
-is excluded from `--stale`; `paniolo daemons restart serialcap` still intentionally
+is excluded from `--stale`; `panio daemons restart serialcap` still intentionally
 restarts it. See [architecture](dev/architecture.md).
 
 **Untracked daemons.** A daemon whose discovery file was deleted keeps
@@ -147,10 +147,10 @@ running and holding the ports. On Linux, systemd's `/tmp` cleanup
 (`q /tmp 1777 root root 10d` on Debian) removes the file after ten idle days.
 
 - `serial show` reports `running, untracked (pid N)`.
-- `paniolo daemons` lists it under **Untracked daemons**.
+- `panio daemons` lists it under **Untracked daemons**.
 - `serial watch` and `serial stop` reap it (`SIGTERM`, then `SIGKILL`).
 
-paniolo matches it by the devices on its command line
+panio matches it by the devices on its command line
 (`--interface NAME=DEVICE@BAUD[:SENSE]`). See [video.md](video.md) for the
 `tmpfiles.d` drop-in that prevents this.
 
@@ -158,25 +158,25 @@ paniolo matches it by the devices on its command line
 
 ## Querying captured output
 
-`paniolo serial log` reads the capture log from disk, with no daemon round
+`panio serial log` reads the capture log from disk, with no daemon round
 trip. The target may be positional or `-t`; omit the target and `-i` when
 there is only one.
 
 ```bash
 # Tail the last 50 lines from the `console` interface
-paniolo serial log target-machine -i console --tail 50
+panio serial log target-machine -i console --tail 50
 
 # Only lines newer than a previously-seen sequence number (poll mode)
-paniolo serial log target-machine -i console --since 1840
+panio serial log target-machine -i console --since 1840
 
 # Specific sequence number range
-paniolo serial log target-machine -i console --from 1000 --to 1200
+panio serial log target-machine -i console --from 1000 --to 1200
 
 # Keep ANSI escape codes (stripped by default)
-paniolo serial log target-machine -i console --raw
+panio serial log target-machine -i console --raw
 
 # JSON Lines output (includes timestamp and sequence number)
-paniolo serial log target-machine -i console --json
+panio serial log target-machine -i console --json
 ```
 
 Each line has a sequence number (`seq`, stable across rotation) and a UTC
@@ -192,13 +192,13 @@ changing. When polling with `--since`, advance your cursor only past completed
 records, or use `--no-pending`.
 
 Each interface has its own log:
-`/tmp/paniolo-<uid>/serialcap/<target>/capture/<name>/serial.jsonl`.
+`/tmp/panio-<uid>/serialcap/<target>/capture/<name>/serial.jsonl`.
 
 ---
 
 ## Immutable receive evidence
 
-Use `paniolo serial evidence target-machine -i console` (MCP:
+Use `panio serial evidence target-machine -i console` (MCP:
 `serial_evidence`) when exact received bytes and their original times matter.
 This opt-in JSON representation reads the journal without opening the port,
 starting a daemon, sending input, or changing the existing line/pending view.
@@ -252,8 +252,8 @@ completeness matters. No automatic restart, reset or resend follows a fault.
 
 ## Sending input
 
-`paniolo serial send` writes a line through the **running daemon**, so capture
-continues. The daemon must be running (`paniolo serial watch`) and the
+`panio serial send` writes a line through the **running daemon**, so capture
+continues. The daemon must be running (`panio serial watch`) and the
 interface connected.
 
 With two positionals the first is the target (`serial send <target> <text>`).
@@ -261,10 +261,10 @@ With one, it is the text. `-t` also works.
 
 ```bash
 # Send a command (a carriage return is appended by default)
-paniolo serial send target-machine -i console "iochk --live-dangerously /block/000"
+panio serial send target-machine -i console "iochk --live-dangerously /block/000"
 
 # Send without the trailing carriage return
-paniolo serial send target-machine -i console --no-newline "partial"
+panio serial send target-machine -i console --no-newline "partial"
 ```
 
 Success means the driver accepted every byte, not that the target ran the
@@ -283,7 +283,7 @@ one byte every N ms. About 8 ms/byte is known-good at 115200 baud.
 
 ```bash
 # Drip one byte every 8 ms — slow but overflow-proof
-paniolo serial send -i console --pace-ms 8 "iochk --live-dangerously /block/000"
+panio serial send -i console --pace-ms 8 "iochk --live-dangerously /block/000"
 ```
 
 - A paced send of N bytes takes at least `(N - 1) * pace_ms` ms and blocks
@@ -301,24 +301,24 @@ This is `POST /input?interface=NAME[&pace_ms=N]` on the daemon (see
 
 ## Integration with the video dashboard
 
-`paniolo console` opens the hdmicap dashboard and starts both daemons if
+`panio console` opens the hdmicap dashboard and starts both daemons if
 needed. Its terminal connects to serialcap's WebSocket (`/stream`). A target
 with no serial channel gets video (and KVM input, with a hid channel) and no
 terminal.
 
 ```bash
-paniolo video watch [target-machine]    # hdmicap — serves the page
-paniolo serial watch [target-machine]   # serialcap — backs the terminal
-paniolo console [-i <interface>] # open in browser (auto-starts both)
+panio video watch [target-machine]    # hdmicap — serves the page
+panio serial watch [target-machine]   # serialcap — backs the terminal
+panio console [-i <interface>] # open in browser (auto-starts both)
 ```
 
 - **Scrollback.** On connect, serialcap replays up to 64 KB.
-- **Multiple interfaces.** One pane per interface. `paniolo console -i <name>`
+- **Multiple interfaces.** One pane per interface. `panio console -i <name>`
   pins one.
 - **Slow clients.** A lagging client loses its own oldest output, never the
   capture log or other clients. The gap is marked:
   `── serial client lagged, dropped N chunks [HH:MM:SS UTC] ──`.
-- **Authentication.** `paniolo console` passes serialcap's token in the
+- **Authentication.** `panio console` passes serialcap's token in the
   `?serialws=` URL. serialcap's CORS header allows only that loopback origin.
 
 See [dashboard.md](dashboard.md) for layout and URL parameters.
@@ -329,15 +329,15 @@ See [dashboard.md](dashboard.md) for layout and URL parameters.
 
 An FTDI adapter wired to the target's J2 power button header can press it by
 toggling DTR. This is **opt-in**: the interface needs `power_button = true`
-(`paniolo serial set <iface> --power-button`), or these commands error.
+(`panio serial set <iface> --power-button`), or these commands error.
 
 ```bash
-paniolo serial dtr [--ms 200] [-i console] [target-machine]   # pulse DTR
-paniolo serial reset [-i console] [target-machine]             # soft reset (200 ms)
+panio serial dtr [--ms 200] [-i console] [target-machine]   # pulse DTR
+panio serial reset [-i console] [target-machine]             # soft reset (200 ms)
 ```
 
 > **This is a hardware reset, not a console `reboot`.** To reboot from a
-> shell, use `paniolo serial send <target> "reboot"`.
+> shell, use `panio serial send <target> "reboot"`.
 
 **Errors.** A failed press returns an error, but may have physically pressed
 the button. Check the target before retrying.
@@ -346,7 +346,7 @@ the button. Check the target before retrying.
 and each reconnect), which the daemon cannot suppress. A `serial dtr` press
 reuses the open port, so it adds no extra pulse. This is unverified on real
 hardware: check with a scope or LED for one pulse, or watch `power_on` in
-`paniolo serial show`/`GET /status` settle once.
+`panio serial show`/`GET /status` settle once.
 
 See [power.md](power.md) for wiring, the power hooks
 (`cycle_cmd`/`on_cmd`/`off_cmd`/`state_cmd`), and a command reference.
@@ -357,13 +357,13 @@ See [power.md](power.md) for wiring, the power hooks
 
 | Purpose | Path |
 |---|---|
-| serialcap discovery | `/tmp/paniolo-<uid>/serialcap/<target>/daemon.json` (`{pid, port, token, interfaces:[...]}`; owner-only, it holds the token) |
-| serialcap advisory lock | `/tmp/paniolo-<uid>/serialcap/<target>/daemon.lock` |
-| serialcap stderr log | `/tmp/paniolo-<uid>/serialcap/<target>/daemon.log` (truncated on each start; shown on start timeout) |
-| Capture log (per interface) | `/tmp/paniolo-<uid>/serialcap/<target>/capture/<name>/serial.jsonl(.1..)` |
-| Pending (unterminated) line | `/tmp/paniolo-<uid>/serialcap/<target>/capture/<name>/pending.json` |
+| serialcap discovery | `/tmp/panio-<uid>/serialcap/<target>/daemon.json` (`{pid, port, token, interfaces:[...]}`; owner-only, it holds the token) |
+| serialcap advisory lock | `/tmp/panio-<uid>/serialcap/<target>/daemon.lock` |
+| serialcap stderr log | `/tmp/panio-<uid>/serialcap/<target>/daemon.log` (truncated on each start; shown on start timeout) |
+| Capture log (per interface) | `/tmp/panio-<uid>/serialcap/<target>/capture/<name>/serial.jsonl(.1..)` |
+| Pending (unterminated) line | `/tmp/panio-<uid>/serialcap/<target>/capture/<name>/pending.json` |
 
-The runtime base honors `$PANIOLO_RUNTIME_BASE` (default `/tmp`).
+The runtime base honors `$PANIO_RUNTIME_BASE` (default `/tmp`).
 
 ---
 
@@ -377,16 +377,16 @@ file (new on each start). Send it as `Authorization: Bearer <token>` or
 token gets 401; a foreign Host or Origin gets 403.
 
 ```bash
-d=/tmp/paniolo-$(id -u)/serialcap/target-machine/daemon.json
+d=/tmp/panio-$(id -u)/serialcap/target-machine/daemon.json
 curl -s -H "Authorization: Bearer $(jq -r .token "$d")" \
     "http://127.0.0.1:$(jq -r .port "$d")/status"
 ```
 
-A daemon from a paniolo older than the token accepts unauthenticated
-requests; `paniolo daemons restart serialcap` replaces it.
+A daemon from a panio older than the token accepts unauthenticated
+requests; `panio daemons restart serialcap` replaces it.
 
 `serialcap stop` uses `POST /stop` and never signals the PID. To stop an
-older daemon without that endpoint, run `paniolo daemons stop serialcap`.
+older daemon without that endpoint, run `panio daemons stop serialcap`.
 
 | Method | Path | Purpose |
 |---|---|---|
@@ -428,7 +428,7 @@ gets an `input refused: transaction in progress` marker; the socket stays open.
 
 ## Read-only health
 
-`paniolo serial status [target-machine] [-i console]` returns a JSON snapshot
+`panio serial status [target-machine] [-i console]` returns a JSON snapshot
 without opening a device, starting a daemon, or sending input. The MCP tool
 `serial_status` returns the same JSON.
 
@@ -444,7 +444,7 @@ without opening a device, starting a daemon, or sending input. The MCP tool
   is unknown. Disconnected interfaces have null active device and baud.
 - `last_rx_seq`, `last_rx_at_ms`, `last_rx_age_ms`, `rx_bytes`, and `tx_bytes`
   distinguish a connected but quiet port from receiving traffic. Counters
-  exclude paniolo's synthetic connection/button markers. A sequence is a
+  exclude panio's synthetic connection/button markers. A sequence is a
   received chunk, independent of the line log's sequence. Reconnect increments
   the connection generation; a new supervisor gets a new epoch and counters.
 - `capture_through_seq` and `capture_through_at_ms` report bytes processed by
@@ -466,7 +466,7 @@ in the [glossary](glossary.md). Save `health.epoch` and `health.last_rx_seq` fro
 is a different counter and must not be used here.
 
 ```bash
-paniolo serial wait target-machine -i console \
+panio serial wait target-machine -i console \
     --epoch capture-example --since 42 --pattern 'test complete' \
     --timeout-ms 30000 --max-bytes 65536 --max-output-bytes 8388608 \
     --include-pending --follow
@@ -536,7 +536,7 @@ transact` sends one command and returns its reply in one call, without
 opening the port and without stopping capture:
 
 ```bash
-paniolo serial transact -t target-machine -i console --until 'OK' -- 'version'
+panio serial transact -t target-machine -i console --until 'OK' -- 'version'
 ```
 
 It prints the same result JSON as [`serial wait`](#bounded-fresh-wait-and-follow)
@@ -574,5 +574,5 @@ arrive. The JSON is printed with exit 0 for any status, as for `serial wait`;
 an unknown interface, a stopped daemon, a busy interface or a failed write is a
 CLI error. MCP `serial_transact` maps to this command.
 
-A daemon started by a paniolo without this endpoint answers 404; replace it
-with `paniolo daemons restart serialcap`.
+A daemon started by a panio without this endpoint answers 404; replace it
+with `panio daemons restart serialcap`.

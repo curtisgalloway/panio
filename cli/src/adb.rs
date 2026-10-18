@@ -15,7 +15,7 @@
 //! adb transport for an Android target (DUT).
 //!
 //! The `[targets.X.adb]` channel names a device (`adb -s <serial>`) and the
-//! control host it is plugged into; paniolo shells out to that host's `adb`
+//! control host it is plugged into; panio shells out to that host's `adb`
 //! binary for console (`adb shell`), screen capture (`adb exec-out
 //! screencap`), and input injection (`adb shell input`). adb is a generic
 //! transport like SSH — not a device-specific helper — so it lives in core
@@ -44,7 +44,7 @@ pub fn argv(adb_cmd: Option<&str>, serial: Option<&str>, rest: &[String]) -> Vec
 /// Friendlier error when the adb binary itself can't be run.
 fn spawn_err(adb_cmd: Option<&str>, e: std::io::Error) -> anyhow::Error {
     if e.kind() == std::io::ErrorKind::NotFound {
-        crate::error::PanioloError::not_configured(format!(
+        crate::error::PanioError::not_configured(format!(
             "'{}' not found — install the Android platform-tools (adb) on this host",
             adb_cmd.unwrap_or(DEFAULT_ADB)
         ))

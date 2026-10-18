@@ -15,7 +15,7 @@ traps = [
   "must leave the `console` interface in place",
 ]
 reference = [
-  'paniolo serial rm bmc -t pico',
+  'panio serial rm bmc -t pico',
 ]
 seed = "pico_console_bmc.toml"
 

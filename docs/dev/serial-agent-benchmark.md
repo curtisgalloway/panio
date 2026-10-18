@@ -1,7 +1,7 @@
-# Serial agent benchmark — does paniolo beat YOLO and `fx serial`?
+# Serial agent benchmark — does panio beat YOLO and `fx serial`?
 
 A hardware-in-the-loop, head-to-head benchmark: when an AI coding agent has to
-drive a target's serial console during low-level bring-up, does **paniolo**
+drive a target's serial console during low-level bring-up, does **panio**
 produce better task outcomes than the alternatives the agent would otherwise
 reach for — improvising its own serial access ("YOLO"), or using the idiomatic
 ecosystem tool (`fx serial`)?
@@ -10,14 +10,14 @@ This is a different question from [`agent-evals.md`](agent-evals.md), and the tw
 are complementary:
 
 - **`agent-evals.md`** asks *"can a naive agent discover and correctly form
-  paniolo commands?"* — independent variable is the **discovery condition**
-  (Cold/Warm/Preloaded), no hardware, no comparison to non-paniolo approaches.
-- **This doc** asks *"does using paniolo yield better serial-task outcomes than
+  panio commands?"* — independent variable is the **discovery condition**
+  (Cold/Warm/Preloaded), no hardware, no comparison to non-panio approaches.
+- **This doc** asks *"does using panio yield better serial-task outcomes than
   the alternatives?"* — independent variable is the **approach** (YOLO /
-  `fx serial` / paniolo), on a **real board**, across **two agent harnesses**.
+  `fx serial` / panio), on a **real board**, across **two agent harnesses**.
 
 Because we are measuring the *value of the tool when used* — not whether the
-agent can find it — the paniolo arm here is run with paniolo guidance available
+agent can find it — the panio arm here is run with panio guidance available
 (the Warm/Preloaded end of the other doc's axis). Discoverability is the other
 suite's job; this one assumes each approach is in hand and asks which wins.
 
@@ -25,12 +25,12 @@ suite's job; this one assumes each approach is in hand and asks which wins.
 
 ## 1. The hypothesis
 
-paniolo is better for agents managing a serial connection because the agent does
+panio is better for agents managing a serial connection because the agent does
 not have to stand up one-off connections repeatedly, can inspect the *history* of
 serial output, and can still send and receive interactively. The claim
 decomposes into three legs of unequal strength:
 
-| Leg | Claim | paniolo mechanism | Strength |
+| Leg | Claim | panio mechanism | Strength |
 |---|---|---|---|
 | **L1 — persistence** | No repeated one-off connections; survives a flaky link | Per-target daemon owns the port exclusively, **reconnects on loss** | Strong |
 | **L2 — history** | Can look back at output that already streamed by | On-disk JSONL capture (`seq` + `ts_ms`), **recording since before the agent looked**; `serial log --from/--to/--since` | **Strongest** |
@@ -38,11 +38,11 @@ decomposes into three legs of unequal strength:
 
 L2 is strongest because the advantage is not "scrollback" — it is that the bytes
 which arrived *before the agent decided to connect* are already captured. L3 is
-weakest because paniolo's `send` is fire-and-forget (no request/response
+weakest because panio's `send` is fire-and-forget (no request/response
 correlation): the agent still sends-then-polls, which a disciplined improviser
-can replicate, and the send→poll round trip can even make paniolo **slower** on
+can replicate, and the send→poll round trip can even make panio **slower** on
 tight-timing tasks. A credible benchmark is built so L3 can tie or lose; a test
-that makes paniolo win everything proves only that it was rigged.
+that makes panio win everything proves only that it was rigged.
 
 ---
 
@@ -54,7 +54,7 @@ Three arms, a monotone capability ladder. Each rung answers one question.
 |---|---|---|
 | **A0 — YOLO** | a shell + the device path + baud, **no serial guidance** | Can the agent improvise adequate serial access from scratch? |
 | **A1 — `fx serial`** | the idiomatic Fuchsia tool, run *at its best* (always `--output-file`) | Does the purpose-built ecosystem tool beat improvising? |
-| **A2 — paniolo** | the `paniolo` CLI + daemon already watching + skill pullable | Does paniolo's persistent-capture architecture beat the idiomatic tool? |
+| **A2 — panio** | the `panio` CLI + daemon already watching + skill pullable | Does panio's persistent-capture architecture beat the idiomatic tool? |
 
 The A1→A2 delta is the real product claim. A1 is steel-manned: we always pass
 `--output-file`, because bare `fx serial` would be a strawman (see §9 for why
@@ -86,7 +86,7 @@ Two constraints make the real board tractable and fair:
 - **Nonce-injected ground truth.** A real boot log is not deterministic, so we do
   not grade on it. Each trial injects a unique per-trial **nonce** into the boot
   console output (a u-boot `echo`, or a kernel-cmdline print baked into the
-  netbooted boot image — paniolo already serves the boot artifacts). "Report the
+  netbooted boot image — panio already serves the boot artifacts). "Report the
   boot token" then has an exact, machine-checkable answer the agent cannot get
   from training data, while the surrounding serial behavior stays fully real.
 
@@ -95,7 +95,7 @@ Board reset and disruption are both **automated** (see §6):
 - **Reset between trials:** the pi5's power is a Zigbee plug via `zigplug`, so a
   clean power-cycle is one command.
 - **Programmable hot-unplug:** cutting and restoring the USB-serial adapter's
-  VBUS would be a scripted hot-unplug that exercises paniolo's reconnect loop and
+  VBUS would be a scripted hot-unplug that exercises panio's reconnect loop and
   kills a YOLO/`fx serial` reader, and a cycle between *every* trial would force
   clean re-enumeration so no leftover port handle leaks a spurious "resource
   busy" into the next arm. **(No shipped helper does per-port VBUS any more —
@@ -113,33 +113,33 @@ Two agent harnesses, run as a factor:
 | **Claude Code** | `claude -p <prompt>` (+ `--output-format stream-json` for the trace) | — |
 | **Antigravity** | `agy -p <prompt>` (`--print`) | `agy` 1.0.10, `/opt/homebrew/bin/agy` |
 
-Running both turns this into a **generalization test**: if paniolo helps in both,
+Running both turns this into a **generalization test**: if panio helps in both,
 the claim is robust; if only in one, the effect was partly harness-specific
 scaffolding.
 
 **Confound to state, not eliminate.** The two harnesses run different base models
 (Claude vs. Gemini-family), so "harness" is really "agent *product* = scaffolding
 + model," bundled. That is acceptable — the real-world question is "should I tell
-people to use paniolo regardless of which agent they run." Report results as
-"product X benefits more from paniolo," never "harness X is worse at serial."
+people to use panio regardless of which agent they run." Report results as
+"product X benefits more from panio," never "harness X is worse at serial."
 Record the exact `--model` per run for reproducibility.
 
 ### 4.1 Enforce arms by environment + context, never by tool gating
 
 The arms do **not** differ in *which tools the agent may call* — every arm needs
-shell/terminal access (to run pyserial, `socat`/`fx serial`, or `paniolo`). What
+shell/terminal access (to run pyserial, `socat`/`fx serial`, or `panio`). What
 differs is:
 
-- **Environment** — is `paniolo` on PATH with its daemon already watching? Is
+- **Environment** — is `panio` on PATH with its daemon already watching? Is
   `fx` configured against the device? Set this up in the shell *before* launching
   the agent.
-- **Context** — is paniolo's skill/memory/guidance present (A2) or absent
+- **Context** — is panio's skill/memory/guidance present (A2) or absent
   (A0/A1)?
 
 **PATH caveat (verified, 2026-08-20 pilot #2):** `agy`'s command shell
 re-sources the user's login profile, so a PATH prefix injected into `agy`'s own
 environment gets *re-shadowed* by profile entries (`/opt/homebrew/bin` won over
-an injected shim dir, and the subject silently ran a different `paniolo` than
+an injected shim dir, and the subject silently ran a different `panio` than
 intended). To pin which binary an arm sees, don't rely on an exported PATH —
 use a shim whose directory the profile itself puts first, or remove/rename the
 competing binary for the run, and have the harness log `which <tool>` per
@@ -157,19 +157,19 @@ permission prompts from hanging the headless run.
 ### 4.2 The clean-agent rule (contamination is the #1 threat)
 
 Same rule as [`agent-evals.md` §3.1](agent-evals.md): the A0/A1 arms are
-worthless if the agent already knows paniolo from its environment. The
-maintainer's own workstation — with the paniolo checkout, the user `CLAUDE.md`,
-and auto-memory that names paniolo and the bench hosts — is the *most*
+worthless if the agent already knows panio from its environment. The
+maintainer's own workstation — with the panio checkout, the user `CLAUDE.md`,
+and auto-memory that names panio and the bench hosts — is the *most*
 contaminated environment possible.
 
 - **Claude Code:** run with `--isolation home` (sandbox `HOME`, no user
-  `CLAUDE.md`/memory); fresh project dir that is **not** the paniolo checkout; no
+  `CLAUDE.md`/memory); fresh project dir that is **not** the panio checkout; no
   prior session history.
-- **Antigravity:** the mirror checks — no paniolo plugin enabled
-  (`agy plugin list`), no paniolo `AGENTS.md`/guidance inside any `--add-dir`
+- **Antigravity:** the mirror checks — no panio plugin enabled
+  (`agy plugin list`), no panio `AGENTS.md`/guidance inside any `--add-dir`
   workspace for the A0/A1 arms. **(To verify: exactly what ambient context `agy`
   auto-loads — workspace `AGENTS.md`? enabled plugins?)**
-- **Training-data leakage** caveat applies (paniolo is public): absolute A0
+- **Training-data leakage** caveat applies (panio is public): absolute A0
   numbers read with that caveat, but the **arm deltas** stay valid.
 
 ---
@@ -180,7 +180,7 @@ Each task isolates one mechanism, has a machine-checkable ground truth, and a
 **pre-registered** predicted outcome (committing predictions up front is what
 makes this a test rather than a demo).
 
-| Task | Mechanism | Ground truth | A0 YOLO | A1 `fx serial` | A2 paniolo |
+| Task | Mechanism | Ground truth | A0 YOLO | A1 `fx serial` | A2 panio |
 |---|---|---|---|---|---|
 | **T-pre — pre-arrival nonce** | L2 capture-before-look | nonce printed during a boot that predates the task | likely miss | **structurally cannot** (no capture before attach) | **win** (daemon already logged it) |
 | **T-async — delayed token** | L1/L2 continuous listen | token at boot + ~8 s, no prompt | miss if one-shot read | win *iff* attached in time | win |
@@ -203,9 +203,9 @@ for trial in cells (randomized arm order — see §8):
     zigplug off ; zigplug on              # clean board reset
     inject per-trial nonce into boot artifacts
     set up arm environment:
-        A0: shell + device path; NO paniolo, NO fx config, clean context
+        A0: shell + device path; NO panio, NO fx config, clean context
         A1: `fx` configured; always use `fx serial --output-file <log>`
-        A2: `paniolo serial watch <target>` already running; skill pullable
+        A2: `panio serial watch <target>` already running; skill pullable
     launch agent headless:
         claude -p  <task> --output-format stream-json  --dangerously-skip-permissions
         agy    -p  <task> --log-file <trace>           --dangerously-skip-permissions
@@ -225,7 +225,7 @@ Two harness-specific capture notes:
 - **Timeouts:** `agy --print-timeout` defaults to **5 min**. Set it generously
   and *uniformly* across arms/harnesses — a tight timeout differentially kills
   the *slower* arms (YOLO/`fx serial` must power-cycle and watch a full boot,
-  while paniolo answers from already-captured output), which would measure "the
+  while panio answers from already-captured output), which would measure "the
   harness gave up," not "the agent failed." Track wall-clock separately.
 
 ---
@@ -252,17 +252,17 @@ thrash as the headline; efficiency as secondary.
 ## 8. Trial structure & threats to validity
 
 - **N ≥ 5–8 per cell.** The diagnostic effects are near-binary (e.g. T-pre ~5/5
-  for paniolo vs. ~0/5 for `fx serial`); lean on **effect size**, not elegant
+  for panio vs. ~0/5 for `fx serial`); lean on **effect size**, not elegant
   p-values. Reserve power-worry for the one close comparison (A1 vs. A2 on
   T-scroll).
 - **Randomize arm order across trials.** A flaky cable that degrades over a
   session must not correlate with arm — otherwise resilience is confounded with
-  luck. (Randomizing also *handicaps* paniolo, since reconnect looks better on a
+  luck. (Randomizing also *handicaps* panio, since reconnect looks better on a
   worse cable, which keeps us honest.)
 - **Pre-register predictions** (§5, and §10) before running.
 - **Confounds already covered:** contamination (§4.2), harness=product+model
   (§4), timeout-as-killer (§6), training leakage (§4.2), send→poll latency as a
-  *predicted paniolo loss* on T-timer (§1, §5).
+  *predicted panio loss* on T-timer (§1, §5).
 
 ---
 
@@ -290,11 +290,11 @@ current implementation as of this writing — re-check against the tree under te
 - **It is a TUI, not a service.** Because socat attaches to the controlling
   terminal, an agent cannot "send a command, then query the log" as two discrete
   acts — it must allocate a pty, inject keystrokes into the live stream, parse
-  inline, and send Ctrl-O to detach. *That pty-wrangling is the agent pain paniolo
+  inline, and send Ctrl-O to detach. *That pty-wrangling is the agent pain panio
   removes.*
 
 Conclusion: `fx serial`, though purpose-built, was built for **a human at a
-terminal**, so it shares every weakness paniolo targets. `--output-file` is its
+terminal**, so it shares every weakness panio targets. `--output-file` is its
 single capture affordance and equals the dropped "documented-recipe" rung — hence
 A1 = `fx serial --output-file`, steel-manned.
 
@@ -321,10 +321,10 @@ A1 = `fx serial --output-file`, steel-manned.
 
 ## 10. Pre-registered predictions
 
-Committed before the first run. Paniolo is expected to **lose or tie** where the
+Committed before the first run. Panio is expected to **lose or tie** where the
 hypothesis is weak — that is the point.
 
-| Task | A0 YOLO | A1 `fx serial` | A2 paniolo | Decisive delta |
+| Task | A0 YOLO | A1 `fx serial` | A2 panio | Decisive delta |
 |---|---|---|---|---|
 | T-pre | fail | **fail** (structural) | **pass** | A1→A2 (L2) |
 | T-async | mostly fail | mixed | pass | A0→A2 (L1/L2) |
@@ -332,7 +332,7 @@ hypothesis is weak — that is the point.
 | T-drop | fail | fail | **pass** | A1→A2 (L1) |
 | T-timer | mixed | mixed | **tie / lose** | falsifier (L3) |
 
-If the results match this table, paniolo's win is **architectural** (L1+L2) and
+If the results match this table, panio's win is **architectural** (L1+L2) and
 honestly bounded (L3). If A2 also wins T-timer, re-examine for a harness
 artifact. If A1 ties A2 on T-pre/T-drop, the hypothesis's strong legs are wrong.
 
@@ -341,11 +341,11 @@ artifact. If A1 ties A2 on T-pre/T-drop, the hypothesis's strong legs are wrong.
 ## 11. Open items to verify before building
 
 1. **`agy` ambient context** — does it auto-load a workspace `AGENTS.md` or
-   enabled plugins that could smuggle paniolo knowledge into A0/A1?
+   enabled plugins that could smuggle panio knowledge into A0/A1?
    (`agy plugin list`; inspect `--add-dir` behavior.) *Partially answered
    (2026-08-20 pilot, agy 1.1.6): no plugins imported by default, and the only
    auto-loaded skills are agy's own builtins under
-   `~/.gemini/antigravity-cli/builtin/skills/` (no paniolo leak). Whether a
+   `~/.gemini/antigravity-cli/builtin/skills/` (no panio leak). Whether a
    workspace `AGENTS.md` is auto-loaded is still unverified (the pilot
    workspace was empty).*
 2. **`agy` trace format** — ~~confirm `--log-file` contains the tool-call

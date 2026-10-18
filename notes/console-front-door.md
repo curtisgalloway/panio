@@ -13,7 +13,7 @@ SPDX-License-Identifier: Apache-2.0
 
 ## The problem
 
-`paniolo console <remote-target>` is fragile to drive remotely because the ports
+`panio console <remote-target>` is fragile to drive remotely because the ports
 it forwards are **multiple** and **non-deterministic**. `remote_console`
 (`cli/src/main.rs`) starts the daemons on the control host, reads each one's
 **OS-assigned** port, opens a *separate* `ssh -L` forward per daemon (video,
@@ -109,7 +109,7 @@ from a laptop stays an SSH-tunnel concern, so no new auth surface is introduced
 
 ### Phase B — per-invocation front door (do first)
 
-`paniolo console <target>` binds the fixed local port, sets up the target's
+`panio console <target>` binds the fixed local port, sets up the target's
 tunnels (as it does now), runs the proxy in the **foreground**, and tears it all
 down on Ctrl-C. One target at a time; re-run per session.
 
@@ -123,7 +123,7 @@ it for one target in the foreground — so Phase C is a switch-flip, not a rewri
 
 ### Phase C — persistent console daemon (later)
 
-`paniolo consoled` (name TBD) listens on the fixed port long-lived, serves a
+`panio consoled` (name TBD) listens on the fixed port long-lived, serves a
 landing page listing every target in the lab, and **lazily** brings up
 tunnels/daemons the first time `/​<target>` is opened. Bookmark
 `http://localhost:<FIXED>/` once, forever; click any target; reconnect a tab

@@ -19,7 +19,7 @@ dpkg runs this script as `postinst configure <previously-configured-version>`,
 and that second argument is empty only on a first-time install (Debian Policy
 6.5). Before the fix the script printed the "upgrade complete" wording
 unconditionally, so a brand-new user was told to restart daemons that never
-existed and was never told to run `paniolo setup`.
+existed and was never told to run `panio setup`.
 
 Each case runs the real script as a subprocess with the arguments dpkg would
 pass, because the printed wording is the whole user-visible contract.
@@ -49,7 +49,7 @@ def test_fresh_install_is_told_to_run_setup():
     """`configure` with no previous version: a first-time installer."""
     r = run("configure")
     assert r.returncode == 0, r.stdout + r.stderr
-    assert "installed. Run 'paniolo setup'" in r.stdout
+    assert "installed. Run 'panio setup'" in r.stdout
     assert "upgrade" not in r.stdout
 
 
@@ -58,8 +58,8 @@ def test_upgrade_names_the_previous_version_and_daemon_restart():
     r = run("configure", "0.3.1")
     assert r.returncode == 0, r.stdout + r.stderr
     assert "upgrade from 0.3.1 complete" in r.stdout
-    assert "restart them with: paniolo daemons restart --stale" in r.stdout
-    assert "Run 'paniolo setup'" not in r.stdout
+    assert "restart them with: panio daemons restart --stale" in r.stdout
+    assert "Run 'panio setup'" not in r.stdout
 
 
 def test_other_dpkg_actions_print_nothing():

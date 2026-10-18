@@ -1,6 +1,6 @@
 # Netboot
 
-paniolo netboots a target over a direct USB-Ethernet cable, with its own DHCP,
+panio netboots a target over a direct USB-Ethernet cable, with its own DHCP,
 TFTP (the boot-ROM file protocol), and HTTP servers. No router, switch, or
 upstream DHCP server is involved.
 
@@ -32,26 +32,26 @@ networksetup -listallhardwareports
 
 ## Target configuration
 
-Config lives in the lab file (see [config-redesign.md](https://github.com/curtisgalloway/paniolo/blob/main/notes/config-redesign.md)),
+Config lives in the lab file (see [config-redesign.md](https://github.com/curtisgalloway/panio/blob/main/notes/config-redesign.md)),
 as a per-target `netboot` channel:
 
 ```bash
 # Create the target, then configure its netboot channel
-paniolo target add target-machine
-paniolo netboot set -t target-machine \
+panio target add target-machine
+panio netboot set -t target-machine \
     --interface en3 \
     --tftp-root ~/src/fuchsia/pxe/tftp-root
 
 # List candidate USB-Ethernet interfaces (primary NIC excluded)
-paniolo netboot devices
+panio netboot devices
 
 # Show all configured targets / a specific one
-paniolo target show
-paniolo target show target-machine
+panio target show
+panio target show target-machine
 
 # Remove the netboot channel, or the whole target
-paniolo netboot rm -t target-machine
-paniolo target rm target-machine
+panio netboot rm -t target-machine
+panio target rm target-machine
 ```
 
 netboot channel fields:
@@ -66,7 +66,7 @@ netboot channel fields:
 | `--content-type` | `application/octet-stream` | `Content-Type` for HTTP responses (UEFI treats octet-stream as an EFI application) |
 | `--host` | target default | Lab host the channel lives on |
 
-Power and DTR control live on the `power` channel (`paniolo power set …`, see
+Power and DTR control live on the `power` channel (`panio power set …`, see
 [power.md](power.md)).
 
 ---
@@ -74,8 +74,8 @@ Power and DTR control live on the `power` channel (`paniolo power set …`, see
 ## Starting and stopping
 
 ```bash
-paniolo netboot start [target-machine]
-paniolo netboot stop  [target-machine]
+panio netboot start [target-machine]
+panio netboot stop  [target-machine]
 ```
 
 **Naming the target.** Omit `[target-machine]` when only one target is
@@ -90,7 +90,7 @@ require `-t` and take no positional.
 `start` watches netbootd for about two seconds. If it exits (port in use,
 interface it cannot pin, bad client IP), `start` fails with the last 20 lines
 of its log (`netbootd exited with … during startup; last lines of
-~/.local/share/paniolo/<name>/netboot.log: …`) and writes no state file.
+~/.local/share/panio/<name>/netboot.log: …`) and writes no state file.
 
 **`stop`** sends SIGTERM (via `sudo kill` when the daemon is root's), waits up
 to 3 s, SIGKILLs a holdout and waits 2 s more, then clears the state file and
@@ -113,25 +113,25 @@ The default `192.168.99.1` is for the **first** link on a host. Every further
 link sets `--host-ip` in an unused /24 (`192.168.100.1`, `192.168.101.1`, …);
 the client lease follows.
 
-paniolo enforces this:
+panio enforces this:
 
 - **`netboot set` refuses** a link whose /24 another target already uses on a
   different interface of the same host, default included: `target 'pi4'
   netboot: host_ip 192.168.99.1 (the default, since none is set) puts eth4 in
   192.168.99.0/24, which target 'optiplex' already uses on eth3 of host
   'bench1'`. An existing clashing lab file still loads (so `netboot stop`
-  works); `paniolo doctor` reports it as `CONFLICT`.
+  works); `panio doctor` reports it as `CONFLICT`.
 - **`netboot start` and `netif mode link` refuse** when any *other* interface
   on the host holds that /24 now: `refusing to put 'eth4' in 192.168.99.0/24:
-  'eth3' already holds 192.168.99.1 on this host`. Release it (`paniolo netif
+  'eth3' already holds 192.168.99.1 on this host`. Release it (`panio netif
   mode off <target>`) or pick another subnet.
-- **`paniolo doctor` reports `MISMATCH`** when the interface holds IPv4
+- **`panio doctor` reports `MISMATCH`** when the interface holds IPv4
   addresses but not the effective host IP (a stale `netif mode link`, a
   hand-set address, an edit made while the daemon was down). Not a mismatch:
   no IPv4 at all (`netif mode off` or IPv6-only `mode ffx`), or the configured
   address alongside another. This applies to both local and remote checks;
   a successful empty address listing is not an unreachable host.
-  Fix with `paniolo netif mode link <target>` or
+  Fix with `panio netif mode link <target>` or
   `netboot start <target>`.
 - **`target show` and `netboot status` print the host IP**, marked `(default)`
   when unset.
@@ -144,7 +144,7 @@ its own adapter and /24. On macOS, listeners use `SO_REUSEPORT` (shared port
 binding) alongside `IP_BOUND_IF` (interface pinning). A process-held lock per
 interface rejects duplicate netbootd instances even when launched directly,
 and releases automatically on exit or crash. Its file under
-`/tmp/paniolo-netboot-interface-<index>.lock` deliberately remains after exit;
+`/tmp/panio-netboot-interface-<index>.lock` deliberately remains after exit;
 do not delete it while a daemon is running. Linux retains exclusive
 `SO_BINDTODEVICE` binds without port sharing. When upgrading from an older
 macOS daemon, stop it before starting multiple links: its sockets do not
@@ -198,11 +198,11 @@ reply socket to the interface IP only. Either way the reply socket binds to
 Without the reply pin, two links in the same `/24` send OACK and DATA out the
 wrong interface and the log repeats `no ACK for OACK`. **To verify:** put one
 target at `192.168.99.1/24` in [`netif mode
-link`](netif.md#testing-the-link-up-and-down), `paniolo netboot start` a target
+link`](netif.md#testing-the-link-up-and-down), `panio netboot start` a target
 on the *other* link, and PXE-boot it; the log should show `completed <file>`.
 
 **Just the link, no daemon.** To assign or release the host IP without serving
-anything, use [`paniolo netif mode link`](netif.md) and `paniolo netif mode
+anything, use [`panio netif mode link`](netif.md) and `panio netif mode
 off`. "Off" does not force the carrier down (Wake-on-LAN keeps it up). See
 [Link mode](netif.md#testing-the-link-up-and-down).
 
@@ -210,9 +210,9 @@ off`. "Off" does not force the carrier down (Wake-on-LAN keeps it up). See
 
 On macOS, netbootd sends raw frames through a `/dev/bpf` descriptor (BPF, the
 raw-frame kernel interface), needed for reliable delivery on Sequoia.
-`paniolo setup` (one sudo) installs a tiny **setuid-root** helper,
+`panio setup` (one sudo) installs a tiny **setuid-root** helper,
 `netbootd-bpf-helper`, that opens `/dev/bpf`, binds the interface, and hands
-the descriptor to the unprivileged `netbootd`. It is the only paniolo component
+the descriptor to the unprivileged `netbootd`. It is the only panio component
 that runs as root. If it is missing or not setuid, netbootd warns and falls
 back to the kernel send path, which is unreliable on macOS 15+.
 
@@ -233,9 +233,9 @@ A failed handoff is logged with the helper's message (`BPF handoff failed
 ## Status and logs
 
 ```bash
-paniolo netboot status [target-machine]      # running? interface? uptime?
-paniolo netboot logs   [target-machine]      # tail the combined DHCP + TFTP log
-paniolo netboot logs -f [target-machine]     # follow
+panio netboot status [target-machine]      # running? interface? uptime?
+panio netboot logs   [target-machine]      # tail the combined DHCP + TFTP log
+panio netboot logs -f [target-machine]     # follow
 ```
 
 ---
@@ -243,22 +243,22 @@ paniolo netboot logs -f [target-machine]     # follow
 ## Getting the TFTP root path
 
 ```bash
-paniolo netboot tftp-root [target-machine]
+panio netboot tftp-root [target-machine]
 ```
 
 Prints the bare path, for shell substitution:
 
 ```bash
-TFTP_ROOT=$(ssh control-mac "paniolo netboot tftp-root target-machine")
+TFTP_ROOT=$(ssh control-mac "panio netboot tftp-root target-machine")
 scp kernel_2712.img control-mac:"${TFTP_ROOT}/kernel_2712.img"
 ```
 
 An unset or empty `tftp_root` exits **3** (`not_configured`), with the target,
 netboot channel, and channel host in the JSON error context. `netboot start`
 and `netif mode netboot` reject the same missing configuration before touching
-the interface or starting a daemon. `paniolo doctor [target]` reports it as
+the interface or starting a daemon. `panio doctor [target]` reports it as
 `MISSING` and exits **1**; these checks never create a directory or edit the lab.
-Set the path explicitly with `paniolo netboot set -t <target> --tftp-root <dir>`.
+Set the path explicitly with `panio netboot set -t <target> --tftp-root <dir>`.
 
 ---
 
@@ -284,11 +284,11 @@ The TFTP root must contain at least `config.txt`, `bcm2712-rpi-5-b.dtb`, and
 only configure the boot program (NBP, network boot program):
 
 ```bash
-paniolo netboot set -t indiedroid \
+panio netboot set -t indiedroid \
     --interface en7 \
     --tftp-root ~/indiedroid/boot-root \
     --boot-file grubaa64.efi      # any UEFI NBP: grubaa64.efi, ipxe.efi, a UKI…
-paniolo netboot start indiedroid
+panio netboot start indiedroid
 ```
 
 **PXE (hardware-verified).** Pick **UEFI PXEv4** in the boot menu. A
@@ -300,7 +300,7 @@ returned"*). The log shows `RRQ <boot_file> … completed`.
 **HTTP Boot.** Pick **HTTP Boot (IPv4)**. An `HTTPClient` (arch 19 = ARM64
 UEFI HTTP) gets the `HTTPClient` echo and an
 `http://<host_ip>[:<http_port>]/<boot_file>` URL in option 67.
-`paniolo netboot logs -f indiedroid` shows the `DISCOVER` (carrying
+`panio netboot logs -f indiedroid` shows the `DISCOVER` (carrying
 `HTTPClient:Arch:00019`), the offer, then `HEAD` + `GET /grubaa64.efi`. HTTP
 Boot uses ordinary kernel TCP: no `/dev/bpf`, setuid helper, or static ARP
 entry.
@@ -311,7 +311,7 @@ entry.
 > Indiedroid Nova) **use PXE**.
 
 **IPv6 and HTTPS are not supported.** See
-[`notes/uefi-http-boot-design.md`](https://github.com/curtisgalloway/paniolo/blob/main/notes/uefi-http-boot-design.md)
+[`notes/uefi-http-boot-design.md`](https://github.com/curtisgalloway/panio/blob/main/notes/uefi-http-boot-design.md)
 for the design and IPv6 future work.
 
 ---
@@ -364,11 +364,11 @@ link, stop and start netboot.
 - serves at most 64 connections at once;
 - sanitizes request names before logging them.
 
-Both log to `~/.local/share/paniolo/<name>/netboot.log`.
+Both log to `~/.local/share/panio/<name>/netboot.log`.
 
 > **Switching to ffx-over-network?** With NET-first boot order, a running
 > netboot makes the next power-cycle TFTP-boot instead of the SD card. Use
-> [`paniolo netif mode ffx`](netif.md) to stop netboot and ready the host IPv6
+> [`panio netif mode ffx`](netif.md) to stop netboot and ready the host IPv6
 > side in one step.
 
 ---
@@ -377,8 +377,8 @@ Both log to `~/.local/share/paniolo/<name>/netboot.log`.
 
 | Purpose | Path |
 |---|---|
-| Daemon state (netbootd PID, uptime) | `~/.local/share/paniolo/<name>/netboot.json` |
-| Combined log | `~/.local/share/paniolo/<name>/netboot.log` |
+| Daemon state (netbootd PID, uptime) | `~/.local/share/panio/<name>/netboot.json` |
+| Combined log | `~/.local/share/panio/<name>/netboot.log` |
 
 ---
 

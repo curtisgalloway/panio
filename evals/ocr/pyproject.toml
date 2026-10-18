@@ -2,9 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 
 [project]
-name = "paniolo-ocr-bench"
+name = "panio-ocr-bench"
 version = "0.1.0"
-description = "Scores paniolo's OCR helpers against real dongle captures"
+description = "Scores panio's OCR helpers against real dongle captures"
 requires-python = ">=3.11"
 dependencies = [
     "jiwer>=3.0",
@@ -13,7 +13,7 @@ dependencies = [
     "psutil>=5.9",
 ]
 
-# RapidOCR is a *candidate* engine, not one paniolo ships, so it is optional:
+# RapidOCR is a *candidate* engine, not one panio ships, so it is optional:
 # the harness must run on a machine that only has the installed helpers. Install
 # with `uv sync --extra candidates` when evaluating it.
 #

@@ -16,7 +16,7 @@ limitations under the License.
 
 # OCR benchmark
 
-Scores paniolo's OCR helpers against real dongle captures, so the production
+Scores panio's OCR helpers against real dongle captures, so the production
 config per screen type is chosen from numbers rather than impressions.
 
 ```sh
@@ -30,17 +30,17 @@ Results land in `results/` (gitignored): `raw.csv`, one row per
 (image × engine × variant), and `summary.md`, which is meant to be sufficient on
 its own to pick a config.
 
-## The adapter is paniolo's OCR envelope
+## The adapter is panio's OCR envelope
 
 Engines are driven through the **v1 envelope** (`docs/dev/ocr.md`) rather than a
 Python protocol invented here. That is a departure from the plan this harness
 was specced from, and the reason is that the envelope arrived in between: it
 already carries text, per-line confidence, boxes and engine identity in one
-shape, and it is what paniolo actually runs. Scoring Python library calls would
+shape, and it is what panio actually runs. Scoring Python library calls would
 measure something adjacent to what ships.
 
 So `HelperEngine` runs an installed helper (`visionocr`, `winocr`, `linuxocr`)
-exactly as hdmicap does — `--json`, PNG on stdin. A candidate paniolo does not
+exactly as hdmicap does — `--json`, PNG on stdin. A candidate panio does not
 ship yet, like RapidOCR/PP-OCRv5, implements the same envelope in Python
 (`RapidOcrEngine`). A candidate that wins can then be promoted to a helper
 binary without changing anything that scores it.
@@ -128,7 +128,7 @@ that smooths glyphs together fails and where a diff-based agent check would too.
 ## A question this harness cannot answer
 
 `pipeline_luma_direct` and `pipeline_rgb_roundtrip` exist to test whether
-paniolo's capture path costs OCR quality: on macOS and Windows a frame is NV12,
+panio's capture path costs OCR quality: on macOS and Windows a frame is NV12,
 so the Y plane *is* the greyscale image OCR wants, yet `/ocr` converts to RGB,
 encodes PNG, and the helper decodes and re-greyscales it.
 

@@ -53,8 +53,8 @@ const LOG_TAIL_LINES: usize = 20;
 
 fn resolve_netbootd() -> Result<std::path::PathBuf> {
     Ok(daemons::find_binary("netbootd").ok_or_else(|| {
-        crate::error::PanioloError::not_configured(
-            "netbootd not found — build and install it with `paniolo setup`",
+        crate::error::PanioError::not_configured(
+            "netbootd not found — build and install it with `panio setup`",
         )
     })?)
 }
@@ -113,7 +113,7 @@ pub fn start(
         bail!("netboot already running for '{target}'");
     }
     if tftp_root.is_empty() {
-        bail!("no tftp_root configured (paniolo netboot set -t {target} --tftp-root <path>)");
+        bail!("no tftp_root configured (panio netboot set -t {target} --tftp-root <path>)");
     }
     if !Path::new(tftp_root).exists() {
         bail!("TFTP root does not exist: {tftp_root}");
@@ -129,7 +129,7 @@ pub fn start(
     if let Some((other, st)) = interface_conflict(target, interface, &state::running_netboots()) {
         bail!(
             "netboot for '{other}' is already running on {interface} (pid {}); one netboot \
-             per interface — stop it first (paniolo netboot stop {other}) or give \
+             per interface — stop it first (panio netboot stop {other}) or give \
              '{target}' its own adapter",
             st.dhcp_pid
         );

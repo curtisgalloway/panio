@@ -6,7 +6,7 @@ SPDX-License-Identifier: Apache-2.0
 # Control-host seed files
 
 cloud-init files that turn a blank Raspberry Pi into an **agent-reachable
-paniolo control host** with one human action: flash a card, plug it in, power
+panio control host** with one human action: flash a card, plug it in, power
 on. Raspberry Pi OS reads `user-data`, `meta-data` and `network-config` from the
 boot partition on first boot.
 
@@ -27,7 +27,7 @@ The seed:
 
 - creates the operator account with the right groups
 - authorizes one SSH key and disables password login
-- installs the paniolo `.deb` and the packages it wants
+- installs the panio `.deb` and the packages it wants
 - brings up the wired uplink on DHCP
 
 It carries no lab configuration, target wiring, daemon state, or credential
@@ -36,7 +36,7 @@ SSH.
 
 ## Using them
 
-**Follow `paniolo skill control-host`** for the exact macOS and Linux commands:
+**Follow `panio skill control-host`** for the exact macOS and Linux commands:
 download the image, identify the right removable device before writing to it,
 flash, mount, install these files, render them, and enroll the result.
 
@@ -63,7 +63,7 @@ space.
 | `<user>` | operator account name |
 | `<full-name>` | GECOS field, cosmetic |
 | `<ssh-public-key>` | one full public key line, e.g. `ssh-ed25519 AAAA… you@dev` |
-| `<version>` | paniolo release to install, without the `v` — e.g. `0.2.0`, appearing twice on the same line |
+| `<version>` | panio release to install, without the `v` — e.g. `0.2.0`, appearing twice on the same line |
 
 ## Gotchas these files encode
 

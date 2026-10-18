@@ -16,14 +16,14 @@
 //! the power hooks.
 //!
 //! An action is an opaque hook command for a control that is not power: a
-//! reset line, a boot strap, a recovery button combination. paniolo runs it
+//! reset line, a boot strap, a recovery button combination. panio runs it
 //! under the power-hook contract (`sh -c`, helper dirs on PATH, the helper
 //! state/runtime dirs) and defines no semantics for it.
 //!
 //! Action and power hooks for one target often talk to the same exclusive
 //! device (a board-control MCU's serial port), so each one runs holding a
-//! per-target lock file. A hook that itself calls back into paniolo for the
-//! same target (an action script running `paniolo power-state`) must not wait
+//! per-target lock file. A hook that itself calls back into panio for the
+//! same target (an action script running `panio power-state`) must not wait
 //! on the lock its parent holds: the holder exports [`LOCK_HELD_ENV`], and a
 //! process that sees its own target there skips the lock.
 
@@ -36,7 +36,7 @@ use crate::{daemons, error, model, platform};
 
 /// Set, in a hook's environment, to the target whose hook lock the parent
 /// holds.
-pub const LOCK_HELD_ENV: &str = "PANIOLO_HOOK_LOCK";
+pub const LOCK_HELD_ENV: &str = "PANIO_HOOK_LOCK";
 
 /// How long a hook waits for another hook on the same target to finish. A
 /// power cycle can legitimately take tens of seconds.
@@ -52,7 +52,7 @@ pub struct HookLock {
 }
 
 impl HookLock {
-    /// The env pair a hook run under this lock gets, so a nested paniolo
+    /// The env pair a hook run under this lock gets, so a nested panio
     /// call for the same target does not wait on it.
     pub fn env(&self) -> (&'static str, &str) {
         (LOCK_HELD_ENV, &self.target)
@@ -89,7 +89,7 @@ pub fn hook_lock(target: &str, wait: Duration) -> Result<HookLock> {
                 std::thread::sleep(LOCK_POLL);
             }
             Err(std::fs::TryLockError::WouldBlock) => {
-                return Err(error::PanioloError::new(
+                return Err(error::PanioError::new(
                     error::Kind::Timeout,
                     format!(
                         "another power or action hook for '{target}' is still running after {} s",
@@ -118,18 +118,18 @@ pub fn power_refusal(
     action: &str,
     requires: &str,
     is_on: bool,
-) -> Option<error::PanioloError> {
+) -> Option<error::PanioError> {
     let wanted_on = requires == "on";
     if wanted_on == is_on {
         return None;
     }
     let now = if is_on { "on" } else { "off" };
     Some(
-        error::PanioloError::new(
+        error::PanioError::new(
             error::Kind::Usage,
             format!(
                 "action '{action}' requires power {requires}, but '{target}' is {now} \
-                 (paniolo power {requires} {target}, then retry)"
+                 (panio power {requires} {target}, then retry)"
             ),
         )
         .target(target)
@@ -149,7 +149,7 @@ pub fn find<'a>(lab: &'a model::Lab, target: &str, name: &str) -> Result<&'a mod
             target,
             "actions",
             format!(
-                "target '{target}' has no actions (paniolo action set -t {target} <name> --cmd ...)"
+                "target '{target}' has no actions (panio action set -t {target} <name> --cmd ...)"
             ),
         )
     })?;
@@ -230,22 +230,22 @@ mod tests {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let base = tempfile::tempdir().unwrap();
-        let prev = std::env::var_os("PANIOLO_RUNTIME_BASE");
+        let prev = std::env::var_os("PANIO_RUNTIME_BASE");
         // Safe: serialized by RUNTIME_BASE_LOCK; restored below.
-        unsafe { std::env::set_var("PANIOLO_RUNTIME_BASE", base.path()) };
+        unsafe { std::env::set_var("PANIO_RUNTIME_BASE", base.path()) };
         let target = "hook-lock-test";
         let first = hook_lock(target, Duration::ZERO).unwrap();
         let t0 = Instant::now();
         let second = hook_lock(target, Duration::from_millis(300));
         let e = second.err().expect("second taker must not get the lock");
         assert!(t0.elapsed() >= Duration::from_millis(300));
-        let pe = e.downcast_ref::<error::PanioloError>().unwrap();
+        let pe = e.downcast_ref::<error::PanioError>().unwrap();
         assert_eq!(pe.kind, error::Kind::Timeout);
         drop(first);
         let third = hook_lock(target, Duration::ZERO);
         match prev {
-            Some(p) => unsafe { std::env::set_var("PANIOLO_RUNTIME_BASE", p) },
-            None => unsafe { std::env::remove_var("PANIOLO_RUNTIME_BASE") },
+            Some(p) => unsafe { std::env::set_var("PANIO_RUNTIME_BASE", p) },
+            None => unsafe { std::env::remove_var("PANIO_RUNTIME_BASE") },
         }
         assert!(third.is_ok());
     }

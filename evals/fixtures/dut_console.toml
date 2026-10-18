@@ -7,5 +7,5 @@ baud = 115200
 # DTR is wired to the J2 power-button header on this interface, so `serial dtr`
 # / `serial reset` may drive it (the s9 scenario). DTR control is opt-in.
 power_button = true
-# paniolo lab — managed by the `paniolo` CLI; hand-edits are preserved
+# panio lab — managed by the `panio` CLI; hand-edits are preserved
 

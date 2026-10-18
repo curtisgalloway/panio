@@ -13,14 +13,14 @@
 # limitations under the License.
 
 [package]
-name = "paniolo"
+name = "panio"
 version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
 description = "Agent-controlled target machine wrangler — distributed bring-up control over SSH"
 
 [[bin]]
-name = "paniolo"
+name = "panio"
 path = "src/main.rs"
 
 [dependencies]

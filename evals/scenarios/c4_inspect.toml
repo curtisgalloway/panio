@@ -6,14 +6,14 @@ core = false
 conditions = ["cold", "warm", "preloaded"]
 capabilities = ["config"]
 goal = """
-What targets are configured in paniolo on this machine, and what hardware
+What targets are configured in panio on this machine, and what hardware
 (network, serial, power, etc.) does each one have?
 """
 traps = [
   "baseline inspection-discovery: find `config show` / `target show`",
 ]
 reference = [
-  'paniolo config show',
+  'panio config show',
 ]
 seed = "two_targets.toml"
 

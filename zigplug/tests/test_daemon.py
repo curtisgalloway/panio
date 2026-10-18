@@ -46,8 +46,8 @@ TOKEN = "test-token-not-a-secret"
 
 @pytest.fixture
 def runtime_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Point discovery at a private directory (the PANIOLO_RUNTIME_DIR hook)."""
-    monkeypatch.setenv("PANIOLO_RUNTIME_DIR", str(tmp_path))
+    """Point discovery at a private directory (the PANIO_RUNTIME_DIR hook)."""
+    monkeypatch.setenv("PANIO_RUNTIME_DIR", str(tmp_path))
     return tmp_path
 
 

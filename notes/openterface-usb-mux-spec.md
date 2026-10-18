@@ -17,7 +17,7 @@ SPDX-License-Identifier: Apache-2.0
 >
 > **Provenance.** This is a clean-room report. A separate investigator context
 > read the vendor host applications and returned facts and mechanism prose
-> only; no vendor source, identifier, or code structure crossed into paniolo's
+> only; no vendor source, identifier, or code structure crossed into panio's
 > implementation context, and the implementation was written from this document
 > rather than from the applications. The vendor trees are AGPL-3.0 except
 > `Openterface_Core`, which carries **no licence at all** and was treated as
@@ -185,7 +185,7 @@ Notes on the above:
 
 - The 100 ms settle is the only post-switch delay anywhere; nothing waits for USB re-enumeration of
   the card reader. Since the mux flip physically detaches and reattaches a mass-storage device,
-  **paniolo will almost certainly need a longer, enumeration-aware wait than 100 ms**, and should
+  **panio will almost certainly need a longer, enumeration-aware wait than 100 ms**, and should
   wait on the block device appearing/disappearing rather than on a fixed delay.
 - **There is no retry logic on the switch command in any tree.** A timeout is surfaced as a failure
   and, in the macOS tree, reverts the UI toggle to the previously-known position. It does not resend.
@@ -221,13 +221,13 @@ from payload offset 3 of the reply (equivalently, the ninth byte of the whole fr
 is a redirect, not a verdict. The vendor's own comment on that branch names a different offset than
 the code uses, so the offset is worth confirming against a real reply before you rely on it.
 
-**Recommendation for paniolo's "unsupported" reporting:** gate on the serial port's VID/PID
+**Recommendation for panio's "unsupported" reporting:** gate on the serial port's VID/PID
 (`1A86:FE0C`) as the primary signal — that is what the shipping desktop app does, it needs no
 traffic, and it cannot be confused by the version-byte redirect. Optionally *confirm* by sending the
 query frame and requiring a well-formed `0x97` reply; a device that does not implement `0x17`
 answers nothing (there is no negative ack for an unknown opcode in this protocol), so a timeout on
 the query is a clean, positive "unsupported" signal. Do **not** build the version-byte table into
-paniolo without hardware confirmation — it is macOS-only, it is derived from "observed chip
+panio without hardware confirmation — it is macOS-only, it is derived from "observed chip
 versions" by the vendor's own admission, and it would misclassify your unit if the redirect step
 were omitted.
 
@@ -252,7 +252,7 @@ were omitted.
   `[source-observed]`. Timings on that path: RTS asserted 4 s → deasserted → 0.5 s → port closed →
   2 s → port reopened (~6.5 s end to end) `[source-observed] — re-derive on hardware`.
 
-  **Implication for paniolo:** many serial stacks assert RTS and/or DTR on open by default. On this
+  **Implication for panio:** many serial stacks assert RTS and/or DTR on open by default. On this
   device that is not cosmetic. Explicitly deassert both, or explicitly manage them, when opening the
   port. Whether a *brief* assertion at open is harmless (the vendor holds it 4 s deliberately) is
   **not established** — worth one careful hardware test before shipping.
@@ -340,12 +340,12 @@ consistent with the vendor's own documentation that the slide is monitored, not 
 register the write targets. There is no separate status register `[source-observed]`.
 
 **Ack.** None. The write is fire-and-forget at the HID layer; success is only "the feature report
-was accepted by the OS". The vendor does not read back to verify after a set. If paniolo wants
+was accepted by the OS". The vendor does not read back to verify after a set. If panio wants
 certainty, read `0xDF01` back yourself and compare.
 
 **Transaction serialisation.** Both trees hold a mutex/guard across the send-then-get pair for a
 read, because a concurrent reader on the same interface can slip its own command between your send
-and your get and hand you *its* answer `[source-observed]`. If paniolo ever polls this interface
+and your get and hand you *its* answer `[source-observed]`. If panio ever polls this interface
 from more than one place, that hazard is real and the vendor hit it.
 
 ### B.4. One abstraction, two backends — yes, and here is the discriminator
@@ -464,7 +464,7 @@ XDATA access opcodes: read `0xB5`, write `0xB6`, address big-endian `[source-obs
     field). Use 115200.
 11. **Shared-interface race on the MS2109 config interface**: a read is send-then-get and is not
     atomic. Serialise all register access through one lock.
-12. **The Qt tree does not enforce reply checksums** (computes, logs, proceeds). If paniolo enforces
+12. **The Qt tree does not enforce reply checksums** (computes, logs, proceeds). If panio enforces
     them and sees failures, that is a difference in strictness, not necessarily a bug in your framing.
 
 ### What I could not establish (do not guess — capture instead)

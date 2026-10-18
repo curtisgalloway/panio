@@ -14,7 +14,7 @@
 
 //! A network capture backend: an RFB (VNC) client.
 //!
-//! RFB is paniolo's common format for network video sources. The first
+//! RFB is panio's common format for network video sources. The first
 //! consumer is a hid helper daemon that serves RFB over a WebSocket at
 //! `GET /rfb`; plain TCP servers (AMT KVM, VMs, BMCs) come next, which is why
 //! the transport is abstracted away from the protocol.

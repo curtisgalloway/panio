@@ -56,7 +56,7 @@ EXEMPT=""
 # contents) is deliberately not wired up yet, one per line as "name: reason".
 # Keep this honest: a module listed here builds green in CI and never reaches
 # a release user until the reason is resolved.
-GO_RELEASE_EXEMPT="jetkvm: release packaging is milestone 1b (a Go cross-build step in release.yml, nfpm contents, the Homebrew keg); until then it ships only via 'paniolo setup' from a source clone"
+GO_RELEASE_EXEMPT="jetkvm: release packaging is milestone 1b (a Go cross-build step in release.yml, nfpm contents, the Homebrew keg); until then it ships only via 'panio setup' from a source clone"
 
 if [ ! -f "$CI" ]; then
   echo "FATAL: $CI not found" >&2
@@ -178,7 +178,7 @@ fi
 if [ -n "$missing_go_setup" ]; then
   echo >&2
   echo "FAIL: cli/src/setup.rs GO_HELPERS omits Go module(s):$missing_go_setup" >&2
-  echo "Add it so 'paniolo setup' builds the helper from a source clone." >&2
+  echo "Add it so 'panio setup' builds the helper from a source clone." >&2
   rc=1
 fi
 if [ -n "$missing" ]; then
@@ -211,7 +211,7 @@ fi
 if [ -n "$missing_setup" ]; then
   echo >&2
   echo "FAIL: cli/src/setup.rs HELPER_CRATES omits:$missing_setup" >&2
-  echo "Add it so 'paniolo setup' installs the helper from a source clone." >&2
+  echo "Add it so 'panio setup' installs the helper from a source clone." >&2
   rc=1
 fi
 [ "$rc" = "0" ] && echo "All crates covered by CI, release packaging, and setup."

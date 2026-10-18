@@ -507,7 +507,7 @@ fn is_pty_path(device: &str) -> bool {
 ///
 /// macOS applies a serial port's line rate with the `IOSSIOSPEED` ioctl, which
 /// pseudo-terminals do not implement: the open fails outright with `ENOTTY`
-/// ("Not a typewriter"), so before this paniolo could not attach to a VM
+/// ("Not a typewriter"), so before this panio could not attach to a VM
 /// console at all. The `serialport` crate skips that ioctl when the requested
 /// rate is 0, which is its documented way to open a pty — and a pty has no line
 /// rate to set in the first place, so nothing is lost by not setting one.
@@ -1640,7 +1640,7 @@ pub(crate) mod tests {
     }
 
     /// The regression this whole path exists for: before `open_baud`, this open
-    /// failed on macOS with ENOTTY ("Not a typewriter") and paniolo could not
+    /// failed on macOS with ENOTTY ("Not a typewriter") and panio could not
     /// attach to a VM console at all.
     #[cfg(unix)]
     #[tokio::test]

@@ -14,8 +14,8 @@
 
 //! The lab model: one git-tracked file describing all hosts and targets.
 //!
-//! A *lab* is a single TOML file (default `~/.config/paniolo/lab.toml`, override
-//! with `--lab` / `$PANIOLO_LAB`) that declares every control host paniolo
+//! A *lab* is a single TOML file (default `~/.config/panio/lab.toml`, override
+//! with `--lab` / `$PANIO_LAB`) that declares every control host panio
 //! reaches over SSH and every target, with each channel of a target's hardware
 //! bound to a host (its own `host`, else the target's `host`, else `local`).
 //!
@@ -97,8 +97,8 @@ fn lab_err<T>(msg: impl Into<String>) -> Result<T, LabError> {
 
 /// What a target, host, or serial interface name may look like. Names become
 /// path components (`<runtime-base>/serialcap/<target>/`,
-/// `~/.local/share/paniolo/<target>/`), daemon query values
-/// (`?interface=<name>`), and positional arguments to a re-exec'd `paniolo`
+/// `~/.local/share/panio/<target>/`), daemon query values
+/// (`?interface=<name>`), and positional arguments to a re-exec'd `panio`
 /// on a control host, so they are confined to what survives all three
 /// unquoted — and a leading `-` is refused because that positional would be
 /// read as an option.
@@ -146,11 +146,11 @@ pub struct Host {
     pub hostname: Option<String>,
     pub identity: Option<String>,
     pub control_path: Option<String>,
-    pub paniolo_cmd: Option<String>,
-    /// Plugin roots for this host (`PANIOLO_PLUGIN_PATH` syntax, in the
+    pub panio_cmd: Option<String>,
+    /// Plugin roots for this host (`PANIO_PLUGIN_PATH` syntax, in the
     /// host's own form: `:`-separated on Unix, `;` on Windows). Set on the
-    /// remote paniolo whenever a command is dispatched here, via
-    /// `--plugin-path` ([`Host::paniolo_argv`]); unset leaves the host's own
+    /// remote panio whenever a command is dispatched here, via
+    /// `--plugin-path` ([`Host::panio_argv`]); unset leaves the host's own
     /// environment in charge. Not applied when this host is the local one.
     pub plugin_path: Option<String>,
 }
@@ -170,20 +170,20 @@ impl Host {
         }
     }
 
-    /// How to invoke paniolo on this host (bare `paniolo` unless pinned).
-    pub fn paniolo(&self) -> String {
-        self.paniolo_cmd
+    /// How to invoke panio on this host (bare `panio` unless pinned).
+    pub fn panio(&self) -> String {
+        self.panio_cmd
             .clone()
-            .unwrap_or_else(|| "paniolo".to_string())
+            .unwrap_or_else(|| "panio".to_string())
     }
 
-    /// The leading argv for a paniolo re-exec on this host: [`Host::paniolo`],
+    /// The leading argv for a panio re-exec on this host: [`Host::panio`],
     /// then `--plugin-path=<plugin_path>` when the host has one. Every remote
-    /// paniolo invocation starts here, so the host's plugin roots reach it
+    /// panio invocation starts here, so the host's plugin roots reach it
     /// whichever transport carries the command (interactive included). The
     /// `=` form keeps any value a value, even one that begins with `-`.
-    pub fn paniolo_argv(&self) -> Vec<String> {
-        let mut argv = vec![self.paniolo()];
+    pub fn panio_argv(&self) -> Vec<String> {
+        let mut argv = vec![self.panio()];
         if let Some(p) = &self.plugin_path {
             argv.push(format!("--plugin-path={p}"));
         }
@@ -272,7 +272,7 @@ pub struct PowerChannel {
     pub state_cmd: Option<String>,
     pub serial_interface: Option<String>,
     pub host: Option<String>,
-    /// Opt-in (#304): `paniolo doctor` also runs the hook program's own
+    /// Opt-in (#304): `panio doctor` also runs the hook program's own
     /// read-only `doctor --json` check (docs/dev/adding-power-helpers.md),
     /// for the default hooks and every named level's.
     #[serde(default)]
@@ -392,8 +392,8 @@ pub struct VideoChannel {
 }
 
 /// USB HID input injection: an opaque helper command (e.g. `hidrig -d <uart>`)
-/// that `paniolo hid send` appends protocol arguments to — the device-specific
-/// tool lives outside paniolo, like the power hooks.
+/// that `panio hid send` appends protocol arguments to — the device-specific
+/// tool lives outside panio, like the power hooks.
 #[derive(Debug, Default, Clone, Deserialize)]
 pub struct HidChannel {
     pub cmd: Option<String>,
@@ -401,7 +401,7 @@ pub struct HidChannel {
     /// Fixed port for the hid daemon (`<cmd> serve --port N`). Unset or 0 =
     /// OS-assigned.
     pub port: Option<u16>,
-    /// Opt-in (#304): `paniolo doctor` also runs `<cmd> doctor --json`.
+    /// Opt-in (#304): `panio doctor` also runs `<cmd> doctor --json`.
     #[serde(default)]
     pub doctor: bool,
 }
@@ -409,18 +409,18 @@ pub struct HidChannel {
 /// adb transport to an Android target (DUT). The device is named by its
 /// `adb -s <serial>` id (omit for the sole attached device); `adb` overrides
 /// the binary. Like SSH this is a generic transport, not a device-specific
-/// helper, so `paniolo adb …` shells out to it directly on the bound host.
+/// helper, so `panio adb …` shells out to it directly on the bound host.
 /// A shared USB device that a KVM can route to either side — the Openterface
 /// KVM-Go's onboard microSD reader, or the Mini-KVM's switchable USB-A port.
-/// Like `hid`, the device-specific tool lives outside paniolo in an opaque
-/// helper command; unlike `hid send`, paniolo appends a *fixed* verb rather
+/// Like `hid`, the device-specific tool lives outside panio in an opaque
+/// helper command; unlike `hid send`, panio appends a *fixed* verb rather
 /// than passing arguments through, so a remote host only ever sees
 /// `usb host`, `usb target`, or `usb state`.
 #[derive(Debug, Default, Clone, Deserialize)]
 pub struct UsbChannel {
     pub cmd: Option<String>,
     pub host: Option<String>,
-    /// Opt-in (#304): `paniolo doctor` also runs `<cmd> doctor --json`.
+    /// Opt-in (#304): `panio doctor` also runs `<cmd> doctor --json`.
     #[serde(default)]
     pub doctor: bool,
 }
@@ -442,7 +442,7 @@ pub struct Action {
 #[derive(Debug, Default, Clone, Deserialize)]
 pub struct ActionsChannel {
     pub host: Option<String>,
-    /// Opt-in (#304): `paniolo doctor` also runs each action program's own
+    /// Opt-in (#304): `panio doctor` also runs each action program's own
     /// read-only `doctor --json` check. A table-level key like `host`, so
     /// `doctor` cannot name an action ([`ACTIONS_TABLE_KEYS`]).
     #[serde(default)]
@@ -787,8 +787,8 @@ pub fn channel_host(
     rt: &ResolvedTarget,
     kind: ChannelKind,
     serial_name: Option<&str>,
-) -> Result<String, crate::error::PanioloError> {
-    use crate::error::{channel_missing, Kind, PanioloError};
+) -> Result<String, crate::error::PanioError> {
+    use crate::error::{channel_missing, Kind, PanioError};
     if kind == ChannelKind::Serial {
         let serials: Vec<&ResolvedChannel> = rt
             .channels
@@ -822,7 +822,7 @@ pub fn channel_host(
             let list: Vec<&str> = hosts.into_iter().collect();
             // Answerable by the caller alone (name an interface): usage, the
             // same as an ambiguous target.
-            return Err(PanioloError::new(
+            return Err(PanioError::new(
                 Kind::Usage,
                 format!(
                     "target '{}' has serial interfaces on multiple hosts ({}); \
@@ -944,7 +944,7 @@ pub fn validate(lab: &Lab) -> Result<(), LabError> {
                             return lab_err(format!(
                                 "target '{name}' video: device '{RFB_HID_DEVICE}' reads the hid \
                                  daemon's RFB feed, but the target has no hid channel \
-                                 (paniolo hid set -t {name} --cmd ...)"
+                                 (panio hid set -t {name} --cmd ...)"
                             ))
                         }
                         Some(hid) if hid.host.as_deref().unwrap_or(default_host) != video_host => {
@@ -1133,7 +1133,7 @@ pub fn subnet_clash_message(target: &str, c: &SubnetClash) -> String {
         "target '{target}' netboot: {how} puts {} in {}, which target '{}' already uses on \
          {} of host '{}'. Every netboot link on a host needs its own /24, or every route to \
          a target on either link is ambiguous — give this one a different subnet: \
-         `paniolo netboot set -t {target} --host-ip <addr>`",
+         `panio netboot set -t {target} --host-ip <addr>`",
         c.interface, c.subnet, c.other_target, c.other_interface, c.host
     )
 }
@@ -1160,7 +1160,7 @@ pub fn validate_for_save(lab: &Lab) -> Result<(), LabError> {
             return lab_err(format!(
                 "target '{name}': power.serial_interface '{si}' names no serial interface \
                  of this target (have: {}); point it at one with \
-                 `paniolo power set -t {name} --serial-interface <name>`, or remove the \
+                 `panio power set -t {name} --serial-interface <name>`, or remove the \
                  power channel first",
                 if have.is_empty() {
                     "none".to_string()
@@ -1199,20 +1199,20 @@ pub fn expand_tilde(p: &str) -> PathBuf {
     PathBuf::from(p)
 }
 
-/// The lab file used when neither `--lab` nor `$PANIOLO_LAB` is given.
+/// The lab file used when neither `--lab` nor `$PANIO_LAB` is given.
 pub fn default_lab_path() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_default()
-        .join(".config/paniolo/lab.toml")
+        .join(".config/panio/lab.toml")
 }
 
-/// Resolve the active lab path: `--lab`, then `$PANIOLO_LAB`, then the default
+/// Resolve the active lab path: `--lab`, then `$PANIO_LAB`, then the default
 /// path if it exists. Returns None when none resolve.
 pub fn resolve_lab_path(flag: Option<&str>) -> Option<PathBuf> {
     if let Some(p) = flag {
         return Some(expand_tilde(p));
     }
-    if let Ok(p) = std::env::var("PANIOLO_LAB") {
+    if let Ok(p) = std::env::var("PANIO_LAB") {
         if !p.is_empty() {
             return Some(expand_tilde(&p));
         }
@@ -1746,7 +1746,7 @@ mod tests {
             e.contains("target 'a' already uses on eth1 of host 'bench1'"),
             "{e}"
         );
-        assert!(e.contains("paniolo netboot set -t b --host-ip"), "{e}");
+        assert!(e.contains("panio netboot set -t b --host-ip"), "{e}");
         let e = subnet_clash_message("a", &netboot_subnet_clash(&clash, "a").unwrap());
         assert!(
             e.contains("target 'a' netboot: host_ip 192.168.99.1 puts eth1"),

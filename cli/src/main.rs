@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! paniolo — agent-controlled target machine wrangler.
+//! panio — agent-controlled target machine wrangler.
 //!
 //! Rust rewrite of the control plane (see docs/config-redesign.md). The lab
 //! file is the single, CLI-managed source of truth for hosts, targets, and the
@@ -52,35 +52,35 @@ use model::{Lab, ResolvedChannel, ResolvedTarget};
 
 /// What `--version` prints. The tag is the only version source in this repo
 /// (every `Cargo.toml` stays at its placeholder), so the release workflow
-/// exports `PANIOLO_VERSION` from the tag when it builds each package and the
+/// exports `PANIO_VERSION` from the tag when it builds each package and the
 /// binary bakes it in here. A build without it — `cargo install --path`, a
 /// dev checkout, `brew install --HEAD` — says so, rather than print the
 /// placeholder as if it were an installed version. `cli/build.rs` makes cargo
 /// rebuild when the variable changes.
-const VERSION: &str = match option_env!("PANIOLO_VERSION") {
+const VERSION: &str = match option_env!("PANIO_VERSION") {
     Some(v) => v,
     None => concat!(env!("CARGO_PKG_VERSION"), " (unversioned dev build)"),
 };
 
 #[derive(Parser)]
 #[command(
-    name = "paniolo",
+    name = "panio",
     version = VERSION,
     about = "Agent-controlled target machine wrangler.",
     after_help = error::EXIT_STATUS_HELP
 )]
 struct Cli {
-    /// Path to the lab config file (default: $PANIOLO_LAB or ~/.config/paniolo/lab.toml).
+    /// Path to the lab config file (default: $PANIO_LAB or ~/.config/panio/lab.toml).
     #[arg(long, global = true)]
     lab: Option<String>,
     /// On failure, also print a one-line JSON error object as the last line
-    /// of stderr (same as PANIOLO_JSON_ERRORS=1).
+    /// of stderr (same as PANIO_JSON_ERRORS=1).
     // Overrides itself so a repeat is accepted: dispatch always adds one for
-    // the remote paniolo, whether or not the user's argv already had it.
+    // the remote panio, whether or not the user's argv already had it.
     #[arg(long, global = true, overrides_with = "json_errors")]
     json_errors: bool,
     /// Plugin roots for out-of-tree helpers and skills, in PATH syntax
-    /// (`:`-separated; `;` on Windows). Replaces PANIOLO_PLUGIN_PATH for this
+    /// (`:`-separated; `;` on Windows). Replaces PANIO_PLUGIN_PATH for this
     /// command and everything it starts. Dispatch passes a host's lab
     /// `plugin_path` this way. Goes before the subcommand.
     // Not `global`: `host add/set --plugin-path` is the lab field of the same
@@ -95,7 +95,7 @@ struct Cli {
 enum Command {
     /// Create an empty lab file.
     Init {
-        /// Where to create it (default: --lab path or ~/.config/paniolo/lab.toml).
+        /// Where to create it (default: --lab path or ~/.config/panio/lab.toml).
         #[arg(long)]
         path: Option<String>,
     },
@@ -237,10 +237,10 @@ enum Command {
         #[arg(long, short = 'H')]
         host: String,
     },
-    /// Build and install paniolo's binaries (daemons + CLI) from a source clone.
+    /// Build and install panio's binaries (daemons + CLI) from a source clone.
     Setup {
         /// Provision this lab host over SSH instead of locally (requires the
-        /// paniolo CLI + source already on the host).
+        /// panio CLI + source already on the host).
         #[arg(long)]
         host: Option<String>,
         /// Do only the steps that need nothing beyond cargo: build and
@@ -257,24 +257,24 @@ enum Command {
     ///
     /// Speaks newline-delimited JSON-RPC on stdin/stdout until stdin closes;
     /// configure it in the harness as a stdio server whose command is
-    /// `paniolo mcp`. Tools: target_list, video_shot, video_read, serial_status, serial_evidence, serial_wait, serial_log,
+    /// `panio mcp`. Tools: target_list, video_shot, video_read, serial_status, serial_evidence, serial_wait, serial_log,
     /// serial_send, hid_send, action_list, action_run, power_state, power_on,
     /// power_off, power_cycle.
     /// Each tool runs the
-    /// matching paniolo command, so remote targets dispatch over SSH as usual.
+    /// matching panio command, so remote targets dispatch over SSH as usual.
     Mcp,
-    /// Run a helper binary from paniolo's private libexec dir (omit NAME to
+    /// Run a helper binary from panio's private libexec dir (omit NAME to
     /// list the installed helpers).
     ///
     /// Everything after the helper name goes to the helper, so
-    /// paniolo helper serialcap --help shows the helper's own help.
+    /// panio helper serialcap --help shows the helper's own help.
     ///
     /// Runs locally unless --host or -t names where the hardware is:
-    /// paniolo helper -t pi5 --channel power -- cambrionix -d /dev/ttyUSB0 state
+    /// panio helper -t pi5 --channel power -- cambrionix -d /dev/ttyUSB0 state
     /// runs on the host the lab binds pi5's power channel to. Put these
     /// flags before the helper name.
     ///
-    /// Helpers from a PANIOLO_PLUGIN_PATH root are listed as
+    /// Helpers from a PANIO_PLUGIN_PATH root are listed as
     /// "<name><TAB>plugin: <root>" and never replace a bundled helper.
     Helper {
         /// Run on this lab host instead of locally.
@@ -301,18 +301,18 @@ enum Command {
         )]
         command: Vec<String>,
     },
-    /// List the agent skills bundled with paniolo, or print one's SKILL.md
+    /// List the agent skills bundled with panio, or print one's SKILL.md
     /// (the guides that teach an agent how to drive a target). Omit NAME to
-    /// list them. Skills from a PANIOLO_PLUGIN_PATH root are listed too,
+    /// list them. Skills from a PANIO_PLUGIN_PATH root are listed too,
     /// marked "plugin: <root>".
     Skill {
-        /// Skill to print (e.g. paniolo, kvm-puppeting).
+        /// Skill to print (e.g. panio, kvm-puppeting).
         name: Option<String>,
         /// Print the SKILL.md file path instead of its contents.
         #[arg(long)]
         path: bool,
     },
-    /// List, stop, or restart paniolo's background daemons on this host.
+    /// List, stop, or restart panio's background daemons on this host.
     Daemons {
         #[command(subcommand)]
         cmd: Option<DaemonsCmd>,
@@ -356,7 +356,7 @@ impl TargetArg {
 /// of, the helper's own read-only `doctor --json` check (#304).
 #[derive(clap::Args, Debug, Clone, Default)]
 struct DoctorFlag {
-    /// Have `paniolo doctor` also run the helper's own read-only health
+    /// Have `panio doctor` also run the helper's own read-only health
     /// check, `<program> <transport options> doctor --json`. Only for a
     /// helper that implements it (docs/dev/adding-power-helpers.md).
     #[arg(long, conflicts_with = "no_doctor")]
@@ -384,7 +384,7 @@ enum DaemonsCmd {
     List,
     /// Stop daemons — named ones, or every one with --all.
     Stop {
-        /// Daemons as `paniolo daemons` lists them: a bare name (serialcap,
+        /// Daemons as `panio daemons` lists them: a bare name (serialcap,
         /// zigplug, netbootd) stops every instance of that daemon; the
         /// `NAME[TARGET]` form (`'serialcap[pi5]'` — quote it, `[]` is a
         /// shell glob) stops one target's instance.
@@ -399,7 +399,7 @@ enum DaemonsCmd {
     /// Restart capture daemons (serialcap, hdmicap) from their current
     /// binary — the clean fix after an upgrade leaves stale ones running.
     Restart {
-        /// Daemons to restart, as `paniolo daemons` lists them: a bare name
+        /// Daemons to restart, as `panio daemons` lists them: a bare name
         /// (serialcap, hdmicap) restarts every instance of that daemon; the
         /// `NAME[TARGET]` form (`'hdmicap[pi5]'` — quote it, `[]` is a shell
         /// glob) restarts one target's instance. Empty with --all restarts
@@ -448,9 +448,9 @@ enum HostCmd {
         #[arg(long)]
         control_path: Option<String>,
         #[arg(long)]
-        paniolo_cmd: Option<String>,
+        panio_cmd: Option<String>,
         /// Plugin roots on this host for out-of-tree helpers and skills (its
-        /// PANIOLO_PLUGIN_PATH syntax), passed to the remote paniolo on every
+        /// PANIO_PLUGIN_PATH syntax), passed to the remote panio on every
         /// dispatch here.
         #[arg(long, value_name = "LIST")]
         plugin_path: Option<String>,
@@ -471,9 +471,9 @@ enum HostCmd {
         #[arg(long)]
         control_path: Option<String>,
         #[arg(long)]
-        paniolo_cmd: Option<String>,
-        /// Plugin roots on this host (its PANIOLO_PLUGIN_PATH syntax), passed
-        /// to the remote paniolo on every dispatch here. Empty clears it.
+        panio_cmd: Option<String>,
+        /// Plugin roots on this host (its PANIO_PLUGIN_PATH syntax), passed
+        /// to the remote panio on every dispatch here. Empty clears it.
         #[arg(long, value_name = "LIST")]
         plugin_path: Option<String>,
     },
@@ -701,7 +701,7 @@ enum SerialCmd {
     /// transactions on the interface queue behind this one; `serial send`
     /// and dashboard keystrokes are refused while it runs. A match is
     /// observation, not proof the target executed the command; nothing is
-    /// retried. Needs a running daemon (`paniolo serial watch`).
+    /// retried. Needs a running daemon (`panio serial watch`).
     Transact {
         /// Target to act on (optional when the lab has exactly one).
         #[arg(long, short)]
@@ -959,7 +959,7 @@ enum ActionCmd {
         /// Action name (letters, digits, `.`, `_`, `-`).
         name: String,
         /// Shell command to run (required for a new action). Runs like a
-        /// power hook: `sh -c`, with paniolo's helper dir first on PATH.
+        /// power hook: `sh -c`, with panio's helper dir first on PATH.
         #[arg(long)]
         cmd: Option<String>,
         /// One line saying what the action does, shown by `action list`.
@@ -1009,7 +1009,7 @@ enum HidCmd {
         target: String,
     },
     /// Run the configured helper with the given arguments appended,
-    /// e.g. `paniolo hid send -t pi5 type hello`.
+    /// e.g. `panio hid send -t pi5 type hello`.
     Send {
         #[arg(long, short)]
         target: Option<String>,
@@ -1018,7 +1018,7 @@ enum HidCmd {
         args: Vec<String>,
     },
     /// Start the injection daemon (the KVM path): the helper owns the UART and
-    /// re-exposes it over a WebSocket. `paniolo console` starts it on demand;
+    /// re-exposes it over a WebSocket. `panio console` starts it on demand;
     /// run this to warm it ahead of time. Idempotent.
     Serve {
         #[command(flatten)]
@@ -1037,7 +1037,7 @@ enum UsbCmd {
     Set {
         #[arg(long, short)]
         target: String,
-        /// Mux helper command. paniolo appends a fixed verb — `usb host`,
+        /// Mux helper command. panio appends a fixed verb — `usb host`,
         /// `usb target`, or `usb state` (e.g. "ch9329 -d /dev/cu.usbmodemXXXX").
         #[arg(long)]
         cmd: String,
@@ -1102,7 +1102,7 @@ enum AdbCmd {
         target: TargetArg,
     },
     /// Run a one-shot command on the device, e.g.
-    /// `paniolo adb run -t pixel getprop ro.build.version.release`.
+    /// `panio adb run -t pixel getprop ro.build.version.release`.
     Run {
         #[arg(long, short)]
         target: Option<String>,
@@ -1119,7 +1119,7 @@ enum AdbCmd {
         out: String,
     },
     /// Inject input events, e.g.
-    /// `paniolo adb input -t pixel keyevent KEYCODE_HOME`.
+    /// `panio adb input -t pixel keyevent KEYCODE_HOME`.
     Input {
         #[arg(long, short)]
         target: Option<String>,
@@ -1254,7 +1254,7 @@ fn main() {
     // and drop the variable, so no hook or helper inherits it (one JSON
     // object per failure). Dispatch passes `--json-errors` to a remote.
     error::take_json_request(cli.json_errors);
-    // Also single-threaded: `--plugin-path` becomes PANIOLO_PLUGIN_PATH, so
+    // Also single-threaded: `--plugin-path` becomes PANIO_PLUGIN_PATH, so
     // the helper and skill search here, and every hook, helper and daemon
     // this process starts, see the same roots (#303). An argument rather than
     // a forwarded variable for the same reason as `--json-errors`: it crosses
@@ -1349,7 +1349,7 @@ fn run(cli: Cli) -> Result<()> {
 use state::running_netboots;
 
 /// A daemon named on the `daemons stop` / `daemons restart` command line, in
-/// either form `paniolo daemons` prints: bare `serialcap` (every instance of
+/// either form `panio daemons` prints: bare `serialcap` (every instance of
 /// that daemon) or `serialcap[pi5]` (one target's instance). netbootd's
 /// instances are its targets, so `netbootd[pi5]` reads the same way.
 struct DaemonSpec {
@@ -1390,7 +1390,7 @@ impl std::fmt::Display for DaemonSpec {
     }
 }
 
-/// `serialcap[pi5]` / `zigplug` — the name `paniolo daemons` prints for a
+/// `serialcap[pi5]` / `zigplug` — the name `panio daemons` prints for a
 /// discovered daemon, and the form [`DaemonSpec`] accepts back.
 fn daemon_label(d: &daemons::DaemonInfo) -> String {
     match &d.instance {
@@ -1401,8 +1401,8 @@ fn daemon_label(d: &daemons::DaemonInfo) -> String {
 
 /// Escape ASCII/C1 control characters (`\x00`–`\x1F`, `\x7F`–`\x9F`) as
 /// `\xHH`; everything else — including non-ASCII UTF-8 — passes through
-/// unchanged. For text that is *not* paniolo's own: another process's raw
-/// argv (`paniolo daemons`' stray-helper listing), which may contain
+/// unchanged. For text that is *not* panio's own: another process's raw
+/// argv (`panio daemons`' stray-helper listing), which may contain
 /// terminal escape sequences (cursor moves, screen clears, OSC payloads) a
 /// hostile or merely weird process chose to put there. Printing it verbatim
 /// would let that process draw into this terminal (Review low #12).
@@ -1469,7 +1469,7 @@ fn signal_or_report(label: &str, pid: i32, signal: platform::Signal) -> bool {
     }
 }
 
-/// One unified view of every paniolo background process on this host: the
+/// One unified view of every panio background process on this host: the
 /// discovery-file daemons, netbootd (state files), and stray helper
 /// processes running out of the libexec dir.
 fn cmd_daemons_list() -> Result<()> {
@@ -1491,7 +1491,7 @@ fn cmd_daemons_list() -> Result<()> {
     }
 
     if discovered.is_empty() && netboots.is_empty() && strays.is_empty() && untracked.is_empty() {
-        println!("No paniolo daemons running.");
+        println!("No panio daemons running.");
         return Ok(());
     }
     let mut any_stale = false;
@@ -1504,7 +1504,7 @@ fn cmd_daemons_list() -> Result<()> {
     }
     if any_stale {
         println!("\nStale daemons run an older binary than what's installed now.");
-        println!("Restart them from the current binary with `paniolo daemons restart --stale`.");
+        println!("Restart them from the current binary with `panio daemons restart --stale`.");
     }
     for (target, st) in &netboots {
         println!(
@@ -1523,21 +1523,21 @@ fn cmd_daemons_list() -> Result<()> {
             );
         }
         println!(
-            "These still hold their devices. `paniolo video watch` / `paniolo serial watch` \n\
-             reclaim a capture one; `paniolo daemons stop --all` reaps the rest."
+            "These still hold their devices. `panio video watch` / `panio serial watch` \n\
+             reclaim a capture one; `panio daemons stop --all` reaps the rest."
         );
     }
     if !strays.is_empty() {
         println!("\nStray helper processes (not daemons — wedged one-shots?):");
         for (pid, args) in &strays {
-            // `args` is another process's raw command line — not paniolo's
+            // `args` is another process's raw command line — not panio's
             // own text — so it may carry ANSI/terminal escape sequences a
             // hostile or merely weird process chose to put in argv. Escaping
-            // control characters keeps `paniolo daemons` from replaying them
+            // control characters keeps `panio daemons` from replaying them
             // into this terminal (Review low #12).
             println!("  pid {pid}\t{}", escape_control_chars(args));
         }
-        println!("Stop everything with `paniolo daemons stop --all [--force]`.");
+        println!("Stop everything with `panio daemons stop --all [--force]`.");
     }
     Ok(())
 }
@@ -1550,7 +1550,7 @@ fn cmd_daemons_list() -> Result<()> {
 /// and fails the command instead of being printed as if it had landed.
 fn cmd_daemons_stop(names: &[String], all: bool, force: bool) -> Result<()> {
     if !all && names.is_empty() {
-        bail!("name one or more daemons (see `paniolo daemons`), or pass --all");
+        bail!("name one or more daemons (see `panio daemons`), or pass --all");
     }
     let specs: Vec<DaemonSpec> = names.iter().map(|n| DaemonSpec::parse(n)).collect();
     let wanted =
@@ -1649,7 +1649,7 @@ fn cmd_daemons_stop(names: &[String], all: bool, force: bool) -> Result<()> {
     if failed || (!force && !pending.is_empty()) {
         // Not a "negative answer" (exit 1 under the error contract): some
         // daemon the caller asked to stop is still running.
-        return Err(error::PanioloError::new(
+        return Err(error::PanioError::new(
             error::Kind::Internal,
             "not every daemon was stopped (see above)",
         )
@@ -1663,7 +1663,7 @@ fn cmd_daemons_stop(names: &[String], all: bool, force: bool) -> Result<()> {
 /// leaves stale daemons running: the package can't reap per-user daemons, so
 /// the operator restarts them, reusing the lab's channel config so the new
 /// daemon owns the same devices. netbootd is intentionally excluded — restart
-/// it via `paniolo netboot start/stop`, since that touches an in-flight boot.
+/// it via `panio netboot start/stop`, since that touches an in-flight boot.
 fn cmd_daemons_restart(
     lab_flag: Option<&str>,
     names: &[String],
@@ -1718,7 +1718,7 @@ fn cmd_daemons_restart(
         }
     }
     if failures > 0 {
-        return Err(error::PanioloError::new(
+        return Err(error::PanioError::new(
             error::Kind::Internal,
             format!("{failures} daemon restart(s) failed (see above)"),
         )
@@ -1927,7 +1927,7 @@ fn wait_for_started_daemon(
 
 // ── helper passthrough ──────────────────────────────────────────────────────
 
-/// Where `paniolo helper` was asked to run (#300); all `None` means locally.
+/// Where `panio helper` was asked to run (#300); all `None` means locally.
 struct HelperPlace<'a> {
     host: Option<&'a str>,
     target: Option<&'a str>,
@@ -1935,8 +1935,8 @@ struct HelperPlace<'a> {
     interface: Option<&'a str>,
 }
 
-/// `paniolo helper`, run on the lab host `place` resolves to. Locally that is
-/// [`cmd_helper`]; remotely it re-execs `paniolo helper -- NAME ARGS…` there
+/// `panio helper`, run on the lab host `place` resolves to. Locally that is
+/// [`cmd_helper`]; remotely it re-execs `panio helper -- NAME ARGS…` there
 /// over SSH. The remote side needs no lab — `helper` never reads one — so no
 /// slice is shipped, and the helper gets that host's own state/runtime dirs.
 fn cmd_helper_at(
@@ -1967,7 +1967,7 @@ fn cmd_helper_at(
 }
 
 /// The remote argv for a dispatched `helper`: the `--` keeps the helper's own
-/// flags (`--help` included) away from the remote paniolo's parser.
+/// flags (`--help` included) away from the remote panio's parser.
 fn helper_remote_argv(name: Option<&str>, args: &[String]) -> Vec<String> {
     let mut argv = vec!["helper".to_string()];
     if let Some(name) = name {
@@ -1984,9 +1984,9 @@ fn cmd_helper(name: Option<&str>, args: &[String]) -> Result<()> {
     let Some(name) = name else {
         // Search every dir `find_binary` resolves helpers from — per-user
         // libexec, CLI-relative (Homebrew/prefix), and the system package's
-        // /usr/libexec/paniolo/bin — not just the per-user dir, so a packaged
+        // /usr/libexec/panio/bin — not just the per-user dir, so a packaged
         // (.deb/tarball) install with no per-user build still lists helpers —
-        // and then the plugin roots (PANIOLO_PLUGIN_PATH, #303), whose
+        // and then the plugin roots (PANIO_PLUGIN_PATH, #303), whose
         // entries carry a `plugin: <root>` column.
         let (entries, _shadowed) = daemons::helper_entries();
         if entries.is_empty() {
@@ -1996,8 +1996,8 @@ fn cmd_helper(name: Option<&str>, args: &[String]) -> Result<()> {
                 .collect::<Vec<_>>()
                 .join(", ");
             println!(
-                "No helpers found (searched {searched}) — install the paniolo \
-                 package or run `paniolo setup` from a source checkout."
+                "No helpers found (searched {searched}) — install the panio \
+                 package or run `panio setup` from a source checkout."
             );
             return Ok(());
         }
@@ -2007,8 +2007,8 @@ fn cmd_helper(name: Option<&str>, args: &[String]) -> Result<()> {
         return Ok(());
     };
     let binary = daemons::find_binary(name).ok_or_else(|| {
-        crate::error::PanioloError::not_configured(format!(
-            "helper '{name}' not found — run `paniolo setup`"
+        crate::error::PanioError::not_configured(format!(
+            "helper '{name}' not found — run `panio setup`"
         ))
     })?;
     // State/runtime dirs are keyed by helper name, except channel daemons
@@ -2163,7 +2163,7 @@ fn cmd_configure(lab_flag: Option<&str>, target: &str, host: &str) -> Result<()>
         discover::local_inventory()
     } else {
         eprintln!("Discovering hardware on {host} ({})…", resolved.ssh);
-        let mut argv = resolved.paniolo_argv();
+        let mut argv = resolved.panio_argv();
         argv.extend(["discover".to_string(), "--json".to_string()]);
         let out = ssh::run(&resolved, &argv, None, &[])?;
         if out.status != 0 {
@@ -2195,8 +2195,8 @@ fn cmd_setup(lab_flag: Option<&str>, host: Option<&str>, rust_only: bool) -> Res
     if let Some(name) = host {
         let resolved = resolve_host(lab_flag, name)?;
         if !resolved.is_local(name) {
-            eprintln!("Running paniolo setup on {name} ({})…", resolved.ssh);
-            let mut argv = resolved.paniolo_argv();
+            eprintln!("Running panio setup on {name} ({})…", resolved.ssh);
+            let mut argv = resolved.panio_argv();
             argv.push("setup".to_string());
             if rust_only {
                 argv.push("--rust-only".to_string());
@@ -2212,9 +2212,9 @@ fn cmd_setup(lab_flag: Option<&str>, host: Option<&str>, rust_only: bool) -> Res
     match setup::find_repo_root() {
         Some(repo) => setup::run(&repo, rust_only, lab_flag),
         None if rust_only => Err(anyhow!(
-            "paniolo source checkout not found. `paniolo setup --rust-only` rebuilds \
+            "panio source checkout not found. `panio setup --rust-only` rebuilds \
              the Rust crates from source, so it must run from inside a clone \
-             (e.g. `make rust`). cd into the paniolo repo and try again."
+             (e.g. `make rust`). cd into the panio repo and try again."
         )),
         // Packaged install (Homebrew, .deb, tarball): no sources to build —
         // just finish the platform steps against the installed binaries.
@@ -2230,9 +2230,9 @@ fn resolve_single_target(lab: &Lab, name: Option<&str>) -> Result<String> {
     let names = lab.target_names();
     match names.len() {
         1 => Ok(names[0].to_string()),
-        0 => Err(error::PanioloError::not_configured("No targets configured.").into()),
+        0 => Err(error::PanioError::not_configured("No targets configured.").into()),
         // Answerable by the caller alone (name a target), so a usage error.
-        _ => Err(error::PanioloError::new(
+        _ => Err(error::PanioError::new(
             error::Kind::Usage,
             format!(
                 "Multiple targets ({}) — specify one with -t.",
@@ -2257,9 +2257,9 @@ fn cmd_doctor(lab_flag: Option<&str>, target: Option<&str>, host: Option<&str>) 
 
 fn load_for_read(lab_flag: Option<&str>) -> Result<Lab> {
     let path = model::resolve_lab_path(lab_flag).ok_or_else(|| {
-        error::PanioloError::not_configured(
-            "No lab configured. Create one with `paniolo init`, or point at one \
-             with --lab / PANIOLO_LAB.",
+        error::PanioError::not_configured(
+            "No lab configured. Create one with `panio init`, or point at one \
+             with --lab / PANIO_LAB.",
         )
     })?;
     Ok(model::load(&path)?)
@@ -2312,8 +2312,8 @@ fn cmd_init(lab_flag: Option<&str>, path_opt: Option<&str>) -> Result<()> {
     }
     LabFile::create(&path).save()?;
     println!("Created lab: {}", path.display());
-    println!("  Add a host:   paniolo host add <name> --ssh user@host");
-    println!("  Add a target: paniolo target add <name>");
+    println!("  Add a host:   panio host add <name> --ssh user@host");
+    println!("  Add a target: panio target add <name>");
     Ok(())
 }
 
@@ -2322,7 +2322,7 @@ fn config_path(lab_flag: Option<&str>) -> Result<()> {
         Some(p) => println!("{}", p.display()),
         None => {
             println!("{}", model::default_lab_path().display());
-            eprintln!("(does not exist yet — create it with `paniolo init`)");
+            eprintln!("(does not exist yet — create it with `panio init`)");
         }
     }
     Ok(())
@@ -2330,7 +2330,7 @@ fn config_path(lab_flag: Option<&str>) -> Result<()> {
 
 fn config_edit(lab_flag: Option<&str>) -> Result<()> {
     let path = model::resolve_lab_path(lab_flag)
-        .ok_or_else(|| anyhow!("No lab to edit. Create one with `paniolo init`."))?;
+        .ok_or_else(|| anyhow!("No lab to edit. Create one with `panio init`."))?;
     let editor = std::env::var("EDITOR")
         .or_else(|_| std::env::var("VISUAL"))
         .unwrap_or_else(|_| "vi".to_string());
@@ -2342,7 +2342,7 @@ fn config_edit(lab_flag: Option<&str>) -> Result<()> {
         .status()
         .map_err(|e| -> anyhow::Error {
             if e.kind() == std::io::ErrorKind::NotFound {
-                error::PanioloError::not_configured(format!("editor '{prog}' not found")).into()
+                error::PanioError::not_configured(format!("editor '{prog}' not found")).into()
             } else {
                 e.into()
             }
@@ -2407,7 +2407,7 @@ fn host_cmd(lab_flag: Option<&str>, cmd: HostCmd) -> Result<()> {
             hostname,
             identity,
             control_path,
-            paniolo_cmd,
+            panio_cmd,
             plugin_path,
         } => {
             edit_lab(lab_flag, |lf| {
@@ -2418,7 +2418,7 @@ fn host_cmd(lab_flag: Option<&str>, cmd: HostCmd) -> Result<()> {
                     hostname.as_deref(),
                     identity.as_deref(),
                     control_path.as_deref(),
-                    paniolo_cmd.as_deref(),
+                    panio_cmd.as_deref(),
                     plugin_path.as_deref(),
                 )
             })?;
@@ -2432,7 +2432,7 @@ fn host_cmd(lab_flag: Option<&str>, cmd: HostCmd) -> Result<()> {
             hostname,
             identity,
             control_path,
-            paniolo_cmd,
+            panio_cmd,
             plugin_path,
         } => {
             edit_lab(lab_flag, |lf| {
@@ -2443,7 +2443,7 @@ fn host_cmd(lab_flag: Option<&str>, cmd: HostCmd) -> Result<()> {
                     hostname.as_deref(),
                     identity.as_deref(),
                     control_path.as_deref(),
-                    paniolo_cmd.as_deref(),
+                    panio_cmd.as_deref(),
                     plugin_path.as_deref(),
                 )
             })?;
@@ -2511,8 +2511,8 @@ fn host_show(lab_flag: Option<&str>, name: &str) -> Result<()> {
             if let Some(v) = &h.control_path {
                 println!("  control_path  {v}");
             }
-            if let Some(v) = &h.paniolo_cmd {
-                println!("  paniolo_cmd   {v}");
+            if let Some(v) = &h.panio_cmd {
+                println!("  panio_cmd   {v}");
             }
             if let Some(v) = &h.plugin_path {
                 println!("  plugin_path   {v}");
@@ -2586,7 +2586,7 @@ fn target_cmd(lab_flag: Option<&str>, cmd: TargetCmd) -> Result<()> {
 fn target_list(lab_flag: Option<&str>) -> Result<()> {
     let lab = load_for_read(lab_flag)?;
     if lab.targets.is_empty() {
-        println!("No targets configured. (paniolo target add <name>)");
+        println!("No targets configured. (panio target add <name>)");
         return Ok(());
     }
     for name in lab.targets.keys() {
@@ -3014,7 +3014,7 @@ fn resolve_dtr_interface(lab: &Lab, target: &str, interface: Option<&str>) -> Re
                 .into())
             }
             _ => {
-                return Err(error::PanioloError::new(
+                return Err(error::PanioError::new(
                     error::Kind::Usage,
                     format!(
                         "multiple DTR power-button interfaces on '{target}' ({}); pick one with -i",
@@ -3054,18 +3054,18 @@ fn dtr_opt_in_hint(target: &str, t: &model::Target, iface: Option<&str>) -> Stri
         .is_some()
     {
         out.push_str(&format!(
-            "\n  • To power-cycle it: paniolo power-cycle {target}"
+            "\n  • To power-cycle it: panio power-cycle {target}"
         ));
     }
     out.push_str(&format!(
-        "\n  • To reboot from a logged-in serial console: paniolo serial send {target} \"reboot\""
+        "\n  • To reboot from a logged-in serial console: panio serial send {target} \"reboot\""
     ));
     let example = iface
         .or_else(|| t.serial.first().map(|s| s.name.as_str()))
         .unwrap_or("console");
     out.push_str(&format!(
         "\n  • If the FTDI DTR line really is wired to J2: \
-         paniolo serial set {example} -t {target} --power-button"
+         panio serial set {example} -t {target} --power-button"
     ));
     out
 }
@@ -3401,7 +3401,7 @@ fn cmd_console(
             return Err(error::channel_missing(
                 &target,
                 "serial",
-                format!("no serial interfaces configured for '{target}' (paniolo serial add ...)"),
+                format!("no serial interfaces configured for '{target}' (panio serial add ...)"),
             )
             .into());
         }
@@ -3609,7 +3609,7 @@ fn local_power(lab: &Lab, target: &str) -> Result<model::PowerChannel> {
         error::channel_missing(
             target,
             "power",
-            format!("target '{target}' has no power channel (paniolo power set -t {target} ...)"),
+            format!("target '{target}' has no power channel (panio power set -t {target} ...)"),
         )
     })?;
     if !channel_is_local(lab, p.host.as_deref(), &dh) {
@@ -3651,7 +3651,7 @@ fn local_power_level(lab: &Lab, target: &str, level: Option<&str>) -> Result<mod
             "power",
             format!(
                 "target '{target}' has no power level '{name}' (have: {}; \
-                 paniolo power set -t {target} --level {name} --cycle-cmd ...)",
+                 panio power set -t {target} --level {name} --cycle-cmd ...)",
                 if have.is_empty() {
                     "none".to_string()
                 } else {
@@ -3670,11 +3670,11 @@ fn missing_power_hook(target: &str, level: Option<&str>, key: &str, flag: &str) 
     let msg = match level {
         None => format!(
             "no {key} configured for '{target}' \
-             (paniolo power set -t {target} --{flag} /path/to/script)"
+             (panio power set -t {target} --{flag} /path/to/script)"
         ),
         Some(l) => format!(
             "no {key} configured for '{target}' power level '{l}' \
-             (paniolo power set -t {target} --level {l} --{flag} /path/to/script)"
+             (panio power set -t {target} --level {l} --{flag} /path/to/script)"
         ),
     };
     error::channel_missing(target, "power", msg).into()
@@ -3820,7 +3820,7 @@ fn cmd_power_cycle(
     run_power_hook(&cmd, "Power cycling", &target, level)?;
     // A cycle_cmd may return before the cycle ends: a relay board that
     // accepts "cycle" and times the off period itself (#259). With a
-    // state_cmd, "complete" means power is back on; without one, paniolo
+    // state_cmd, "complete" means power is back on; without one, panio
     // cannot tell, so it says only that the hook finished. A named level
     // confirms with its own state_cmd only, never the default level's.
     let sfx = level_suffix(level);
@@ -3851,7 +3851,7 @@ fn confirm_power_on(
     if wait_for_power_on(|| read_state_cmd(state_cmd, target), poll, deadline)? {
         return Ok(());
     }
-    Err(error::PanioloError::new(
+    Err(error::PanioError::new(
         error::Kind::Timeout,
         format!(
             "cycle_cmd exited 0, but state_cmd still reports '{target}' off{} after {} ms",
@@ -4031,14 +4031,14 @@ fn local_power_is_on(lab: &Lab, target: &str) -> Result<bool> {
             "power",
             format!(
                 "no power serial_interface configured for '{target}' \
-             (paniolo power set -t {target} --serial-interface <name>)"
+             (panio power set -t {target} --serial-interface <name>)"
             ),
         )
     })?;
     let daemon = serial::daemon(target).ok_or_else(|| {
         error::daemon_down(
             serial::DAEMON,
-            "serialcap daemon not running — start it with `paniolo serial watch`",
+            "serialcap daemon not running — start it with `panio serial watch`",
         )
         .target(target)
     })?;
@@ -4046,7 +4046,7 @@ fn local_power_is_on(lab: &Lab, target: &str) -> Result<bool> {
         Some(on) => Ok(on),
         None => bail!(
             "power state unknown — the sense signal may not be configured on '{si}' \
-             (paniolo serial set {si} -t {target} --sense <cts|dsr|dcd|ri>)"
+             (panio serial set {si} -t {target} --sense <cts|dsr|dcd|ri>)"
         ),
     }
 }
@@ -4094,10 +4094,10 @@ fn pick_serial<'a>(
             0 => Err(error::channel_missing(
                 target,
                 "serial",
-                "no serial interfaces configured (paniolo serial add ...)".to_string(),
+                "no serial interfaces configured (panio serial add ...)".to_string(),
             )
             .into()),
-            _ => Err(error::PanioloError::new(
+            _ => Err(error::PanioError::new(
                 error::Kind::Usage,
                 format!(
                     "multiple serial interfaces ({}); specify one with -i",
@@ -4147,7 +4147,7 @@ fn cmd_serial_watch(lab_flag: Option<&str>, target: Option<&str>, port: u16) -> 
         return Err(error::channel_missing(
             &target,
             "serial",
-            "no serial interfaces configured (paniolo serial add ...)".to_string(),
+            "no serial interfaces configured (panio serial add ...)".to_string(),
         )
         .into());
     }
@@ -4205,7 +4205,7 @@ fn cmd_serial_send(
     let daemon = serial::daemon(&target).ok_or_else(|| {
         error::daemon_down(
             serial::DAEMON,
-            "serialcap daemon not running — start it with `paniolo serial watch`",
+            "serialcap daemon not running — start it with `panio serial watch`",
         )
         .target(&target)
     })?;
@@ -4242,7 +4242,7 @@ fn cmd_serial_transact(
     let daemon = serial::daemon(&target).ok_or_else(|| {
         error::daemon_down(
             serial::DAEMON,
-            "serialcap daemon not running — start it with `paniolo serial watch`",
+            "serialcap daemon not running — start it with `panio serial watch`",
         )
         .target(&target)
     })?;
@@ -4280,7 +4280,7 @@ fn cmd_serial_log(
     if serial::daemon(&target).is_none() && serial::untracked(&serials).is_none() {
         let msg = format!(
             "serialcap daemon for '{target}' is not running — the log shows \
-             nothing captured since it stopped (start it with `paniolo serial watch`)"
+             nothing captured since it stopped (start it with `panio serial watch`)"
         );
         if require_live {
             return Err(error::daemon_down(serial::DAEMON, msg)
@@ -4292,8 +4292,8 @@ fn cmd_serial_log(
     // serialcap reads its own on-disk log, so this works daemon-up or -down.
     // The per-target env points it at this target's capture dir.
     let binary = daemons::find_binary(serial::DAEMON).ok_or_else(|| {
-        crate::error::PanioloError::not_configured(
-            "serialcap not found — run `paniolo setup`".to_string(),
+        crate::error::PanioError::not_configured(
+            "serialcap not found — run `panio setup`".to_string(),
         )
     })?;
     let mut cmd = std::process::Command::new(binary);
@@ -4350,7 +4350,7 @@ fn cmd_serial_log(
 fn cmd_serial_show(lab_flag: Option<&str>, target: Option<&str>) -> Result<()> {
     let (target, serials) = serial_runtime(lab_flag, target, None, dispatch::Mode::Reexec)?;
     if serials.is_empty() {
-        println!("No serial interfaces configured. (paniolo serial add ...)");
+        println!("No serial interfaces configured. (panio serial add ...)");
         return Ok(());
     }
     for ch in &serials {
@@ -4372,7 +4372,7 @@ fn cmd_serial_show(lab_flag: Option<&str>, target: Option<&str>) -> Result<()> {
         None => match serial::untracked(&serials) {
             Some(u) => println!(
                 "daemon\trunning, untracked (pid {}) — no discovery file; \
-                 `paniolo serial watch` reclaims it",
+                 `panio serial watch` reclaims it",
                 u.pid
             ),
             None => println!("daemon\tstopped"),
@@ -4396,7 +4396,13 @@ fn local_video(lab: &Lab, target: &str) -> Result<model::VideoChannel> {
         .ok_or_else(|| error::target_not_found(target))?;
     let dh = t.default_host().to_string();
     let v = t.video.clone().ok_or_else(|| {
-        error::channel_missing(target, "video", format!("target '{target}' has no video channel (paniolo video set -t {target} --device ...)"))
+        error::channel_missing(
+            target,
+            "video",
+            format!(
+                "target '{target}' has no video channel (panio video set -t {target} --device ...)"
+            ),
+        )
     })?;
     if !channel_is_local(lab, v.host.as_deref(), &dh) {
         return Err(error::channel_missing(
@@ -4429,8 +4435,8 @@ fn refuse_remote_open(lab_flag: Option<&str>, target: Option<&str>) -> Result<()
     bail!(
         "`video preview --open` opens a browser on the machine that runs it, and \
          '{target}'s video channel is on '{host_name}' — it would open there. \
-         Use `paniolo console {target}`, which forwards the ports and opens a browser \
-         here, or `paniolo video preview {target}` to print the URL and open it yourself."
+         Use `panio console {target}`, which forwards the ports and opens a browser \
+         here, or `panio video preview {target}` to print the URL and open it yourself."
     )
 }
 
@@ -4508,7 +4514,7 @@ fn video_cmd(lab_flag: Option<&str>, cmd: VideoCmd) -> Result<()> {
                     // (#196). `video preview` is where the openable URL lives.
                     println!(
                         "Video daemon for '{target}' already running at {url} — \
-                         `paniolo video preview {target}` opens the dashboard."
+                         `panio video preview {target}` opens the dashboard."
                     );
                     return Ok(());
                 }
@@ -4545,13 +4551,13 @@ fn video_cmd(lab_flag: Option<&str>, cmd: VideoCmd) -> Result<()> {
             )?;
             let url =
                 wait_for_started_daemon(video::DAEMON, Some(&target), replaced, Some(&mut child))?;
-            // Token-free, like every other line paniolo prints: the openable
+            // Token-free, like every other line panio prints: the openable
             // URL lives behind `video preview`, which is the one command whose
             // job is to produce it (#196). Printing it here would put a live
             // credential in the transcript of every daemon start.
             let url = video::daemon_url(&target).unwrap_or(url);
             println!(
-                "Video daemon started at {url} — `paniolo video preview {target}` \
+                "Video daemon started at {url} — `panio video preview {target}` \
                  opens the dashboard."
             );
             Ok(())
@@ -4679,7 +4685,7 @@ fn video_cmd(lab_flag: Option<&str>, cmd: VideoCmd) -> Result<()> {
             let Some(daemon) = video::daemon(&target) else {
                 return Err(error::daemon_down(
                     video::DAEMON,
-                    "no video daemon running — start one with `paniolo video watch`",
+                    "no video daemon running — start one with `panio video watch`",
                 )
                 .target(&target)
                 .into());
@@ -4720,7 +4726,7 @@ fn video_cmd(lab_flag: Option<&str>, cmd: VideoCmd) -> Result<()> {
                     // A one-time pointer, not a field: `show`'s stdout is
                     // `key<TAB>value` that scripts split on, and this is prose.
                     eprintln!(
-                        "note: `paniolo video preview` prints the openable URL; it \
+                        "note: `panio video preview` prints the openable URL; it \
                          carries the daemon's token, which is not shown here (#196)."
                     );
                 }
@@ -4731,7 +4737,7 @@ fn video_cmd(lab_flag: Option<&str>, cmd: VideoCmd) -> Result<()> {
                 None => match v.device.as_deref().and_then(video::untracked) {
                     Some(u) => println!(
                         "daemon\trunning, untracked (pid {}) — no discovery file; \
-                         `paniolo video watch` reclaims it",
+                         `panio video watch` reclaims it",
                         u.pid
                     ),
                     None => println!("daemon\tstopped"),
@@ -4874,7 +4880,7 @@ impl NetbootRuntime {
                     "netboot",
                     format!(
                         "no tftp_root configured \
-                         (paniolo netboot set -t {} --tftp-root <path>)",
+                         (panio netboot set -t {} --tftp-root <path>)",
                         self.target
                     ),
                 )
@@ -4907,9 +4913,7 @@ fn netboot_runtime(lab_flag: Option<&str>, target: Option<&str>) -> Result<Netbo
         error::channel_missing(
             &target,
             "netboot",
-            format!(
-                "target '{target}' has no netboot channel (paniolo netboot set -t {target} ...)"
-            ),
+            format!("target '{target}' has no netboot channel (panio netboot set -t {target} ...)"),
         )
     })?;
     if !channel_is_local(&lab, nb.host.as_deref(), &dh) {
@@ -5310,7 +5314,7 @@ fn cmd_action_list(lab_flag: Option<&str>, target: Option<&str>, json: bool) -> 
         return Ok(());
     }
     if rows.is_empty() {
-        println!("No actions configured (paniolo action set -t <target> <name> --cmd ...).");
+        println!("No actions configured (panio action set -t <target> <name> --cmd ...).");
         return Ok(());
     }
     for r in rows {
@@ -5385,7 +5389,7 @@ fn power_is_on_anywhere(lab: &Lab, target: &str) -> Result<bool> {
             "power",
             format!(
                 "an action of '{target}' sets requires_power, but the target has no power \
-                 channel to read (paniolo power set -t {target} --state-cmd ...)"
+                 channel to read (panio power set -t {target} --state-cmd ...)"
             ),
         )
         .into());
@@ -5396,7 +5400,7 @@ fn power_is_on_anywhere(lab: &Lab, target: &str) -> Result<bool> {
     }
     // With named levels, `power-state` alone reports every level; ask for the
     // default one, which is what requires_power means. Without levels the
-    // plain form is kept, so an older paniolo on the power host still works.
+    // plain form is kept, so an older panio on the power host still works.
     let has_levels = lab
         .targets
         .get(target)
@@ -5409,7 +5413,7 @@ fn power_is_on_anywhere(lab: &Lab, target: &str) -> Result<bool> {
     let out = dispatch::run_subcommand(lab, target, &host_name, &argv)?;
     if out.status != 0 {
         let kind = error::Kind::from_exit_code(out.status).unwrap_or(error::Kind::Internal);
-        return Err(error::PanioloError::new(
+        return Err(error::PanioError::new(
             kind,
             format!(
                 "reading power state on '{host_name}' failed: {}",
@@ -5465,7 +5469,7 @@ fn usb_cmd(lab_flag: Option<&str>, cmd: UsbCmd) -> Result<()> {
 }
 
 /// Run the target's usb helper as `<cmd> usb <verb>`; a failure is
-/// `helper_failed` with the helper's code in `child_exit`. paniolo stays agnostic to the helper, like the power hooks — but the
+/// `helper_failed` with the helper's code in `child_exit`. panio stays agnostic to the helper, like the power hooks — but the
 /// vocabulary is fixed rather than passed through, so a constrained remote
 /// host only ever sees the three verbs.
 ///
@@ -5495,7 +5499,7 @@ fn cmd_usb_run(lab_flag: Option<&str>, target: Option<&str>, verb: &str) -> Resu
         error::channel_missing(
             &target,
             "usb",
-            format!("target '{target}' has no usb channel (paniolo usb set -t {target} --cmd ...)"),
+            format!("target '{target}' has no usb channel (panio usb set -t {target} --cmd ...)"),
         )
     })?;
     if !channel_is_local(&lab, u.host.as_deref(), &dh) {
@@ -5512,13 +5516,13 @@ fn cmd_usb_run(lab_flag: Option<&str>, target: Option<&str>, verb: &str) -> Resu
             "usb",
             format!(
                 "no usb cmd configured for '{target}' \
-             (paniolo usb set -t {target} --cmd 'ch9329 -d /dev/...')"
+             (panio usb set -t {target} --cmd 'ch9329 -d /dev/...')"
             ),
         )
     })?;
     // Deliberately the *hid* daemon's runtime dir, not a usb one. On the
     // devices this drives, the mux and the HID injector are the same MCU behind
-    // the same serial port, so when `paniolo console` has a hid daemon running
+    // the same serial port, so when `panio console` has a hid daemon running
     // it owns that port. The helper discovers the daemon through this directory
     // and routes the switch through it; without it, every switch attempted
     // while the console is up would fail on a busy port.
@@ -5540,7 +5544,7 @@ fn cmd_usb_run(lab_flag: Option<&str>, target: Option<&str>, verb: &str) -> Resu
 
 /// Prefix a daemon command with `exec` where the shell supports it.
 ///
-/// On Unix `exec` makes the daemon replace the shell, so the pid paniolo
+/// On Unix `exec` makes the daemon replace the shell, so the pid panio
 /// records is the daemon's own. `cmd.exe` has no `exec`, so on Windows the
 /// shell stays as a parent and the recorded pid is the shell's — which still
 /// answers `platform::pid_alive` correctly, because that shell lives exactly
@@ -5557,7 +5561,7 @@ fn exec_prefixed(cmd: &str) -> String {
 /// its port, or None when the target has no local hid channel. The helper's
 /// `cmd` is run as `<cmd> serve --port 0` via `sh -c`; the contract is that it
 /// publishes `<runtime-base>/hid/<target>/daemon.json` (its
-/// per-target `PANIOLO_RUNTIME_DIR`).
+/// per-target `PANIO_RUNTIME_DIR`).
 /// It may run in the foreground (the bundled helpers do) or fork and exit 0;
 /// either way readiness is the discovery file, not its exit.
 fn ensure_hid_daemon_local(lab: &Lab, target: &str) -> Result<Option<daemons::Endpoint>> {
@@ -5580,9 +5584,7 @@ fn ensure_hid_daemon_local(lab: &Lab, target: &str) -> Result<Option<daemons::En
         error::channel_missing(
             target,
             "hid",
-            format!(
-                "hid channel for '{target}' has no cmd (paniolo hid set -t {target} --cmd ...)"
-            ),
+            format!("hid channel for '{target}' has no cmd (panio hid set -t {target} --cmd ...)"),
         )
     })?;
     eprintln!("Starting hid daemon for '{target}'…");
@@ -5727,7 +5729,7 @@ fn cmd_hid_stop(lab_flag: Option<&str>, target: Option<&str>) -> Result<()> {
 
 /// Run the target's hid helper with `args` appended; a failure is
 /// `helper_failed` with the helper's code in `child_exit`.
-/// Paniolo is agnostic to the helper's CLI — the configured cmd owns it (see
+/// Panio is agnostic to the helper's CLI — the configured cmd owns it (see
 /// docs/hid.md), exactly like the power hooks.
 fn cmd_hid_send(lab_flag: Option<&str>, target: Option<&str>, args: &[String]) -> Result<()> {
     let lab = load_for_read(lab_flag)?;
@@ -5750,7 +5752,7 @@ fn cmd_hid_send(lab_flag: Option<&str>, target: Option<&str>, args: &[String]) -
         error::channel_missing(
             &target,
             "hid",
-            format!("target '{target}' has no hid channel (paniolo hid set -t {target} --cmd ...)"),
+            format!("target '{target}' has no hid channel (panio hid set -t {target} --cmd ...)"),
         )
     })?;
     if !channel_is_local(&lab, h.host.as_deref(), &dh) {
@@ -5767,7 +5769,7 @@ fn cmd_hid_send(lab_flag: Option<&str>, target: Option<&str>, args: &[String]) -
             "hid",
             format!(
                 "no hid cmd configured for '{target}' \
-             (paniolo hid set -t {target} --cmd 'hidrig -d /dev/...')"
+             (panio hid set -t {target} --cmd 'hidrig -d /dev/...')"
             ),
         )
     })?;
@@ -5803,7 +5805,7 @@ fn local_adb(lab: &Lab, target: &str) -> Result<model::AdbChannel> {
             target,
             "adb",
             format!(
-                "target '{target}' has no adb channel (paniolo adb set -t {target} --serial <id>)"
+                "target '{target}' has no adb channel (panio adb set -t {target} --serial <id>)"
             ),
         )
     })?;
@@ -6167,7 +6169,7 @@ mod tests {
         std::fs::write(&path, "[targets.t.power]\nstate_cmd = \"echo on\"\n").unwrap();
         not_configured(
             cmd_power_on(path.to_str(), Some("t"), None),
-            &["no on_cmd configured for 't' (paniolo power set -t t --on-cmd /path/to/script)"],
+            &["no on_cmd configured for 't' (panio power set -t t --on-cmd /path/to/script)"],
         );
     }
 
@@ -6181,9 +6183,9 @@ mod tests {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let base = tempfile::tempdir().unwrap();
-        let prev = std::env::var_os("PANIOLO_RUNTIME_BASE");
+        let prev = std::env::var_os("PANIO_RUNTIME_BASE");
         // Safe: serialized by RUNTIME_BASE_LOCK; restored below.
-        unsafe { std::env::set_var("PANIOLO_RUNTIME_BASE", base.path()) };
+        unsafe { std::env::set_var("PANIO_RUNTIME_BASE", base.path()) };
         let dir = tempfile::tempdir().unwrap();
         let mark = |n: &str| dir.path().join(n);
         let lab = power_levels_lab(
@@ -6209,8 +6211,8 @@ mod tests {
         let cycle_hard = cmd_power_cycle(lab, Some("t"), Some("hard"));
         let state_hard = cmd_power_state(lab, Some("t"), Some("hard"));
         match prev {
-            Some(p) => unsafe { std::env::set_var("PANIOLO_RUNTIME_BASE", p) },
-            None => unsafe { std::env::remove_var("PANIOLO_RUNTIME_BASE") },
+            Some(p) => unsafe { std::env::set_var("PANIO_RUNTIME_BASE", p) },
+            None => unsafe { std::env::remove_var("PANIO_RUNTIME_BASE") },
         }
         on_hard.unwrap();
         assert!(hard_on);
@@ -6247,9 +6249,9 @@ mod tests {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let base = tempfile::tempdir().unwrap();
-        let prev = std::env::var_os("PANIOLO_RUNTIME_BASE");
+        let prev = std::env::var_os("PANIO_RUNTIME_BASE");
         // Safe: serialized by RUNTIME_BASE_LOCK; restored below.
-        unsafe { std::env::set_var("PANIOLO_RUNTIME_BASE", base.path()) };
+        unsafe { std::env::set_var("PANIO_RUNTIME_BASE", base.path()) };
         let parse = |s: &str| model::parse(s).unwrap();
         let ok = power_state_all_levels(
             &parse(
@@ -6271,8 +6273,8 @@ mod tests {
             "t",
         );
         match prev {
-            Some(p) => unsafe { std::env::set_var("PANIOLO_RUNTIME_BASE", p) },
-            None => unsafe { std::env::remove_var("PANIOLO_RUNTIME_BASE") },
+            Some(p) => unsafe { std::env::set_var("PANIO_RUNTIME_BASE", p) },
+            None => unsafe { std::env::remove_var("PANIO_RUNTIME_BASE") },
         }
         ok.unwrap();
         let e = failed.unwrap_err();
@@ -6295,13 +6297,13 @@ mod tests {
     fn version_is_the_stamp_or_says_it_is_a_dev_build() {
         use clap::CommandFactory;
         let rendered = Cli::command().render_version();
-        assert!(rendered.starts_with("paniolo "), "{rendered}");
-        match option_env!("PANIOLO_VERSION") {
-            Some(v) => assert_eq!(rendered.trim(), format!("paniolo {v}")),
+        assert!(rendered.starts_with("panio "), "{rendered}");
+        match option_env!("PANIO_VERSION") {
+            Some(v) => assert_eq!(rendered.trim(), format!("panio {v}")),
             None => assert_eq!(
                 rendered.trim(),
                 format!(
-                    "paniolo {} (unversioned dev build)",
+                    "panio {} (unversioned dev build)",
                     env!("CARGO_PKG_VERSION")
                 )
             ),
@@ -6430,14 +6432,14 @@ mod tests {
         let _guard = crate::daemons::RUNTIME_BASE_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let prev = std::env::var_os("PANIOLO_RUNTIME_BASE");
+        let prev = std::env::var_os("PANIO_RUNTIME_BASE");
         // Safe: serialized by the lock above; restored below.
-        unsafe { std::env::set_var("PANIOLO_RUNTIME_BASE", dir.path()) };
+        unsafe { std::env::set_var("PANIO_RUNTIME_BASE", dir.path()) };
         let url = "http://127.0.0.1:1000/?token=s3cr3t";
         let msg = console_url_over_ssh("dut", "bench1", url);
         match prev {
-            Some(v) => unsafe { std::env::set_var("PANIOLO_RUNTIME_BASE", v) },
-            None => unsafe { std::env::remove_var("PANIOLO_RUNTIME_BASE") },
+            Some(v) => unsafe { std::env::set_var("PANIO_RUNTIME_BASE", v) },
+            None => unsafe { std::env::remove_var("PANIO_RUNTIME_BASE") },
         }
         assert!(!msg.contains("s3cr3t"), "{msg}");
         assert!(msg.contains("ssh bench1 cat "), "{msg}");
@@ -6447,16 +6449,16 @@ mod tests {
     #[test]
     fn console_falls_back_to_a_private_file_not_the_terminal() {
         let dir = tempfile::tempdir().unwrap();
-        // PANIOLO_RUNTIME_BASE is process-global, not test-local: restoring it
+        // PANIO_RUNTIME_BASE is process-global, not test-local: restoring it
         // before this test returns does nothing for the daemons tests running
         // in parallel threads, which read it between planting a discovery file
         // and listing it. Hold the crate-wide lock they hold.
         let _guard = crate::daemons::RUNTIME_BASE_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let prev = std::env::var_os("PANIOLO_RUNTIME_BASE");
+        let prev = std::env::var_os("PANIO_RUNTIME_BASE");
         // Safe: serialized by the lock above; restored below.
-        unsafe { std::env::set_var("PANIOLO_RUNTIME_BASE", dir.path()) };
+        unsafe { std::env::set_var("PANIO_RUNTIME_BASE", dir.path()) };
 
         let video = endpoint(1000, Some("s3cr3t"));
         let url = dashboard_url(
@@ -6471,8 +6473,8 @@ mod tests {
         let msg = console_fallback("dut", &url);
 
         match prev {
-            Some(v) => unsafe { std::env::set_var("PANIOLO_RUNTIME_BASE", v) },
-            None => unsafe { std::env::remove_var("PANIOLO_RUNTIME_BASE") },
+            Some(v) => unsafe { std::env::set_var("PANIO_RUNTIME_BASE", v) },
+            None => unsafe { std::env::remove_var("PANIO_RUNTIME_BASE") },
         }
 
         assert!(
@@ -6516,9 +6518,9 @@ mod tests {
         assert_eq!(ep.http_url("/"), "http://127.0.0.1:1000/?token=s3cr3t");
     }
 
-    /// `paniolo helper` (#300): placement flags are paniolo's only before the
+    /// `panio helper` (#300): placement flags are panio's only before the
     /// helper name. Everything after it is the helper's, so a helper's own
-    /// `-t`, `-i` or `--help` is never taken by paniolo, with or without `--`.
+    /// `-t`, `-i` or `--help` is never taken by panio, with or without `--`.
     #[test]
     fn helper_flags_after_the_name_belong_to_the_helper() {
         let helper = |argv: &[&str]| {
@@ -6537,7 +6539,7 @@ mod tests {
         let s = |v: &[&str]| v.iter().map(|a| a.to_string()).collect::<Vec<_>>();
 
         let (host, target, channel, _, command) = helper(&[
-            "paniolo",
+            "panio",
             "helper",
             "-t",
             "pi5",
@@ -6556,7 +6558,7 @@ mod tests {
         assert_eq!(command, s(&["cambrionix", "-d", "/dev/ttyUSB0", "state"]));
 
         let (host, target, _, interface, command) = helper(&[
-            "paniolo",
+            "panio",
             "helper",
             "serialcap",
             "log",
@@ -6571,22 +6573,22 @@ mod tests {
             s(&["serialcap", "log", "-i", "console", "-t", "x"])
         );
 
-        let (.., command) = helper(&["paniolo", "helper", "cambrionix", "--help"]);
+        let (.., command) = helper(&["panio", "helper", "cambrionix", "--help"]);
         assert_eq!(command, s(&["cambrionix", "--help"]));
 
         let (host, .., command) =
-            helper(&["paniolo", "helper", "--host", "bench1", "zigplug", "list"]);
+            helper(&["panio", "helper", "--host", "bench1", "zigplug", "list"]);
         assert_eq!(host.as_deref(), Some("bench1"));
         assert_eq!(command, s(&["zigplug", "list"]));
 
-        assert!(helper(&["paniolo", "helper"]).4.is_empty());
+        assert!(helper(&["panio", "helper"]).4.is_empty());
         // --channel needs -t; --host and -t are two answers to one question.
-        assert!(Cli::try_parse_from(["paniolo", "helper", "--channel", "power"]).is_err());
-        assert!(Cli::try_parse_from(["paniolo", "helper", "--host", "a", "-t", "b"]).is_err());
+        assert!(Cli::try_parse_from(["panio", "helper", "--channel", "power"]).is_err());
+        assert!(Cli::try_parse_from(["panio", "helper", "--host", "a", "-t", "b"]).is_err());
     }
 
     /// The re-exec'd `helper` puts `--` before the name, so the remote parser
-    /// cannot take the helper's flags, even if it is an older paniolo whose
+    /// cannot take the helper's flags, even if it is an older panio whose
     /// `helper` still parsed flags after the name.
     #[test]
     fn helper_remote_argv_separates_the_helper() {
@@ -6624,15 +6626,15 @@ mod tests {
             }
         };
         assert_eq!(
-            preview(&["paniolo", "video", "preview", "--open"]),
+            preview(&["panio", "video", "preview", "--open"]),
             (None, true)
         );
         assert_eq!(
-            preview(&["paniolo", "video", "preview", "dut"]),
+            preview(&["panio", "video", "preview", "dut"]),
             (Some("dut".to_string()), false)
         );
         assert_eq!(
-            preview(&["paniolo", "video", "preview", "-t", "dut", "--open"]),
+            preview(&["panio", "video", "preview", "-t", "dut", "--open"]),
             (Some("dut".to_string()), true)
         );
     }
@@ -6670,8 +6672,8 @@ mod tests {
         assert!(err.contains("bench"), "{err}");
         // The refusal has to name a way through, or it is just a wall: both
         // `console` (which forwards the ports) and plain `preview`.
-        assert!(err.contains("paniolo console dut"), "{err}");
-        assert!(err.contains("paniolo video preview dut"), "{err}");
+        assert!(err.contains("panio console dut"), "{err}");
+        assert!(err.contains("panio video preview dut"), "{err}");
 
         // The same target with its video channel here is not refused — the
         // gate must not cost a local operator the flag.
@@ -6914,7 +6916,7 @@ mod tests {
         );
     }
 
-    /// `daemons stop` / `restart` accept a daemon as `paniolo daemons` prints
+    /// `daemons stop` / `restart` accept a daemon as `panio daemons` prints
     /// it: bare (every instance of that daemon) or `name[target]` (one).
     #[test]
     fn daemon_spec_parses_both_forms_and_matches_instances() {
@@ -7000,7 +7002,7 @@ mod tests {
         );
     }
 
-    /// `paniolo daemons` prints other processes' raw argv (the stray-helper
+    /// `panio daemons` prints other processes' raw argv (the stray-helper
     /// listing); a control character in it — an ESC-led terminal escape
     /// sequence, in particular — must not reach the terminal unescaped
     /// (Review low #12).
@@ -7109,7 +7111,7 @@ mod tests {
     ];
 
     fn parse(argv: &[&str]) -> Result<Cli, clap::Error> {
-        let mut full = vec!["paniolo"];
+        let mut full = vec!["panio"];
         full.extend_from_slice(argv);
         Cli::try_parse_from(full)
     }

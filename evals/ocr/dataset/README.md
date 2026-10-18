@@ -52,7 +52,7 @@ That is the shape of every boot screen: sparse bright text on black. Measured
 over this set, every TEXT frame has mean luma <= 2, and three of the four clear
 the threshold only on variance. The classifier is not detecting "no signal", it
 is detecting "mostly black" — and mostly-black is what firmware, bootloaders and
-consoles look like, which is the screen type paniolo exists to read.
+consoles look like, which is the screen type panio exists to read.
 
 Sampling density is the whole story:
 
@@ -75,4 +75,4 @@ away by a collector that trusted it.
 
 Not yet written. Text frames get `<stem>.gt.txt` (literal expected text, reading
 order); busy GUI frames get `<stem>.gt.json` with `required_tokens` — the
-strings paniolo actually needs to find — scored by recall rather than CER.
+strings panio actually needs to find — scored by recall rather than CER.

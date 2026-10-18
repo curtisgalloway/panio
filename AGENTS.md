@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 -->
 
-# Paniolo — Agent Instructions
+# Panio — Agent Instructions
 
 ## How these instructions are organized
 
@@ -54,7 +54,7 @@ Use this vocabulary in examples instead:
 | A path | `/srv/tftp/<target>`, `~/tftp/<target>` |
 | A serial or MAC | `AA00BB11CC22DD33`, `00:11:22:33:44:55` |
 
-**One exception:** `192.168.99.0/24` is paniolo's *own* default for the
+**One exception:** `192.168.99.0/24` is panio's *own* default for the
 point-to-point netboot link (`DEFAULT_HOST_IP` in `cli/src/model.rs`). It is a
 product constant, not anyone's network, and belongs in docs and tests.
 
@@ -97,10 +97,10 @@ reflect the change.** Stale docs/help make the PR incomplete; fix them in the
 
 2. **Update the CLI usage help.** Every new or changed command, subcommand,
    flag, or argument needs an accurate clap doc comment (`///`). Verify the
-   rendered `paniolo <cmd> --help` and `<cmd> <sub> --help` of each touched
+   rendered `panio <cmd> --help` and `<cmd> <sub> --help` of each touched
    command, including parent summaries so they still match their subcommands.
 
-3. **Update the usage skill (`skills/paniolo/SKILL.md`)**, the agent-facing
+3. **Update the usage skill (`skills/panio/SKILL.md`)**, the agent-facing
    skill for *driving* a target. If the PR adds, removes, or changes a
    user-facing command, flag, or workflow, update the relevant section and the
    "gotchas" list; purely internal changes can skip this. Companions:
@@ -196,7 +196,7 @@ Releases are **tag-driven**: pushing an annotated `v*` tag to `origin` triggers
 Release; Homebrew tap bump; signed apt repository refresh). The **tag is the single
 source of truth** for the version: every crate's `Cargo.toml` stays at
 `version = "0.1.0"`; don't bump manifests. The workflow derives the version
-from the tag (`${GITHUB_REF_NAME#v}`) and exports it as `PANIOLO_VERSION`
+from the tag (`${GITHUB_REF_NAME#v}`) and exports it as `PANIO_VERSION`
 (baked in by `cli/src/main.rs`); a dev build prints `0.1.0 (unversioned dev
 build)`. Each package smoke step asserts the versions agree.
 
@@ -215,7 +215,7 @@ build)`. Each package smoke step asserts the versions agree.
 
    When on the line, take the minor. Why: `0.1.1`–`0.1.19` were all patch
    bumps, which hid two compatibility breaks (token-authenticated daemons,
-   `0.1.17`; authenticated shutdown, `0.1.19`, which needs `paniolo daemons stop
+   `0.1.17`; authenticated shutdown, `0.1.19`, which needs `panio daemons stop
    <name>` before a newer CLI can replace an older daemon).
 
 3. **Create an annotated tag** `vX.Y.Z: <lowercase one-line summary of the
@@ -243,7 +243,7 @@ build)`. Each package smoke step asserts the versions agree.
      signed when `vars.AZURE_SIGNING_ACCOUNT` is set (gated behind the `release`
      environment's reviewer approval), else unsigned.
    - `package-macos`: one **universal** (arm64 + x86_64) tarball in the Homebrew
-     keg layout (`bin/paniolo`, `libexec/bin/<helper>`, `share/paniolo/skills/`),
+     keg layout (`bin/panio`, `libexec/bin/<helper>`, `share/panio/skills/`),
      ad-hoc signed, or Developer-ID-signed and notarized when all six of
      `MACOS_SIGNING_CERT_P12`, `MACOS_SIGNING_CERT_PASSWORD`,
      `MACOS_SIGNING_IDENTITY`, `MACOS_NOTARY_APPLE_ID`, `MACOS_NOTARY_PASSWORD`,
@@ -272,11 +272,11 @@ patch tag.
 
 ## Purpose
 
-Paniolo is a CLI that lets an AI agent fully control a target machine during
-low-level software development (bootloader, firmware, OS bring-up). "Paniolo"
-is Hawaiian for cowboy; the agent wrangles the target.
+Panio is a CLI that lets an AI agent fully control a target machine during
+low-level software development (bootloader, firmware, OS bring-up). The name
+reads as "Pan I/O": the agent wrangles the target's I/O.
 
-Capabilities (full list: docs/dev/architecture.md#capabilities): netboot (`paniolo
+Capabilities (full list: docs/dev/architecture.md#capabilities): netboot (`panio
 netboot`), HDMI/USB/RFB video with OCR (`video`), serial console with capture logs
 (`serial`), combined video+serial dashboard/KVM (`console`), HID injection (`hid`),
 named target actions (`action`), switchable USB media (`usb`), and power control
@@ -285,14 +285,14 @@ via DTR, hooks, and named levels (`power`, `power-cycle`, `power-state`).
 ## Architecture
 
 One daemon per hardware subsystem, controlled via SSH. No long-running parent
-process; state lives in JSON + PID files under `~/.local/share/paniolo/<target>/`.
-Only `paniolo` needs to be in PATH; each daemon is a backgrounded subprocess.
+process; state lives in JSON + PID files under `~/.local/share/panio/<target>/`.
+Only `panio` needs to be in PATH; each daemon is a backgrounded subprocess.
 
 ## Rust control plane (`cli/`)
 
 The CLI, orchestration, and device glue are Rust. Design and status:
 [`notes/config-redesign.md`](notes/config-redesign.md). All config is one
-CLI-managed lab file (`~/.config/paniolo/lab.toml`, or `--lab`/`PANIOLO_LAB`);
+CLI-managed lab file (`~/.config/panio/lab.toml`, or `--lab`/`PANIO_LAB`);
 commands re-exec over SSH on the host of the channel they touch. Full internals
 (dispatch, ports, helpers, plugin roots, `daemons`, env forwarding, cli/src
 module map): cli/AGENTS.md. Cross-cutting rules:
@@ -303,8 +303,8 @@ module map): cli/AGENTS.md. Cross-cutting rules:
   four). **`video preview` is the only command that prints a token-bearing URL**;
   every other command prints the token-free `http://127.0.0.1:<port>`, because
   output lands in agent transcripts and CI logs (#196).
-- **Helpers live off PATH** in `~/.local/libexec/paniolo/bin` (only `paniolo`
-  installs to `~/.cargo/bin`); run them with `paniolo helper [NAME] [ARGS…]`.
+- **Helpers live off PATH** in `~/.local/libexec/panio/bin` (only `panio`
+  installs to `~/.cargo/bin`); run them with `panio helper [NAME] [ARGS…]`.
 - **CLI argument convention**: every runtime command takes the target either as
   an optional positional or as `-t/--target`, never both. A new runtime verb
   flattens `TargetArg` (main.rs) instead of declaring its own target field.
@@ -320,7 +320,7 @@ module map): cli/AGENTS.md. Cross-cutting rules:
 
 **Errors follow the exit-status contract** ([`docs/errors.md`](docs/errors.md);
 design in `docs/dev/error-contract/design.md`). A failure a consumer might
-branch on returns an `error::PanioloError` of the right kind (`target_not_found`,
+branch on returns an `error::PanioError` of the right kind (`target_not_found`,
 `channel_missing`, `hook_failed`, `daemon_down`, `daemon_request_failed`,
 `unreachable_host`); a bare `anyhow!` exits 109 `internal`. Never
 `std::process::exit(status.code()…)` with a child's status outside the
@@ -328,16 +328,16 @@ documented passthroughs, and use `error::shell_code` there so a signal death is
 128+N, not 255. Changing a code is a breaking change. Adding a kind means
 updating `Kind`, `Kind::ALL` (an exhaustive match beside it stops the test build
 until you look), `EXIT_STATUS_HELP` (a test pins it to `Kind::ALL`),
-`docs/errors.md`, and `skills/paniolo/SKILL.md`.
+`docs/errors.md`, and `skills/panio/SKILL.md`.
 
-**Helper state/runtime-dir API** (daemons.rs `helper_env`): paniolo exports
-pre-created `PANIOLO_STATE_DIR` (durable; `~/.config/paniolo/helpers/<name>/`)
-and `PANIOLO_RUNTIME_DIR` (discovery/locks/logs; `/tmp/paniolo-<uid>/<name>/`)
+**Helper state/runtime-dir API** (daemons.rs `helper_env`): panio exports
+pre-created `PANIO_STATE_DIR` (durable; `~/.config/panio/helpers/<name>/`)
+and `PANIO_RUNTIME_DIR` (discovery/locks/logs; `/tmp/panio-<uid>/<name>/`)
 on every helper invocation. Contract: docs/dev/adding-power-helpers.md.
 
 ## Module layout
 
-Each directory has an `AGENTS.md`. `cli/` (the `paniolo` control plane), `hdmicap/` (HDMI capture, RFB,
+Each directory has an `AGENTS.md`. `cli/` (the `panio` control plane), `hdmicap/` (HDMI capture, RFB,
 dashboard), `serialcap/` (serial daemon), `netbootd/` (DHCP + TFTP + HTTP
 netboot), `hidrig/` (dual-board KB2040 HID injector), `ch9329/` (CH9329 HID
 helper), and `secret/` (shared secret-resolution library) are Rust; `jetkvm/`
@@ -347,27 +347,27 @@ holds the OCR helpers (Apple Vision on macOS, Tesseract on Linux).
 
 ## Runtime paths
 
-The runtime base `/tmp/paniolo-<uid>/` is private: created 0700, and if it
+The runtime base `/tmp/panio-<uid>/` is private: created 0700, and if it
 exists it must be a real directory owned by the current user with no group/other
 bits (a too-open base we own is tightened; a symlink or another owner's
 directory is refused: `platform::ensure_private_dir`). The discovery-file
 readers and the ControlMaster socket dir (`cli/src/ssh.rs`) apply the same
 check. Daemon stderr logs and serialcap capture files are created 0600.
 
-The base is `${PANIOLO_RUNTIME_BASE:-/tmp}`, deliberately not `$TMPDIR` (macOS
+The base is `${PANIO_RUNTIME_BASE:-/tmp}`, deliberately not `$TMPDIR` (macOS
 varies it per environment, hiding a running daemon from other shells) and not
 `$XDG_RUNTIME_DIR` (systemd deletes it when the user's last session ends,
 breaking daemons that outlive their SSH session). Capture daemons
-(hdmicap/serialcap/hid) are per target, in `<base>/paniolo-<uid>/<daemon>/<target>/`;
+(hdmicap/serialcap/hid) are per target, in `<base>/panio-<uid>/<daemon>/<target>/`;
 host-singleton daemons (zigplug/cambrionix/netbootd) are one per host, in
-`<base>/paniolo-<uid>/<daemon>/`.
+`<base>/panio-<uid>/<daemon>/`.
 
 | Purpose | Path |
 |---|---|
-| Lab file | `~/.config/paniolo/lab.toml` (or `--lab`/`PANIOLO_LAB`) |
-| Helper durable state | `~/.config/paniolo/helpers/<name>/` (`PANIOLO_STATE_DIR`) |
-| Plugin helpers / skills | `<root>/libexec/paniolo/bin/`, `<root>/share/paniolo/skills/` per `PANIOLO_PLUGIN_PATH` root |
-| Netboot state / log | `~/.local/share/paniolo/<name>/netboot.json`, `netboot.log` |
+| Lab file | `~/.config/panio/lab.toml` (or `--lab`/`PANIO_LAB`) |
+| Helper durable state | `~/.config/panio/helpers/<name>/` (`PANIO_STATE_DIR`) |
+| Plugin helpers / skills | `<root>/libexec/panio/bin/`, `<root>/share/panio/skills/` per `PANIO_PLUGIN_PATH` root |
+| Netboot state / log | `~/.local/share/panio/<name>/netboot.json`, `netboot.log` |
 | Discovery file | `<daemon dir>/daemon.json`: `{pid, port, token}` + `interfaces:[{name, device, baud}]` (serialcap) or `device` (hid); owner-only |
 | Advisory lock / stderr log | `<daemon dir>/daemon.lock`, `daemon.log` (hdmicap and serialcap; truncated on each CLI-spawned start) |
 | serialcap capture | `<daemon dir>/capture/<name>/serial.jsonl(.1..)` (rotated JSONL, per interface), `pending.json` (current unterminated line) |
@@ -375,7 +375,7 @@ host-singleton daemons (zigplug/cambrionix/netbootd) are one per host, in
 ## Source code constraints
 
 - **No hardcoded network addresses, URLs, or hostnames.** Site-specific values
-  go in config files under `~/.config/paniolo/`, populated via setup commands.
+  go in config files under `~/.config/panio/`, populated via setup commands.
   Error messages must be generic. The same applies to docs, fixtures, and
   captured output; see
   [Never commit private infrastructure](#never-commit-private-infrastructure).
@@ -391,7 +391,7 @@ host-singleton daemons (zigplug/cambrionix/netbootd) are one per host, in
   trusted because it has worked), `baseline` (a prior version of our own
   output), or `ground truth` only when the reference cannot itself be wrong (a
   human-verified screen reading, a measured value).
-- **`paniolo setup`** builds native components from the source tree when run
+- **`panio setup`** builds native components from the source tree when run
   from a clone (`setup::find_repo_root` walks up from the cwd). Outside a
   checkout (Homebrew, .deb, tarball) it runs only `setup::run_packaged`: setuid
   the installed `netbootd-bpf-helper` (macOS), group membership (Linux).
@@ -404,11 +404,11 @@ host-singleton daemons (zigplug/cambrionix/netbootd) are one per host, in
 ## Remote control pattern
 
 ```bash
-ssh control-mac "paniolo netboot set -t target-machine --interface en3 --tftp-root ~/pxe"
-ssh control-mac "paniolo netboot start target-machine"
-TFTP_ROOT=$(ssh control-mac "paniolo netboot tftp-root target-machine")
+ssh control-mac "panio netboot set -t target-machine --interface en3 --tftp-root ~/pxe"
+ssh control-mac "panio netboot start target-machine"
+TFTP_ROOT=$(ssh control-mac "panio netboot tftp-root target-machine")
 scp kernel.img control-mac:"${TFTP_ROOT}/kernel_2712.img"
-op run --env-file .env -- ssh control-mac "paniolo power-cycle target-machine"
+op run --env-file .env -- ssh control-mac "panio power-cycle target-machine"
 ```
 
 ## Adding a new subsystem
@@ -425,7 +425,7 @@ Rust `cli/` crate: a module `cli/src/<subsystem>.rs`; a clap subcommand group +
 handlers in `cli/src/main.rs`; config fields in `cli/src/model.rs` and
 round-tripping lab-file editing in `cli/src/labfile.rs`; for a daemon with a
 PID, state/discovery handling in `cli/src/state.rs` and `cli/src/daemons.rs`.
-Hand-update `skills/paniolo/SKILL.md`, this file, and `docs/`.
+Hand-update `skills/panio/SKILL.md`, this file, and `docs/`.
 
 A new **crate** also needs a CI job and a `scripts/ci-local.sh` line (PR
 checklist step 5), its own `AGENTS.md` for internals, and a mention in Module
@@ -434,7 +434,7 @@ layout above.
 A new **helper binary** must be registered everywhere the helper set is named,
 or it builds green in CI and never reaches users:
 - `Makefile` — `CRATES`
-- `cli/src/setup.rs` — `HELPER_CRATES` (what `paniolo setup` installs from a clone)
+- `cli/src/setup.rs` — `HELPER_CRATES` (what `panio setup` installs from a clone)
 - `.github/workflows/release.yml` — the `HELPERS` env list **and** the rust-cache
   `workspaces` block (v0.1.13 shipped without `amt` because this was missed)
 - `packaging/nfpm.yaml` — the helper list in the package description
@@ -477,10 +477,10 @@ relay driven through the generic power hooks instead.
 
 ## Known limitations / gotchas
 
-- **Drive through paniolo, not around its devices.** Never reconfigure or open
-  a paniolo-managed device by hand: `ifconfig`/`ip`/`ethtool` on the netboot
+- **Drive through panio, not around its devices.** Never reconfigure or open
+  a panio-managed device by hand: `ifconfig`/`ip`/`ethtool` on the netboot
   interface, `screen`/`tio` on a serial port, `kill` on a daemon (also in
-  `skills/paniolo/SKILL.md`). Daemons (netbootd/serialcap/hdmicap/hid) hold the
+  `skills/panio/SKILL.md`). Daemons (netbootd/serialcap/hdmicap/hid) hold the
   device and track state; touching it directly desyncs that state (a stray
   interface address changes what `netif status` reports; opening the serial
   port collides with serialcap). Use `netif mode …`, `serial log`/`send`,
@@ -499,11 +499,11 @@ relay driven through the generic power hooks instead.
 - **Interface configuration requires root:** `netif::configure_interface()` needs
   NOPASSWD sudo (`ifconfig`/`networksetup` on macOS, `ip` on Linux).
 - **SSH PATH.** Non-interactive SSH shells often lack `/opt/homebrew/bin`;
-  paniolo probes the Homebrew paths on macOS and `/usr/sbin`+`/sbin` on Linux.
+  panio probes the Homebrew paths on macOS and `/usr/sbin`+`/sbin` on Linux.
 - **Helper `stop` commands authenticate shutdown.** `serialcap`/`hdmicap`/
   `ch9329`/`hidrig stop` call the daemon's token-protected `POST /stop` instead
   of signaling a discovery-file PID (which may be recycled); zigplug does the
-  same over its HTTP API. Older daemons without the endpoint need `paniolo
+  same over its HTTP API. Older daemons without the endpoint need `panio
   daemons stop <name>` (it checks process identity first) before restarting.
 - **Daemon shutdown hard-exits.** hdmicap (`/preview`) and serialcap (`/stream`)
   serve infinite responses, so graceful axum shutdown would block forever. On
@@ -517,7 +517,7 @@ relay driven through the generic power hooks instead.
   but not a same-subnet host. See docs/power.md.
 - **Homebrew tap upgrades.** A same-version change to install logic won't `brew
   upgrade`; use `brew reinstall` or bump the formula `revision`. After a local
-  `make rust`, the Homebrew keg can shadow the `~/.cargo/bin` paniolo on PATH.
+  `make rust`, the Homebrew keg can shadow the `~/.cargo/bin` panio on PATH.
 - **Component gotchas live with the component.** Capture-device identity and the
   macOS capture layer: hdmicap/AGENTS.md. The pty line-rate rule and serial-port
   exclusivity (`tio`/`screen`/serialcap; `serial watch` vs `serial connect`):

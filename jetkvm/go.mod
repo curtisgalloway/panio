@@ -1,4 +1,4 @@
-module github.com/curtisgalloway/paniolo/jetkvm
+module github.com/curtisgalloway/panio/jetkvm
 
 go 1.25.0
 

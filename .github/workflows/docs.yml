@@ -73,7 +73,7 @@ jobs:
           APT_POOL_RELEASES: "5"
         run: |
           if [ -z "$APT_SIGNING_KEY" ]; then
-            if [ "$GITHUB_REPOSITORY" = "curtisgalloway/paniolo" ]; then
+            if [ "$GITHUB_REPOSITORY" = "curtisgalloway/panio" ]; then
               echo "::error::APT_SIGNING_KEY secret is not set — refusing to deploy a site without /apt/."
               exit 1
             fi

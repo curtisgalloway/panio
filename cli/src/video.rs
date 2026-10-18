@@ -16,9 +16,9 @@
 //!
 //! Ported from the Python `_video.py`, with one model change: the capture
 //! device comes from the lab's `video` channel (per target), not a separate
-//! `video.toml`. The daemon gets `PANIOLO_VISIONOCR` (for `/ocr`) and
-//! `PANIOLO_TARGET` (so the dashboard power-cycle button can call back into
-//! `paniolo power-cycle <target>`).
+//! `video.toml`. The daemon gets `PANIO_VISIONOCR` (for `/ocr`) and
+//! `PANIO_TARGET` (so the dashboard power-cycle button can call back into
+//! `panio power-cycle <target>`).
 
 use std::process::{Command, Stdio};
 
@@ -54,7 +54,7 @@ pub fn untracked(device: &str) -> Option<daemons::Untracked> {
 }
 
 /// The daemon's address with no token: `http://127.0.0.1:<port>`. This is what
-/// paniolo prints, everywhere: its output lands in agent transcripts, CI logs
+/// panio prints, everywhere: its output lands in agent transcripts, CI logs
 /// and pasted terminal output, which is not where a bearer credential belongs
 /// (#196). The token-bearing form is built inline in the one command whose job
 /// is to produce it, `video preview`, and nowhere else — there is deliberately
@@ -82,7 +82,7 @@ pub fn ocr(target: &str, stable: bool, timeout_ms: u64) -> Result<String> {
     let daemon = daemon(target).ok_or_else(|| {
         crate::error::daemon_down(
             DAEMON,
-            "no video daemon running — start one with `paniolo video watch`",
+            "no video daemon running — start one with `panio video watch`",
         )
         .target(target)
     })?;
@@ -120,7 +120,7 @@ pub fn ocr(target: &str, stable: bool, timeout_ms: u64) -> Result<String> {
 /// The recognized text from an OCR envelope.
 ///
 /// `/ocr` returns the whole envelope so callers can reach confidences and
-/// boxes, but `paniolo video read` prints text by default — that is what a
+/// boxes, but `panio video read` prints text by default — that is what a
 /// human or an agent grepping the screen wants, and it is what the command
 /// printed before the envelope existed. A body that is not an envelope is
 /// passed through unchanged rather than rejected, so a daemon older than this
@@ -156,7 +156,7 @@ fn ocr_helper(ocr_mode: Option<&str>) -> Option<std::path::PathBuf> {
 ///
 /// Both are parameters so the whole matrix is testable from one host. The
 /// lookup, because the real `find_binary` searches the libexec dirs before
-/// `$PATH`, so a packaged `rapidocr` in `/usr/libexec/paniolo/bin` beat any
+/// `$PATH`, so a packaged `rapidocr` in `/usr/libexec/panio/bin` beat any
 /// `$PATH` a test set and the test read the machine instead of the code
 /// (GitHub #206). The platform, because a `cfg!` folded in here would leave
 /// each CI platform exercising only its own half, and the claim this function
@@ -173,7 +173,7 @@ fn ocr_helper_with(
         eprintln!(
             "note: video ocr_mode = \"gui\" but the rapidocr helper is not installed; \
              falling back to the default engine, which loses rows of GUI text. \
-             Install it with `paniolo setup`."
+             Install it with `panio setup`."
         );
     }
     find("visionocr")
@@ -183,7 +183,7 @@ fn ocr_helper_with(
 
 /// Start the `target`'s hdmicap daemon for `device`, detached; caller polls
 /// discovery. The target also names the per-target runtime dir (so multiple
-/// targets' daemons coexist) and rides along as `PANIOLO_TARGET` for the
+/// targets' daemons coexist) and rides along as `PANIO_TARGET` for the
 /// dashboard's power-cycle button. `ocr_mode` picks the OCR helper the daemon
 /// will run — see [`ocr_helper`].
 pub fn start_daemon(
@@ -195,8 +195,8 @@ pub fn start_daemon(
     hid_input: Option<&std::path::Path>,
 ) -> Result<std::process::Child> {
     let binary = daemons::find_binary(DAEMON).ok_or_else(|| {
-        crate::error::PanioloError::not_configured(
-            "hdmicap not found (libexec or PATH) — run `paniolo setup`".to_string(),
+        crate::error::PanioError::not_configured(
+            "hdmicap not found (libexec or PATH) — run `panio setup`".to_string(),
         )
     })?;
     let hid_discovery = if device == crate::model::RFB_HID_DEVICE {
@@ -214,7 +214,7 @@ pub fn start_daemon(
         hid_input,
     );
     cmd.envs(daemons::helper_env(DAEMON, Some(target)));
-    cmd.env("PANIOLO_TARGET", target);
+    cmd.env("PANIO_TARGET", target);
     // Capture stderr (tracing output) so a startup failure is diagnosable;
     // daemons::start_failure() reads the tail on timeout.
     let log = daemons::create_log(DAEMON, Some(target))?;
@@ -275,7 +275,7 @@ fn daemon_command(
         cmd.arg("--change-threshold").arg(n.to_string());
     }
     if let Some(ocr) = ocr {
-        cmd.env("PANIOLO_VISIONOCR", ocr);
+        cmd.env("PANIO_VISIONOCR", ocr);
     }
     cmd
 }
@@ -495,7 +495,7 @@ mod tests {
     /// The fallback chain, in order: `visionocr`, then `winocr`, then
     /// `linuxocr`. Dropping a link used to leave the suite green while
     /// `ocr_helper` returned `None` on every host of that platform, which
-    /// silently disables `paniolo video read` and the dashboard's OCR button.
+    /// silently disables `panio video read` and the dashboard's OCR button.
     #[test]
     fn the_default_engine_falls_back_through_every_helper() {
         let dir = tempfile::tempdir().unwrap();

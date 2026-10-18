@@ -16,5 +16,5 @@ cycle_cmd = "shellyplug -d 192.0.2.41 cycle"
 
 [targets.tablet.adb]
 serial = "ABC123"
-# paniolo lab — managed by the `paniolo` CLI; hand-edits are preserved
+# panio lab — managed by the `panio` CLI; hand-edits are preserved
 

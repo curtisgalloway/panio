@@ -7,7 +7,7 @@ SPDX-License-Identifier: Apache-2.0
 
 Per-platform support status and behavior, moved from the root AGENTS.md (which keeps a summary and the portable-code rules).
 
-Paniolo runs on three host platforms. (Network RFB video sources are
+Panio runs on three host platforms. (Network RFB video sources are
 platform-independent Rust and build and test on all three in CI; the
 JetKVM-through-RFB path was hardware-verified from a macOS control host only.)
 
@@ -43,16 +43,16 @@ KVM-GO):
   open). HID and control are unaffected.
 - **OCR is absent.** `Windows.Media.Ocr` is the in-box candidate, and the `windows`
   crate is already a hdmicap dependency.
-- **`paniolo doctor` cannot probe a Windows control host.** Probes run natively
+- **`panio doctor` cannot probe a Windows control host.** Probes run natively
   locally, but the SSH path renders them as POSIX shell (`sh -c 'test -e …'`), which
   PowerShell cannot run. It is the one verb that speaks shell over the wire rather
-  than pure paniolo; the fix is to have the remote side run `paniolo doctor`
+  than pure panio; the fix is to have the remote side run `panio doctor`
   (not done).
 
 ## Dispatching to a Windows control host
 
-`paniolo <cmd> -t <target>` works when the target's host is Windows. Dispatch
-ships a lab slice, re-execs `paniolo` against it, and cleans the slice up; only the
+`panio <cmd> -t <target>` works when the target's host is Windows. Dispatch
+ships a lab slice, re-execs `panio` against it, and cleans the slice up; only the
 re-exec was ever shell-safe, which matters wherever the remote shell is not ours to
 choose.
 
@@ -63,7 +63,7 @@ choose.
 - **The re-exec is fine as is.** `remote_command` quotes arguments POSIX-style, and
   PowerShell reads `'C:\Users\x\lab.toml'` as the same literal. The `VAR='v' cmd`
   env-prefix form is *not* portable, but dispatch passes no env.
-- **The slice path is deliberately relative** (`.paniolo-lab-<pid>-<ns>.toml`).
+- **The slice path is deliberately relative** (`.panio-lab-<pid>-<ns>.toml`).
   SFTP reports a Windows home as `/C:/Users/name`, which no native Windows program
   can open, so an absolute path from `pwd` is unusable as `--lab`. Both platforms
   start an SSH session in the home directory (SFTP's default), so a relative name
@@ -75,7 +75,7 @@ the slice was cleaned up. Unix dispatch is unchanged.
 
 ## Writing portable code here
 
-The POSIX primitives paniolo depends on live behind `cli/src/platform.rs`, one
+The POSIX primitives panio depends on live behind `cli/src/platform.rs`, one
 implementation per platform with a documented contract each: `current_uid`,
 `runtime_root`, `ensure_private_dir`, `make_executable`, `pid_alive`, `signal_pid` /
 `try_signal_pid` / `terminate_pid`, `is_superuser`, `detach`, `exec_replace`.
@@ -115,7 +115,7 @@ Two bugs found that way:
 - **Non-positive pids were unguarded on Unix.** `kill()` reads 0 as "every process
   in my group" and -1 as "every process I may signal", so a zero or corrupt pid in a
   discovery file made `pid_alive` answer *running* and would have made
-  `signal_pid(.., Kill)` kill paniolo and its launching shell. `is_real_pid` now
+  `signal_pid(.., Kill)` kill panio and its launching shell. `is_real_pid` now
   guards every entry point in all five copies, with a test in each.
 - **Opaque lab-file commands ran through `sh -c`.** Power hooks and the hid `cmd`
   are user-written strings that need a shell; `platform::shell_command` supplies
@@ -129,27 +129,27 @@ opt-in helper doctor check): it runs a lab-file command, so locally it goes thro
 
 ## Windows packaging
 
-The Windows artifact is a **portable zip**, not an MSI: paniolo is a CLI plus nine
+The Windows artifact is a **portable zip**, not an MSI: panio is a CLI plus nine
 helpers, so the analogue of the Homebrew tap and `.deb` is a tarball of binaries.
 The layout is flat, since Windows has no bin/libexec split; the exe's own directory
 is the install prefix:
 
 ```
-paniolo\
-  paniolo.exe          <- the only thing that goes on PATH
+panio\
+  panio.exe          <- the only thing that goes on PATH
   libexec\
     hdmicap.exe  serialcap.exe  netbootd.exe  hidrig.exe  …  winocr.exe
-  share\paniolo\skills\
-    paniolo\SKILL.md  kvm-puppeting\SKILL.md  control-host\SKILL.md
+  share\panio\skills\
+    panio\SKILL.md  kvm-puppeting\SKILL.md  control-host\SKILL.md
 ```
 
 `daemons::exe_relative_dirs` adds `<exe dir>\libexec` on Windows, and
 `daemons::find_binary` tries `<name>.exe` before the bare name.
-`skills::skills_dirs_for_exe` adds `<exe dir>\share\paniolo\skills`. (Through v0.3.0
-the zip staged only exes and the CLI looked one level up, so `paniolo skill` listed
+`skills::skills_dirs_for_exe` adds `<exe dir>\share\panio\skills`. (Through v0.3.0
+the zip staged only exes and the CLI looked one level up, so `panio skill` listed
 nothing; the first `/release-train` dry run caught it.) `package-windows` stages the
-skills and smoke-tests the expanded zip: `--help`, `paniolo skill` from outside the
-tree, every helper's `--help`, winocr decoding a tiny PNG. `paniolo setup` on
+skills and smoke-tests the expanded zip: `--help`, `panio skill` from outside the
+tree, every helper's `--help`, winocr decoding a tiny PNG. `panio setup` on
 Windows only verifies the helper layout: no setuid bit, no `dialout` group, no OCR
 helper to build.
 
@@ -186,15 +186,15 @@ Windows headers. Those need the real host.
 Per-subsystem behavior:
 
 - **OCR backend.**
-  - *macOS:* Apple Vision (`visionocr.swift`, compiled by `paniolo setup`).
-  - *Linux:* Tesseract (`ocr/linuxocr`, copied by `paniolo setup`; needs the
+  - *macOS:* Apple Vision (`visionocr.swift`, compiled by `panio setup`).
+  - *Linux:* Tesseract (`ocr/linuxocr`, copied by `panio setup`; needs the
     `tesseract-ocr` package).
   - *Windows:* none. A port would supply a third binary behind the same stdin-PNG →
-    stdout-text interface, exposed via `PANIOLO_VISIONOCR`.
+    stdout-text interface, exposed via `PANIO_VISIONOCR`.
 - **Netboot privileges.**
   - *macOS:* 14+ allows DHCP (67) and TFTP (69) rootless; `sudo` only for interface
     config (`ifconfig`).
-  - *Linux:* both ports need root, so `paniolo netboot start` prepends `sudo` when
+  - *Linux:* both ports need root, so `panio netboot start` prepends `sudo` when
     spawning `netbootd`, and `ip addr add` uses sudo. netbootd drops to the invoking
     user (`SUDO_UID`/`SUDO_GID`) once its listeners are bound, so its later `sudo ip
     neigh` / `sudo ip addr` calls run unprivileged. Transparent with passwordless
@@ -243,7 +243,7 @@ Per-subsystem behavior:
     `turbojpeg` crate builds a vendored libjpeg-turbo: Debian's libturbojpeg is too
     old for its pkg-config path, and its `require-simd` default makes nasm
     mandatory on x86-64). `make install` fails early with a hint if any are missing
-    (`check-deps` in the Makefile); `paniolo setup` prints a reminder.
+    (`check-deps` in the Makefile); `panio setup` prints a reminder.
     `CaptureStream::next` returns the whole mmap'd buffer, sized once at the
     format's worst-case `sizeimage` (for MJPG the *uncompressed* frame, 4,147,200
     bytes at 1080p), so `frame()` must trim it to the `Metadata.bytesused` the

@@ -7,7 +7,7 @@ conditions = ["cold", "warm", "preloaded"]
 capabilities = ["serial"]
 goal = """
 On the Pi `pico`, run `uname -a` at the serial console and show me the output.
-List the exact paniolo commands you would run, in order, and note any ordering
+List the exact panio commands you would run, in order, and note any ordering
 constraints.
 """
 traps = [
@@ -16,9 +16,9 @@ traps = [
   "input only lands if the target's console actually reads the UART",
 ]
 reference = [
-  'paniolo serial watch pico',
-  'paniolo serial send pico "uname -a"',
-  'paniolo serial log pico --since <seq>   # read back what the target echoed',
+  'panio serial watch pico',
+  'panio serial send pico "uname -a"',
+  'panio serial log pico --since <seq>   # read back what the target echoed',
 ]
 
 seed = "bench.toml"

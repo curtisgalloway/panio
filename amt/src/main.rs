@@ -14,12 +14,12 @@
 
 //! amt — power control for Intel AMT (vPro) machines over WS-Management.
 //!
-//! A one-shot paniolo power helper: each invocation speaks SOAP over
+//! A one-shot panio power helper: each invocation speaks SOAP over
 //! verified HTTPS by default (plain HTTP only with `--allow-insecure-http`)
 //! to the machine's Management Engine and exits. The ME answers whether the host
 //! is on, off, or has no OS installed at all, which is what makes AMT both a
 //! power switch and — unlike a smart plug driven blind — a power *sensor*.
-//! Hook-facing subcommands follow the paniolo helper conventions
+//! Hook-facing subcommands follow the panio helper conventions
 //! (docs/dev/adding-power-helpers.md):
 //!   state         prints exactly `on` or `off` (errors on an unmapped state)
 //!   on/off        request the state + confirm by read-back
@@ -66,7 +66,7 @@ const RFB_PASSWORD: Spec = Spec {
     command_flag: "--rfb-password-command",
 };
 
-/// Exit status for a credential that could not be obtained: paniolo's
+/// Exit status for a credential that could not be obtained: panio's
 /// `not_configured`, since retrying will not help.
 const EXIT_NOT_CONFIGURED: u8 = 3;
 

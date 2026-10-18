@@ -1,15 +1,15 @@
 ---
 name: control-host
 description: >
-  Build a new paniolo control host from blank media — flash Raspberry Pi OS to
+  Build a new panio control host from blank media — flash Raspberry Pi OS to
   an SD card, install the cloud-init seed that makes the box come up with SSH
-  authorized and paniolo installed, and enroll it in the lab file. Use when
+  authorized and panio installed, and enroll it in the lab file. Use when
   asked to provision, image, flash, re-image, seed, or stand up a control host
   or bench host, when a control host must be replaced or rebuilt, or when
-  someone has a blank Raspberry Pi that needs to become a paniolo host. Covers
+  someone has a blank Raspberry Pi that needs to become a panio host. Covers
   identifying the right removable device before writing to it, the placeholder
   render, and the Pi OS first-boot gotchas. This is host *creation*; driving
-  targets from a host that already exists is the `paniolo` skill.
+  targets from a host that already exists is the `panio` skill.
 ---
 
 <!--
@@ -17,11 +17,11 @@ SPDX-FileCopyrightText: 2026 Curtis Galloway
 SPDX-License-Identifier: Apache-2.0
 -->
 
-# Building a paniolo control host
+# Building a panio control host
 
 A **control host** is the Linux box physically cabled to your targets: serial
 adapters, HDMI capture, HID rig, netboot link, power switching. This skill
-takes a blank SD card to a host that answers SSH with paniolo installed.
+takes a blank SD card to a host that answers SSH with panio installed.
 
 You run every command here on your **dev machine** (the one with the card
 reader), not on the host being built. It does not exist yet.
@@ -32,8 +32,8 @@ the disk. Rationale and hardware sizing: `docs/control-host.md`.
 
 ## Before you start
 
-- The seed files, from a paniolo checkout at `packaging/host-seed/pi-sd/`, or
-  from `/usr/share/paniolo/` on a packaged install. `paniolo skill
+- The seed files, from a panio checkout at `packaging/host-seed/pi-sd/`, or
+  from `/usr/share/panio/` on a packaged install. `panio skill
   control-host --path` shows where this file came from if you need to locate
   the install.
 - An SD card, 8 GB or larger. A card reader.
@@ -150,12 +150,12 @@ is not redundant with anything in `user-data`. See the gotchas.
 | `<user>` | operator account name |
 | `<full-name>` | GECOS field, cosmetic |
 | `<ssh-public-key>` | one full public key line |
-| `<version>` | paniolo release, no `v` prefix; appears twice on one line |
+| `<version>` | panio release, no `v` prefix; appears twice on one line |
 
 For the current release:
 
 ```bash
-gh release view --repo curtisgalloway/paniolo --json tagName --jq .tagName
+gh release view --repo curtisgalloway/panio --json tagName --jq .tagName
 ```
 
 Then edit the file, or render it with `sed`:
@@ -193,13 +193,13 @@ sudo umount /mnt/bootfs && sync    # Linux
 ```
 
 Put the card in the Pi and power it on. **First boot takes several minutes**:
-it waits for the network, runs `apt update`, and downloads the paniolo `.deb`.
+it waits for the network, runs `apt update`, and downloads the panio `.deb`.
 It reboots itself along the way. Do not conclude it has failed early.
 
 Then, from the dev machine:
 
 ```bash
-ssh <user>@<hostname> paniolo --version
+ssh <user>@<hostname> panio --version
 ```
 
 If the name does not resolve, try `<hostname>.local` — the seed installs
@@ -208,8 +208,8 @@ avahi. Otherwise find the lease on your router.
 ## Step 8 — enroll it in the lab
 
 ```bash
-paniolo host add <name> --ssh <user>@<hostname>
-paniolo configure <target> -H <name>
+panio host add <name> --ssh <user>@<hostname>
+panio configure <target> -H <name>
 ```
 
 `configure` runs discovery on the new host over SSH and prints a proposed
@@ -217,13 +217,13 @@ paniolo configure <target> -H <name>
 it into the lab file, and commits. Do not edit the lab file silently on their
 behalf.
 
-You should not need `paniolo setup` on a seeded host. On Linux its packaged
+You should not need `panio setup` on a seeded host. On Linux its packaged
 mode only ensures the `dialout` and `video` groups and warns if Tesseract is
 missing, and the seed already does both.
 
 ## When it does not come up
 
-The host has no paniolo on it yet, so there is no remote channel to debug
+The host has no panio on it yet, so there is no remote channel to debug
 through. Get a person to the bench with HDMI or the Pi's serial UART, then:
 
 ```bash

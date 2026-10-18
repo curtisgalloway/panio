@@ -20,7 +20,7 @@
 #
 # BRIK_HOST is the ssh destination (a hostname or an ~/.ssh/config alias) and
 # BRIK_DEST the checkout on it, in the forward-slash form the host's tar takes
-# (e.g. C:/src/paniolo). Both come from the environment and have no default:
+# (e.g. C:/src/panio). Both come from the environment and have no default:
 # the real values name private infrastructure, which does not belong in the
 # repo (AGENTS.md, "Never commit private infrastructure").
 #
@@ -35,7 +35,7 @@ set -euo pipefail
 if [ -z "${BRIK_HOST:-}" ] || [ -z "${BRIK_DEST:-}" ] || [ "$#" -eq 0 ]; then
   echo "usage: BRIK_HOST=<ssh host> BRIK_DEST=<path on host> $0 <crate> [crate...]" >&2
   echo "  BRIK_HOST  ssh destination of the Windows bench host (no default)" >&2
-  echo "  BRIK_DEST  checkout path on it, forward slashes, e.g. C:/src/paniolo (no default)" >&2
+  echo "  BRIK_DEST  checkout path on it, forward slashes, e.g. C:/src/panio (no default)" >&2
   exit 2
 fi
 HOST="$BRIK_HOST"

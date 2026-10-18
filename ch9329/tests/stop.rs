@@ -50,8 +50,8 @@ fn authenticated_stop_exits_and_removes_discovery() {
             "--port",
             "0",
         ])
-        .env("PANIOLO_RUNTIME_DIR", &dir)
-        // The daemon logs which path stopped it on stderr (where the paniolo CLI
+        .env("PANIO_RUNTIME_DIR", &dir)
+        // The daemon logs which path stopped it on stderr (where the panio CLI
         // collects daemon.log); captured to prove below that the stop arrived over
         // HTTP rather than as a signal.
         .stdout(Stdio::null())
@@ -74,7 +74,7 @@ fn authenticated_stop_exits_and_removes_discovery() {
     }
     let result = Command::new(env!("CARGO_BIN_EXE_ch9329"))
         .arg("stop")
-        .env("PANIOLO_RUNTIME_DIR", &daemon.dir)
+        .env("PANIO_RUNTIME_DIR", &daemon.dir)
         .output()
         .unwrap();
     assert!(

@@ -6,13 +6,13 @@ description: >
   look-act-settle-verify discipline for driving a desktop, app, installer, or
   BIOS with no DOM, no accessibility API, and no element tree, just pixels and
   HID events. Use when an agent must click, type into, navigate, automate, or
-  operate a graphical OS/application on a paniolo target that has `video` + `hid`
+  operate a graphical OS/application on a panio target that has `video` + `hid`
   channels (an Openterface Mini-KVM, or a capture dongle plus a KB2040 injector)
   — especially a machine with no network, no installable agent, or a pre-boot
   screen. Covers the perception/action loop, keyboard-first navigation, the
   pixel→logical mouse-coordinate scaling, warming the hid daemon for reliable
   multi-step interactions, OCR-assisted reading, and the safety rules for acting
-  on a real machine. Pairs with the `paniolo` skill (the command mechanics).
+  on a real machine. Pairs with the `panio` skill (the command mechanics).
 ---
 
 <!--
@@ -34,9 +34,9 @@ limitations under the License.
 # Puppeting a GUI through a KVM-like interface
 
 You have **eyes and hands on a separate physical computer** (the *target*)
-through paniolo's `video` and `hid` channels. The target's screen arrives as a
-captured image (`paniolo video`); your keystrokes and mouse events go out
-through an emulated USB keyboard/mouse (`paniolo hid`), so the target sees
+through panio's `video` and `hid` channels. The target's screen arrives as a
+captured image (`panio video`); your keystrokes and mouse events go out
+through an emulated USB keyboard/mouse (`panio hid`), so the target sees
 ordinary HID input. This works on any target with HDMI + USB — any OS, an
 installer, the BIOS, a machine you may not install software on.
 
@@ -46,12 +46,12 @@ every keystroke and click has real consequences. Work accordingly.
 
 This skill is the *doctrine* — how to think and what loop to run. For the
 command surface (channel setup, every `video`/`hid` flag, the lab file, remote
-hosts) see the **`paniolo`** skill; this skill assumes the target already has
+hosts) see the **`panio`** skill; this skill assumes the target already has
 working `video` and `hid` channels.
 
 ## Hardware is irrelevant to the method
 
-Four injectors are common and all speak the same `paniolo hid` commands:
+Four injectors are common and all speak the same `panio hid` commands:
 
 - an **Openterface Mini-KVM** (one box: an MS2109 HDMI capture + a CH9329 HID
   bridge, driven by the `ch9329` helper),
@@ -78,15 +78,15 @@ all).
 1. Start the capture daemon and warm the hid daemon (see *Warm the daemon*):
 
    ```sh
-   paniolo video watch <target>      # start the HDMI capture daemon
-   paniolo hid serve   <target>      # warm the hid daemon (idempotent; video watch also starts it)
-   paniolo hid send -t <target> ping # confirm the injector answers
+   panio video watch <target>      # start the HDMI capture daemon
+   panio hid serve   <target>      # warm the hid daemon (idempotent; video watch also starts it)
+   panio hid send -t <target> ping # confirm the injector answers
    ```
 
 2. **Take one screenshot and view it before doing anything else.**
 
    ```sh
-   paniolo video shot <target> -o screen.png    # prints "signal=… hash=H" on stderr
+   panio video shot <target> -o screen.png    # prints "signal=… hash=H" on stderr
    ```
 
    Confirm the image shows the machine you were asked to operate. **If you
@@ -104,9 +104,9 @@ Every interaction is the same cycle. Treat it as non-negotiable while you are
 learning a UI.
 
 ```sh
-paniolo video shot <target> -o screen.png            # 1. look — then VIEW the image
-paniolo hid send  -t <target> combo LEFT_ALT F       # 2. act (one small action)
-paniolo video shot <target> --changed-since H \
+panio video shot <target> -o screen.png            # 1. look — then VIEW the image
+panio hid send  -t <target> combo LEFT_ALT F       # 2. act (one small action)
+panio video shot <target> --changed-since H \
         --timeout 5000 -o screen.png                 # 3. settle — block until pixels change
                                                      # 4. verify — VIEW the saved frame
 ```
@@ -134,8 +134,8 @@ Rules that keep the loop honest:
 
 ## Warm the daemon for multi-step work
 
-Each bare `paniolo hid send` is a fresh process. With the **hid daemon** running
-(`paniolo hid serve <target>`, or `paniolo video watch`/`paniolo console <target>`, which
+Each bare `panio hid send` is a fresh process. With the **hid daemon** running
+(`panio hid serve <target>`, or `panio video watch`/`panio console <target>`, which
 start it for any target with a `hid` channel; the browser's noVNC view types through the
 same daemon), every injection flows through one long-lived connection that owns the
 injector. This matters because the daemon is what makes **held state survive
@@ -145,7 +145,7 @@ across commands**:
   later commands), and click-and-drag, only compose reliably *through the
   daemon* — its one session carries the in-flight HID report. Without it, a
   held key may be released when the next process starts.
-- The CLI and the browser KVM (`paniolo console`) intermix cleanly, because the
+- The CLI and the browser KVM (`panio console`) intermix cleanly, because the
   daemon serializes everyone's commands onto the one wire.
 
 So: for anything beyond a single tap/click, **warm the daemon first**. A single
@@ -156,8 +156,8 @@ So: for anything beyond a single tap/click, **warm the daemon first**. A single
 Vision-guided clicking is the least reliable primitive you have. Prefer, in
 order:
 
-1. **Keyboard shortcuts** — `paniolo hid send combo LEFT_CONTROL S`,
-   `paniolo hid send key F5`.
+1. **Keyboard shortcuts** — `panio hid send combo LEFT_CONTROL S`,
+   `panio hid send key F5`.
 2. **Menu accelerators** — on Windows, tap `LEFT_ALT` to reveal the underlined
    letters, then the letter: `hid send key LEFT_ALT` then `hid send key F` then
    `hid send key O` for File→Open.
@@ -191,8 +191,8 @@ capture:
 
 ```sh
 # 412*32767/1920 = 7031 ; 309*32767/1080 = 9375
-paniolo hid send -t <target> moveabs 7031 9375
-paniolo hid send -t <target> click left
+panio hid send -t <target> moveabs 7031 9375
+panio hid send -t <target> click left
 ```
 
 - Use the screenshot's **native** pixel size. If you viewed it downscaled,
@@ -209,7 +209,7 @@ paniolo hid send -t <target> click left
 - Right-click is `click right`; double-click is two `click left` in quick
   succession (warm the daemon so they are not split across processes).
 - Scrolling is `scroll <amount>` (positive scrolls up, negative down — e.g.
-  `paniolo hid send -t <target> scroll -3`) — prefer it over dragging a
+  `panio hid send -t <target> scroll -3`) — prefer it over dragging a
   scrollbar or spamming arrow keys in scrollable lists and pages.
 
 If a click consistently lands a little off, your `screen_width`/`screen_height`
@@ -218,7 +218,7 @@ before adjusting anything else.
 
 ## Read the screen with OCR
 
-You do not have to eyeball every pixel. `paniolo video read <target>` runs OCR
+You do not have to eyeball every pixel. `panio video read <target>` runs OCR
 on the current frame and prints the text — use it to confirm a window title, a
 button label, an error message, or which screen you are on, and to locate text
 you then translate to a click. It reads large UI text well; very small console
@@ -227,7 +227,7 @@ so verify critical strings against a screenshot.
 
 ## Typing
 
-- `paniolo hid send type "some text"` types a string. It assumes a **US
+- `panio hid send type "some text"` types a string. It assumes a **US
   keyboard layout** on the target; if output looks transposed, the target's
   layout differs — tell the user rather than guessing.
 - **Verify focus before typing anything that matters.** Click the field, settle,
@@ -248,7 +248,7 @@ so verify critical strings against a screenshot.
   anything you were not told to expect, **stop and ask** rather than entering
   guessed credentials or dismissing it.
 - When you are done, leave the target in a sane state (close what you opened,
-  release any held keys with `paniolo hid send releaseall` — note it releases
+  release any held keys with `panio hid send releaseall` — note it releases
   **keyboard** state only; a mouse button held with `mdown` needs an explicit
   `mup`).
 
@@ -257,11 +257,11 @@ so verify critical strings against a screenshot.
 | symptom | likely cause / fix |
 |---|---|
 | screenshot is black / "no signal" | target asleep or not driving video; wake it (`hid send key LEFT_SHIFT`, or move the mouse) and re-shoot |
-| `video shot` errors / no frame | capture daemon not running — `paniolo video watch <target>` first (or `paniolo console`) |
+| `video shot` errors / no frame | capture daemon not running — `panio video watch <target>` first (or `panio console`) |
 | clicks land offset | wrong screen size in the scaling — re-screenshot, use its native pixel dimensions; the capture tracks the target's current mode |
-| click seems ignored | scale was off (clicked empty space), or a multi-step interaction split across processes — warm the daemon (`paniolo hid serve`) and retry |
+| click seems ignored | scale was off (clicked empty space), or a multi-step interaction split across processes — warm the daemon (`panio hid serve`) and retry |
 | `moveabs` didn't move the cursor where expected | you passed pixels, not logical `0..32767` — apply the scaling formula |
 | held modifier/drag doesn't work | one-shot processes don't carry held state — run through the daemon |
 | typed text garbled / wrong characters | non-US layout on the target, or you typed into a defocused window — click the field and confirm the caret first |
-| injector doesn't respond (`ping` fails) | host-side problem: the hid channel's device/cmd is wrong, or the injector's control link is unplugged — see the `paniolo` skill's `hid`/`doctor`. (A passing `ping` does not prove the target sees input: on the dual-board rig the host-powered control board answers `ping` itself, and the Openterface Mini-KVM is powered from either side, so `ping` passes with the target off) |
-| CH9329: target sees no input though `ping` works | the target hasn't enumerated the emulated HID — check `paniolo hid send info` (`target_connected`); re-seat the target USB cable |
+| injector doesn't respond (`ping` fails) | host-side problem: the hid channel's device/cmd is wrong, or the injector's control link is unplugged — see the `panio` skill's `hid`/`doctor`. (A passing `ping` does not prove the target sees input: on the dual-board rig the host-powered control board answers `ping` itself, and the Openterface Mini-KVM is powered from either side, so `ping` passes with the target off) |
+| CH9329: target sees no input though `ping` works | the target hasn't enumerated the emulated HID — check `panio hid send info` (`target_connected`); re-seat the target USB cable |

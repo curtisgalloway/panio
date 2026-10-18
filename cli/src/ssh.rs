@@ -58,14 +58,14 @@ fn uid() -> u32 {
     crate::platform::current_uid()
 }
 
-/// Short directory holding paniolo's default ControlMaster sockets. Kept short
+/// Short directory holding panio's default ControlMaster sockets. Kept short
 /// because a Unix-domain socket path is length-limited and ssh appends a 40-char
 /// `%C` hash; `$XDG_RUNTIME_DIR` is short on Linux, else the platform's
 /// runtime root (`/tmp` on Unix).
 ///
 /// Created and validated as a private directory (0700, owned by us) through
 /// the same check as the daemon runtime base — on macOS it *is* the same
-/// `/tmp/paniolo-<uid>` path, and a plain `create_dir_all` here once left
+/// `/tmp/panio-<uid>` path, and a plain `create_dir_all` here once left
 /// that base 0755 with every capture log beneath it world-readable. A path
 /// that cannot be made private is an error, never a silent fallback: a
 /// ControlMaster socket in a squatter's directory is an open SSH session in
@@ -74,7 +74,7 @@ fn control_dir() -> std::io::Result<PathBuf> {
     let base = std::env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(crate::platform::default_runtime_root);
-    let d = base.join(format!("paniolo-{}", uid()));
+    let d = base.join(format!("panio-{}", uid()));
     crate::platform::ensure_private_dir(&d).map_err(std::io::Error::other)?;
     Ok(d)
 }
@@ -139,7 +139,7 @@ pub fn shell_quote(s: &str) -> String {
     }
 }
 
-/// Environment variables paniolo carries to a remote control host when it
+/// Environment variables panio carries to a remote control host when it
 /// dispatches a command there: the secrets a helper reads from its
 /// environment rather than from the lab file (docs/power.md "Credentials").
 /// This one constant is the whole policy — nothing else in the local
@@ -199,7 +199,7 @@ fn is_env_name(s: &str) -> bool {
 /// stdin still attached:
 ///
 /// ```text
-/// sh -c 'IFS= read -r AMT_PASSWORD && export AMT_PASSWORD && exec "$@"' sh paniolo …
+/// sh -c 'IFS= read -r AMT_PASSWORD && export AMT_PASSWORD && exec "$@"' sh panio …
 /// ```
 ///
 /// `IFS=` and `-r` keep the value byte-for-byte (leading blanks, backslashes);
@@ -523,7 +523,7 @@ pub fn forward(host: &Host, remote_port: u16) -> anyhow::Result<Forward> {
         }
         if std::time::Instant::now() > deadline {
             let _ = child.kill();
-            return Err(crate::error::PanioloError::new(
+            return Err(crate::error::PanioError::new(
                 crate::error::Kind::Timeout,
                 format!("timed out waiting for forwarded port {local_port}"),
             )
@@ -557,8 +557,8 @@ mod tests {
     #[test]
     fn remote_command_without_env_is_the_quoted_argv() {
         assert_eq!(
-            remote_command(&argv(&["paniolo", "serial", "send", "a b"]), &[]),
-            "paniolo serial send 'a b'"
+            remote_command(&argv(&["panio", "serial", "send", "a b"]), &[]),
+            "panio serial send 'a b'"
         );
     }
 
@@ -569,11 +569,11 @@ mod tests {
     #[test]
     fn remote_command_with_env_wraps_in_the_stdin_prelude_without_the_value() {
         let env = vec![("AMT_PASSWORD".to_string(), "hunter2".to_string())];
-        let cmd = remote_command(&argv(&["paniolo", "power-state", "nuc"]), &env);
+        let cmd = remote_command(&argv(&["panio", "power-state", "nuc"]), &env);
         assert_eq!(
             cmd,
             "sh -c 'IFS= read -r AMT_PASSWORD && export AMT_PASSWORD && exec \"$@\"' \
-             sh paniolo power-state nuc"
+             sh panio power-state nuc"
         );
         assert!(!cmd.contains("hunter2"), "{cmd}");
     }
@@ -633,11 +633,11 @@ mod tests {
         let mut sh = Command::new("sh");
         sh.arg("-c");
         sh.stdout(Stdio::piped()).stderr(Stdio::piped());
-        let inner = "printf '%s|%s|' \"$PANIOLO_TEST_A\" \"$PANIOLO_TEST_B\"; cat";
+        let inner = "printf '%s|%s|' \"$PANIO_TEST_A\" \"$PANIO_TEST_B\"; cat";
         let remote = argv(&["sh", "-c", inner]);
         let env = vec![
-            ("PANIOLO_TEST_A".to_string(), "  first secret".to_string()),
-            ("PANIOLO_TEST_B".to_string(), r"it's \2#".to_string()),
+            ("PANIO_TEST_A".to_string(), "  first secret".to_string()),
+            ("PANIO_TEST_B".to_string(), r"it's \2#".to_string()),
         ];
         let out = launch(sh, &remote, &env, StdinSource::Data("the rest\n"))
             .unwrap()
@@ -763,8 +763,8 @@ mod tests {
     #[test]
     fn sftp_quote_preserves_windows_paths() {
         assert_eq!(
-            sftp_quote(r"C:\Users\curti\.paniolo-lab-1.toml"),
-            r#""C:\\Users\\curti\\.paniolo-lab-1.toml""#
+            sftp_quote(r"C:\Users\curti\.panio-lab-1.toml"),
+            r#""C:\\Users\\curti\\.panio-lab-1.toml""#
         );
     }
 

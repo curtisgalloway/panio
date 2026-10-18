@@ -24,7 +24,7 @@ name = "netbootd"
 path = "src/main.rs"
 
 # The privileged BPF-fd helper: opens /dev/bpf as root (installed setuid by
-# `paniolo setup`) and hands the descriptor to the unprivileged netbootd.
+# `panio setup`) and hands the descriptor to the unprivileged netbootd.
 [[bin]]
 name = "netbootd-bpf-helper"
 path = "src/bin/netbootd-bpf-helper.rs"

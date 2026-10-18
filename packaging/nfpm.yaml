@@ -16,75 +16,80 @@
 # VERSION and ARCH are injected as environment variables by the workflow;
 # binaries are pre-staged under packaging/stage/ by the workflow's stage step.
 #
-# Layout mirrors the per-user install (`make install`): only `paniolo` lands
+# Layout mirrors the per-user install (`make install`): only `panio` lands
 # on PATH; the helpers live in the private libexec dir, found via
 # `system_libexec_dir()` in cli/src/daemons.rs.
 #
-# The agent skills (skills/<name>/SKILL.md) ship to /usr/share/paniolo/skills,
-# the system entry in `skills_dirs()` (cli/src/skills.rs) that `paniolo skill`
+# The agent skills (skills/<name>/SKILL.md) ship to /usr/share/panio/skills,
+# the system entry in `skills_dirs()` (cli/src/skills.rs) that `panio skill`
 # reads.
 #
-# Not packaged (still done per-user by `paniolo setup`): group membership
+# Not packaged (still done per-user by `panio setup`): group membership
 # (dialout etc.), the zigplug uv tool, and netbootd-bpf-helper (macOS-only).
 
-name: paniolo
+name: panio
 arch: ${ARCH}
 version: ${VERSION}
 platform: linux
 section: utils
 priority: optional
 maintainer: Curtis Galloway <4055365+curtisgalloway@users.noreply.github.com>
-homepage: https://github.com/curtisgalloway/paniolo
+homepage: https://github.com/curtisgalloway/panio
 license: Apache-2.0
 description: |
   Agent-controlled target machine wrangler — distributed bring-up control over SSH.
-  Installs the paniolo CLI plus its helper daemons (hdmicap, serialcap,
+  Installs the panio CLI plus its helper daemons (hdmicap, serialcap,
   netbootd, cambrionix, hidrig, ch9329, shellyplug, amt), the
   linuxocr and rapidocr OCR helpers, and the bundled agent skills
-  (`paniolo skill`).
-  Run `paniolo setup` once per user for group membership and the
+  (`panio skill`).
+  Run `panio setup` once per user for group membership and the
   optional zigplug Zigbee helper.
 depends:
   - libudev1
   - python3
+# The package was called paniolo before the rename; installing panio removes it.
+replaces:
+  - paniolo
+conflicts:
+  - paniolo
 recommends:
   - tesseract-ocr
 # Advisory post-install notice: running daemons keep the old binary until
-# restarted (`paniolo daemons restart --stale`). Never reaps daemons — they are
+# restarted (`panio daemons restart --stale`). Never reaps daemons — they are
 # per-user processes, not packaged services. See packaging/scripts/postinstall.sh.
 scripts:
   postinstall: packaging/scripts/postinstall.sh
 contents:
-  - src: packaging/stage/bin/paniolo
-    dst: /usr/bin/paniolo
+  - src: packaging/stage/bin/panio
+    dst: /usr/bin/panio
     file_info:
       mode: 0o755
   - src: packaging/stage/libexec/*
-    dst: /usr/libexec/paniolo/bin/
+    dst: /usr/libexec/panio/bin/
     file_info:
       mode: 0o755
   # Bundled agent skills — read straight from the repo tree (the workflow
   # builds inside the checkout). One explicit file→file entry per skill: a
   # glob (`skills/*/SKILL.md`) maps by basename, which would collide the
   # SKILL.md at one dst. Add a line when you add a skill (the release
-  # smoke-test checks the paniolo one).
-  - src: skills/paniolo/SKILL.md
-    dst: /usr/share/paniolo/skills/paniolo/SKILL.md
+  # smoke-test checks the panio one).
+  - src: skills/panio/SKILL.md
+    dst: /usr/share/panio/skills/panio/SKILL.md
     file_info:
       mode: 0o644
   - src: skills/kvm-puppeting/SKILL.md
-    dst: /usr/share/paniolo/skills/kvm-puppeting/SKILL.md
+    dst: /usr/share/panio/skills/kvm-puppeting/SKILL.md
     file_info:
       mode: 0o644
   - src: skills/control-host/SKILL.md
-    dst: /usr/share/paniolo/skills/control-host/SKILL.md
+    dst: /usr/share/panio/skills/control-host/SKILL.md
     file_info:
       mode: 0o644
   # Keeps systemd-tmpfiles from deleting a long-running daemon's discovery
   # file out from under it -- see the file's own comment and GitHub #187.
-  - src: packaging/tmpfiles.d/paniolo.conf
-    dst: /usr/lib/tmpfiles.d/paniolo.conf
+  - src: packaging/tmpfiles.d/panio.conf
+    dst: /usr/lib/tmpfiles.d/panio.conf
     file_info:
       mode: 0o644
   - src: LICENSE
-    dst: /usr/share/doc/paniolo/LICENSE
+    dst: /usr/share/doc/panio/LICENSE

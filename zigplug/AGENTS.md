@@ -11,7 +11,7 @@ This file holds the internals of zigplug/, moved out of the root AGENTS.md to ke
 
 ```
 zigplug/         Python (uv) helper: Zigbee smart plug control via a CC2652 (ZNP)
-                 coordinator dongle, using zigpy-znp. CLI wired into paniolo
+                 coordinator dongle, using zigpy-znp. CLI wired into panio
                  via generic power hooks, like cambrionix — but operations
                  proxy through a persistent daemon (`_daemon.py`, aiohttp on
                  localhost, standard daemon.json discovery; the file also
@@ -28,9 +28,9 @@ zigplug/         Python (uv) helper: Zigbee smart plug control via a CC2652 (ZNP
                  NVRAM recovery from zigpy's auto-backups — no re-pairing);
                  `state <ieee>` prints exactly `on` or `off` (state_cmd
                  contract). Device DB at
-                 ~/.config/paniolo/helpers/zigplug/zigbee.db (auto-migrated
+                 ~/.config/panio/helpers/zigplug/zigbee.db (auto-migrated
                  from the legacy top-level location).
-                 Installed by `paniolo setup` via `uv tool install` when uv is
+                 Installed by `panio setup` via `uv tool install` when uv is
                  present (shim in the libexec dir via UV_TOOL_BIN_DIR, off
                  PATH). See docs/power.md for pairing, hook wiring, recovery.
 

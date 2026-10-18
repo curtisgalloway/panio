@@ -12,13 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! `paniolo setup` — build and install paniolo's binaries from a source clone.
+//! `panio setup` — build and install panio's binaries from a source clone.
 //!
-//! The paniolo CLI installs via `cargo install` into `~/.cargo/bin` — the one
+//! The panio CLI installs via `cargo install` into `~/.cargo/bin` — the one
 //! user-facing command. The helpers (hdmicap, serialcap, netbootd, cambrionix,
 //! hidrig, the OCR helper, zigplug) install into the private libexec dir
-//! (`daemons::libexec_dir()`, `~/.local/libexec/paniolo/bin`) so they stay off
-//! PATH; paniolo resolves them itself and `paniolo helper <name> …` runs one
+//! (`daemons::libexec_dir()`, `~/.local/libexec/panio/bin`) so they stay off
+//! PATH; panio resolves them itself and `panio helper <name> …` runs one
 //! directly. On macOS setup also setuid-installs the netbootd bpf-helper (the
 //! only root component) and compiles the visionocr OCR helper; on Linux it
 //! checks dialout/video group membership and installs linuxocr. The legacy
@@ -34,7 +34,7 @@ use std::process::Command;
 use anyhow::{anyhow, bail, Result};
 
 /// The helper crates `setup` builds and installs into libexec, in order. The
-/// `cli` crate (the `paniolo` binary itself) installs separately onto PATH.
+/// `cli` crate (the `panio` binary itself) installs separately onto PATH.
 const HELPER_CRATES: [&str; 8] = [
     "hdmicap",
     "serialcap",
@@ -59,7 +59,7 @@ fn is_repo_root(d: &Path) -> bool {
         && d.join("hdmicap/Cargo.toml").is_file()
 }
 
-/// Locate the paniolo source checkout: the current directory and its parents.
+/// Locate the panio source checkout: the current directory and its parents.
 /// (The installed binary has no `__file__` to climb from; `make install` and
 /// hand-run setups both execute inside the clone.)
 pub fn find_repo_root() -> Option<PathBuf> {
@@ -108,8 +108,8 @@ fn linux_group_user(group: &str, reason: &str) -> Result<String> {
         .filter(|u| !u.is_empty())
         .ok_or_else(|| {
             anyhow!(
-                "$USER is not set, so paniolo cannot add this account to the \
-             '{group}' group ({reason}); set $USER and re-run `paniolo setup`, \
+                "$USER is not set, so panio cannot add this account to the \
+             '{group}' group ({reason}); set $USER and re-run `panio setup`, \
              or run `sudo usermod -aG {group} <your-username>` yourself"
             )
         })
@@ -176,7 +176,7 @@ fn setuid_bpf_helper(helper: &Path) {
     if let Err(why) = helper_safe_to_setuid(helper) {
         eprintln!(
             "  ! refusing to setuid {}: {why}. Reinstall the helper \
-             (`make install` or `brew reinstall paniolo`) and re-run `paniolo setup`.",
+             (`make install` or `brew reinstall panio`) and re-run `panio setup`.",
             helper.display()
         );
         return;
@@ -200,12 +200,12 @@ fn setuid_bpf_helper(helper: &Path) {
         eprintln!(
             "  ! could not setuid netbootd-bpf-helper; the netboot send path \
              falls back to the kernel (broken on macOS 15+). Re-run \
-             `paniolo setup` with sudo access to fix."
+             `panio setup` with sudo access to fix."
         );
     }
 }
 
-/// Whether `helper` is a file `paniolo setup` may promote to setuid-root:
+/// Whether `helper` is a file `panio setup` may promote to setuid-root:
 /// a regular file — `symlink_metadata`, so a symlink is seen as a symlink and
 /// refused rather than followed — that is either owned by the invoking user
 /// (freshly installed by `cargo install` / `make install` / the keg) or
@@ -321,9 +321,9 @@ fn install_rapidocr_venv(_libexec: &Path, _lab_flag: Option<&str>) {}
 ///
 /// Read as text rather than parsed: this runs before any lab is loaded, and the
 /// only question is whether to spend 317 MB. `lab_flag` resolves the same way
-/// every other lab-reading command does (`--lab`, then `$PANIOLO_LAB`, then
+/// every other lab-reading command does (`--lab`, then `$PANIO_LAB`, then
 /// the default path) — this used to always read the default path outright,
-/// so `paniolo setup --lab other.toml` (or `$PANIOLO_LAB` pointed elsewhere)
+/// so `panio setup --lab other.toml` (or `$PANIO_LAB` pointed elsewhere)
 /// judged the venv against the wrong file (Review low #11).
 #[cfg(target_os = "linux")]
 fn lab_wants_gui_ocr(lab_flag: Option<&str>) -> bool {
@@ -337,7 +337,7 @@ fn lab_wants_gui_ocr(lab_flag: Option<&str>) -> bool {
 
 /// Verify the portable Windows layout: helpers alongside the CLI in `libexec`.
 ///
-/// This is `paniolo setup`'s whole job on Windows — see [`run_packaged`]. It
+/// This is `panio setup`'s whole job on Windows — see [`run_packaged`]. It
 /// reports rather than repairs, because the fix (re-extract the zip, or
 /// reinstall via winget) is the user's to make.
 #[cfg(windows)]
@@ -365,9 +365,9 @@ fn check_windows_layout() {
     }
     println!(
         "  ! missing helpers: {}\n\
-         \x20   Expected them in a `libexec` directory beside paniolo.exe. \
+         \x20   Expected them in a `libexec` directory beside panio.exe. \
          Re-extract the release zip keeping its directory structure, or \
-         reinstall with `winget install CurtisGalloway.Paniolo`.",
+         reinstall with `winget install CurtisGalloway.Panio`.",
         missing.join(", ")
     );
 }
@@ -401,11 +401,11 @@ fn packaged_steps(os: &str) -> Vec<PackagedStep> {
 
 /// no source checkout, so no builds: setuid the installed bpf-helper on
 /// macOS (located via `find_binary`, which knows the per-user libexec, the
-/// Homebrew keg, and `/usr/libexec/paniolo/bin`), and check group
+/// Homebrew keg, and `/usr/libexec/panio/bin`), and check group
 /// membership on Linux. Building or refreshing the daemons, OCR helper, and
 /// zigplug still needs a clone (`make install`).
 pub fn run_packaged() -> Result<()> {
-    println!("No source checkout found — finishing setup for the installed paniolo.");
+    println!("No source checkout found — finishing setup for the installed panio.");
     for step in packaged_steps(std::env::consts::OS) {
         match step {
             PackagedStep::SetuidBpfHelper => {
@@ -444,7 +444,7 @@ pub fn run_packaged() -> Result<()> {
         "\nSetup complete. (Rebuilding the daemons, OCR helper, or zigplug \
          needs a source checkout — see `make install` in the repo.)"
     );
-    println!("Agent skills shipped with the package — list them with `paniolo skill`.");
+    println!("Agent skills shipped with the package — list them with `panio skill`.");
     Ok(())
 }
 
@@ -455,7 +455,7 @@ pub fn run_packaged() -> Result<()> {
 /// message cannot claim one thing while the code does another. That is not
 /// hypothetical: the bundled-skills copy sat below the `--rust-only` return
 /// while the message named only OCR, setuid and zigplug, so the skills were
-/// skipped silently and `paniolo skill` came up empty with nothing saying why
+/// skipped silently and `panio skill` came up empty with nothing saying why
 /// (GitHub #207).
 ///
 /// Same shape, and for the same reason, as [`PackagedStep`] above, whose
@@ -559,7 +559,7 @@ fn rust_only_done_message(os: &str, skills_ok: bool) -> String {
         "Rust crates installed; the skills copy did not succeed (see above)"
     };
     format!(
-        "{installed} (skipped {} — run `paniolo setup`).",
+        "{installed} (skipped {} — run `panio setup`).",
         skipped.join(", ")
     )
 }
@@ -685,9 +685,9 @@ fn jetkvm_step(will: bool, repo: &Path, libexec: &Path) -> JetKvmOutcome {
 }
 
 /// Agent skills: copy the bundled SKILL.md guides into the per-user data dir
-/// so `paniolo skill` finds them when the installed CLI runs outside this
+/// so `panio skill` finds them when the installed CLI runs outside this
 /// tree. From a checkout the repo copy is used directly, so this keeps an
-/// installed paniolo in sync. (Linux packages ship them to /usr/share, so
+/// installed panio in sync. (Linux packages ship them to /usr/share, so
 /// `run_packaged` does not do this; both source-checkout paths do, including
 /// `--rust-only`, since it needs no sudo and no toolchain.)
 ///
@@ -780,7 +780,7 @@ pub fn run(repo: &Path, rust_only: bool, lab_flag: Option<&str>) -> Result<()> {
         println!("  ✓ {crate_name:12} {}", libexec.join(crate_name).display());
     }
 
-    // The paniolo CLI itself: the one user-facing binary, installed on PATH.
+    // The panio CLI itself: the one user-facing binary, installed on PATH.
     println!("  building cli (cargo install — may take a few minutes)…");
     let status = Command::new(&cargo)
         .args(["install", "--path"])
@@ -790,10 +790,10 @@ pub fn run(repo: &Path, rust_only: bool, lab_flag: Option<&str>) -> Result<()> {
     if !status.success() {
         bail!("cli: cargo install failed");
     }
-    println!("  ✓ {:12} {}", "paniolo", bin_dir.join("paniolo").display());
+    println!("  ✓ {:12} {}", "panio", bin_dir.join("panio").display());
 
     // On the fast path too: the copy needs no sudo and no toolchain, and an
-    // install that stopped short of it used to leave `paniolo skill` empty
+    // install that stopped short of it used to leave `panio skill` empty
     // with nothing saying why (GitHub #207).
     let skills_ok = will(SourceStep::InstallSkills) && install_skills(repo);
 
@@ -921,16 +921,16 @@ pub fn run(repo: &Path, rust_only: bool, lab_flag: Option<&str>) -> Result<()> {
 
     println!("\nSetup complete.");
     println!(
-        "Helpers live in {} — list or run them via `paniolo helper`.",
+        "Helpers live in {} — list or run them via `panio helper`.",
         libexec.display()
     );
-    println!("Agent skills are bundled too — list them with `paniolo skill`.");
+    println!("Agent skills are bundled too — list them with `panio skill`.");
     let on_path = std::env::var_os("PATH")
         .map(|p| std::env::split_paths(&p).any(|d| d == bin_dir))
         .unwrap_or(false);
     if !on_path {
         println!(
-            "Note: add {} to your PATH so `paniolo` resolves.",
+            "Note: add {} to your PATH so `panio` resolves.",
             bin_dir.display()
         );
     }
@@ -977,7 +977,7 @@ mod tests {
 
     /// Regression (#207): `--rust-only` skipped the bundled-skills copy while
     /// its completion message named only OCR, setuid and zigplug, so a
-    /// from-source install that stopped there left `paniolo skill` empty with
+    /// from-source install that stopped there left `panio skill` empty with
     /// no hint why. The copy needs neither sudo nor a toolchain beyond cargo,
     /// so it is on the fast path — on every platform.
     #[test]
@@ -1167,7 +1167,7 @@ mod tests {
     /// files the predicate currently names and keep passing forever after one
     /// of them was deleted from the repo. That is exactly how the
     /// `pyproject.toml` marker outlived the legacy Python CLI removal and
-    /// silently broke `paniolo setup --rust-only` (and, quietly, the
+    /// silently broke `panio setup --rust-only` (and, quietly, the
     /// repo-checkout branch of the skill search path).
     /// Assert against the actual checkout so marker drift fails the build.
     #[test]
@@ -1220,7 +1220,7 @@ mod tests {
         }
     }
 
-    /// `paniolo setup --lab other.toml` (or `$PANIOLO_LAB`) must judge the
+    /// `panio setup --lab other.toml` (or `$PANIO_LAB`) must judge the
     /// rapidocr venv against *that* lab, not silently fall back to the
     /// default path the way the old no-argument `lab_wants_gui_ocr()` always
     /// did (Review low #11). Linux-only: the function itself is gated to the

@@ -4,7 +4,7 @@
 """Scoring, and the two shapes of ground truth.
 
 `<stem>.gt.txt` is a full transcription, scored by CER and WER. `<stem>.gt.json`
-carries `required_tokens` — the strings paniolo actually has to find on that
+carries `required_tokens` — the strings panio actually has to find on that
 screen — scored by recall.
 
 The second form exists because full transcription of a busy GUI frame is

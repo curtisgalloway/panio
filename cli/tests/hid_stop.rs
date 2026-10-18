@@ -15,19 +15,19 @@ fn hid_stop_waits_for_each_helper_and_cleans_discovery() {
         let dir = tempfile::tempdir().unwrap();
         let run = dir.path().join("run");
         let uid = dir.path().metadata().unwrap().uid();
-        let base = run.join(format!("paniolo-{uid}"));
+        let base = run.join(format!("panio-{uid}"));
         let runtime = base.join("hid/dut");
         std::fs::create_dir_all(&runtime).unwrap();
         std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o700)).unwrap();
         let script = dir.path().join(helper);
         std::fs::write(
             &script,
-            "if [ \"$1\" = stop ]; then\n  touch \"$PANIOLO_RUNTIME_DIR/stopping\"\n  exit 0\nfi\nwhile [ ! -f \"$PANIOLO_RUNTIME_DIR/stopping\" ]; do sleep 0.05; done\nsleep 0.5\ntouch \"$PANIOLO_RUNTIME_DIR/released\"\n",
+            "if [ \"$1\" = stop ]; then\n  touch \"$PANIO_RUNTIME_DIR/stopping\"\n  exit 0\nfi\nwhile [ ! -f \"$PANIO_RUNTIME_DIR/stopping\" ]; do sleep 0.05; done\nsleep 0.5\ntouch \"$PANIO_RUNTIME_DIR/released\"\n",
         )
         .unwrap();
         let mut daemon = Command::new("sh")
             .arg(&script)
-            .env("PANIOLO_RUNTIME_DIR", &runtime)
+            .env("PANIO_RUNTIME_DIR", &runtime)
             .spawn()
             .unwrap();
         let discovery = runtime.join("daemon.json");
@@ -44,10 +44,10 @@ fn hid_stop_waits_for_each_helper_and_cleans_discovery() {
             format!("[targets.dut.hid]\ncmd = \"sh '{}'\"\n", script.display()),
         )
         .unwrap();
-        let output = Command::new(env!("CARGO_BIN_EXE_paniolo"))
+        let output = Command::new(env!("CARGO_BIN_EXE_panio"))
             .args(["--lab", lab.to_str().unwrap(), "hid", "stop", "dut"])
-            .env("PANIOLO_RUNTIME_BASE", &run)
-            .env_remove("PANIOLO_LAB")
+            .env("PANIO_RUNTIME_BASE", &run)
+            .env_remove("PANIO_LAB")
             .output()
             .unwrap();
         let released_before_return = runtime.join("released").exists();

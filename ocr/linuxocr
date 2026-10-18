@@ -199,7 +199,7 @@ def _tesseract(tmp: str, tsv: bool) -> str:
     tesseract's raw multi-line stderr forwarded verbatim when it exits
     non-zero. A caller parsing stderr (hdmicap's /ocr runs this helper as a
     child process) can act on neither. A missing tesseract is an ordinary
-    first-run state on a control host -- it is a system package the paniolo
+    first-run state on a control host -- it is a system package the panio
     .deb only Recommends -- so the message names the package that provides it.
     """
     args = ["tesseract", tmp, "stdout", "--psm", "6", "--oem", "1"]

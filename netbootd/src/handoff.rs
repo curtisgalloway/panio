@@ -103,7 +103,7 @@ const REJECT_ALL: [BpfInsn; 1] = [BpfInsn {
 /// `owner_uid`.
 ///
 /// The helper is installed into the installing user's private libexec dir
-/// (`~/.local/libexec/paniolo/bin`) or into a Homebrew keg owned by the brew
+/// (`~/.local/libexec/panio/bin`) or into a Homebrew keg owned by the brew
 /// user, so the directory owner *is* the one user authorised to use it:
 /// everyone else is refused before `/dev/bpf` is touched, even though the
 /// binary itself is world-executable (mode 4755). Root is always allowed — it
@@ -131,7 +131,7 @@ pub fn interface_refused(requested: &str, default_route: Option<&str>) -> bool {
 /// directory of the caller's choosing shares the real file's inode and would
 /// pass every other check. When the process is actually privileged
 /// (`geteuid() == 0`), the file it resolved to must also be the root-owned
-/// setuid binary `paniolo setup` installed — anything else means the path we
+/// setuid binary `panio setup` installed — anything else means the path we
 /// were exec'd through was swapped underneath us.
 #[cfg(target_os = "macos")]
 pub fn helper_owner_uid() -> io::Result<u32> {
@@ -149,7 +149,7 @@ pub fn helper_owner_uid() -> io::Result<u32> {
     let privileged = unsafe { libc::geteuid() } == 0;
     if privileged && (meta.uid() != 0 || meta.mode() & libc::S_ISUID as u32 == 0) {
         return Err(io::Error::other(format!(
-            "{} is not the root-owned setuid helper installed by `paniolo setup`",
+            "{} is not the root-owned setuid helper installed by `panio setup`",
             exe.display()
         )));
     }

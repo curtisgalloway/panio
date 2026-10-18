@@ -10,7 +10,7 @@ stdio is the process's standard input/output; a capture epoch identifies one
 serial supervisor lifetime. See the
 [glossary](glossary.md).
 
-`paniolo mcp` serves paniolo's runtime commands as
+`panio mcp` serves panio's runtime commands as
 [Model Context Protocol](https://modelcontextprotocol.io) tools over stdio. An
 agent harness that speaks MCP can then drive a target without a shell. For
 example, a screenshot comes back as an image in the tool result instead of a
@@ -19,7 +19,7 @@ file the agent has to open.
 It is experimental: the tool set covers looking at a target (screen, screen
 text, serial log, power state) and acting on it (keyboard and mouse, serial
 input, power). Configuration stays in the CLI. The design is in
-[`notes/mcp-server.md`](https://github.com/curtisgalloway/paniolo/blob/main/notes/mcp-server.md).
+[`notes/mcp-server.md`](https://github.com/curtisgalloway/panio/blob/main/notes/mcp-server.md).
 
 ## Set it up
 
@@ -30,16 +30,16 @@ exactly as the CLI does.
 Claude Code:
 
 ```bash
-claude mcp add paniolo -- paniolo mcp
+claude mcp add panio -- panio mcp
 # a lab file other than the default:
-claude mcp add paniolo -- paniolo --lab ~/lab.toml mcp
+claude mcp add panio -- panio --lab ~/lab.toml mcp
 ```
 
-Any other harness: configure a stdio server whose command is `paniolo` with
+Any other harness: configure a stdio server whose command is `panio` with
 arguments `["mcp"]`. In the common JSON form:
 
 ```json
-{ "mcpServers": { "paniolo": { "command": "paniolo", "args": ["mcp"] } } }
+{ "mcpServers": { "panio": { "command": "panio", "args": ["mcp"] } } }
 ```
 
 The harness starts the server and keeps it running for the session. The
@@ -51,18 +51,18 @@ server holds no state of its own, so restarting it loses nothing.
 |---|---|---|
 | `target_list` | none | JSON: each target's name, description, hosts, and channels (kind, name, host). |
 | `video_shot` | `target` (required); `changed_since` (a hash); `stable` (bool); `timeout_ms` (0–120000, default 2000) | The screen as a PNG image, plus a text line `signal=<s>  hash=<h>`. |
-| `video_read` | `target`; `stable`; `timeout_ms` | The text on the screen (OCR), as `paniolo video read`. |
+| `video_read` | `target`; `stable`; `timeout_ms` | The text on the screen (OCR), as `panio video read`. |
 | `serial_status` | `target`; `interface` | Read-only JSON: configured/active identity, process and port state, capture epoch and RX/TX progress. Missing evidence is unknown; none proves target command execution. |
 | `serial_wait` | `target`; `epoch` and `since` (required); `interface`; `pattern`; `timeout_ms` (0–3600000); `max_bytes` (1–1048576); `max_output_bytes` (4096–8388608); `include_pending`; `follow` | Bounded fresh raw evidence with timing and explicit matched/timeout/cap/disconnect/fault status. Accepted bytes survive incomplete waits. Follow objects are returned together when the call finishes. |
 | `serial_evidence` | `target`; `interface`; `epoch`; `since` (requires epoch); `max_bytes` (1–1048576, default 65536) | Read-only JSON: immutable exact-byte receive records, original RX/capture times, observation time, epoch/generation, retained cursors and cap/gap/fault diagnostics. See [receive evidence](serial.md#immutable-receive-evidence). |
-| `serial_log` | `target`; `interface`; a window: `tail` (≤ 5000), `since`, `from`, `to` (sequence numbers) | Console lines `[time] #<seq> <text>`, as `paniolo serial log`; the last 200 when no window is given. |
-| `serial_send` | `target`; `text` (required); `interface`; `newline` (default true); `pace_ms` (≤ 10000) | Writes the text to the console, as `paniolo serial send`. |
-| `serial_transact` | `target`; `text` and `until` (required); `interface`; `timeout_ms` (1–3600000, default 30000); `max_bytes` (1–1048576, default 65536); `newline` (default true); `pace_ms` (≤ 10000) | Sends the text and waits for the reply under the interface's transaction lock, as `paniolo serial transact`: the `serial_wait` result JSON for the bytes received after the send, plus `sent_bytes`. See [transactions](serial.md#requestresponse-transactions). |
-| `hid_send` | `target`; `command` (required): one HID command as an array of words, e.g. `["key", "ENTER"]` | Injects keyboard or mouse input, as `paniolo hid send`. |
-| `action_list` | `target` | JSON array of the target's named actions (name, description, requires_power, host), as `paniolo action list --json`. See [Named actions](actions.md). |
-| `action_run` | `target`; `name` (required) | Runs one named action, as `paniolo action run`. |
-| `power_state` | `target`; `level` | A line like `Power ON  (pi5)`, as `paniolo power-state`. With no `level`, a target with [power levels](power.md#power-levels-soft-and-hard) gets one line per level, the default first (`Power OFF  (pi5, level hard)`; `Power UNKNOWN … no state_cmd` for a level that cannot be read). With `level`, only that level. |
-| `power_on`, `power_off`, `power_cycle` | `target`; `level` | Switches power, as `paniolo power on`/`off` and `paniolo power-cycle`, with `--level` when `level` is given. A level without the needed hook fails as `not_configured` (3); it never falls back to the default level. |
+| `serial_log` | `target`; `interface`; a window: `tail` (≤ 5000), `since`, `from`, `to` (sequence numbers) | Console lines `[time] #<seq> <text>`, as `panio serial log`; the last 200 when no window is given. |
+| `serial_send` | `target`; `text` (required); `interface`; `newline` (default true); `pace_ms` (≤ 10000) | Writes the text to the console, as `panio serial send`. |
+| `serial_transact` | `target`; `text` and `until` (required); `interface`; `timeout_ms` (1–3600000, default 30000); `max_bytes` (1–1048576, default 65536); `newline` (default true); `pace_ms` (≤ 10000) | Sends the text and waits for the reply under the interface's transaction lock, as `panio serial transact`: the `serial_wait` result JSON for the bytes received after the send, plus `sent_bytes`. See [transactions](serial.md#requestresponse-transactions). |
+| `hid_send` | `target`; `command` (required): one HID command as an array of words, e.g. `["key", "ENTER"]` | Injects keyboard or mouse input, as `panio hid send`. |
+| `action_list` | `target` | JSON array of the target's named actions (name, description, requires_power, host), as `panio action list --json`. See [Named actions](actions.md). |
+| `action_run` | `target`; `name` (required) | Runs one named action, as `panio action run`. |
+| `power_state` | `target`; `level` | A line like `Power ON  (pi5)`, as `panio power-state`. With no `level`, a target with [power levels](power.md#power-levels-soft-and-hard) gets one line per level, the default first (`Power OFF  (pi5, level hard)`; `Power UNKNOWN … no state_cmd` for a level that cannot be read). With `level`, only that level. |
+| `power_on`, `power_off`, `power_cycle` | `target`; `level` | Switches power, as `panio power on`/`off` and `panio power-cycle`, with `--level` when `level` is given. A level without the needed hook fails as `not_configured` (3); it never falls back to the default level. |
 
 Every tool but `target_list` needs `target`. The tools that change the target
 (`serial_send`, `serial_transact`, `hid_send`, `action_run`, `power_on`, `power_off`,
@@ -70,12 +70,12 @@ Every tool but `target_list` needs `target`. The tools that change the target
 marked as such, so a harness that asks before side effects will ask.
 
 `video_shot` needs the target's video daemon to be running already
-(`paniolo video watch <target>`). To wait for the screen to change after an
+(`panio video watch <target>`). To wait for the screen to change after an
 action, pass the previous result's hash as `changed_since`, the same loop the
 `kvm-puppeting` skill teaches with `video shot --changed-since`.
 
 A tool that runs and fails returns a result with `isError: true`. Its text
-gives paniolo's exit code, the error message, and the one-line JSON error
+gives panio's exit code, the error message, and the one-line JSON error
 object described in [Exit status and errors](errors.md). When a tool that
 changes the target fails with `unreachable` (4) or `timeout` (22), the text
 also says the outcome is unknown: the action may have happened, so check the
@@ -84,7 +84,7 @@ target's state before repeating it. A malformed call (unknown tool, missing
 
 ## How it behaves
 
-- **stdout is the protocol.** Each tool runs the matching `paniolo` command
+- **stdout is the protocol.** Each tool runs the matching `panio` command
   as a child process with stdin closed and stdout captured, so nothing a
   command prints can corrupt the stream. Diagnostics go to stderr, which
   harnesses usually log.
