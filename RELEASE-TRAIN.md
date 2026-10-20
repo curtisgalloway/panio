@@ -176,5 +176,5 @@ feeds needs re-reading before `--update` re-pins it.
 | `cli/src/daemons.rs` | 3279e85db233 | Smoke contract S3 |
 | `scripts/ci-coverage-check.sh` | 14c39a57f1c7 | Project: helpers |
 | `scripts/sync-brik.sh` | 1920fb8f6241 | Channels: windows |
-| `README.md` | 60b7de590293 | Channels: source; Publish: re-verify apt |
+| `README.md` | 6a46a384e3f5 | Channels: source; Publish: re-verify apt |
 | `AGENTS.md` | bdf8af4a0439 | Project: bump rules, tag format; Publish |
