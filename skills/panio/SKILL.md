@@ -377,7 +377,11 @@ adapters keep the PHY up when admin-down (measured: AX88179A/B and RTL8153 on
 macOS, RTL8153 on Linux), and after admin-down the host's own `carrier` reads
 `down` no matter what, so `netif status` is not evidence. Confirm from the
 target side (its link state, serial log, or link LED). When the target *must*
-detect link loss, unplug the cable or disable its port on a managed switch.
+detect link loss, unplug the cable or disable its port on a managed switch
+(measured: link lost within 0.8 s, back ~1.7 s after re-enable). panio has no
+switch driver yet (#334); never disable the port the host manages the switch
+through. One netboot link serves one target; don't put several targets behind
+a plain switch on one adapter (#335).
 
 - **Switching to ffx stops netboot first** — otherwise a power-cycle TFTP-boots a
   stale image instead of falling through to the SD card. This is the safe way to

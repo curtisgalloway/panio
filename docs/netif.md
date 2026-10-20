@@ -154,6 +154,15 @@ host: unplug the cable, disable the target's port on a managed switch between
 host and target, or cut the adapter's USB power from a hub with per-port power
 switching.
 
+**A managed switch port works.** Measured on a TP-Link TL-SG108PE with the
+host on one port and a second adapter on another: disabling the second port
+dropped that adapter's link within 0.8 s, and re-enabling it brought the link
+back about 1.7 s later (normal gigabit renegotiation). panio does not drive
+switches yet; until it does, disable the port from the switch's own web page
+or tool. Never disable the port the host manages the switch through.
+A switch helper is tracked in
+[#334](https://github.com/curtisgalloway/panio/issues/334).
+
 ---
 
 ## Status and finding the device

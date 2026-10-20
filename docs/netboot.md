@@ -113,6 +113,14 @@ The default `192.168.99.1` is for the **first** link on a host. Every further
 link sets `--host-ip` in an unused /24 (`192.168.100.1`, `192.168.101.1`, …);
 the client lease follows.
 
+**One target per link.** A plain switch does not let several targets share
+one adapter: netbootd leases a single fixed address per link (`.100` in the
+link's /24) and serves one boot file, and it leases to any DHCP client,
+including a managed switch's own management interface. Use one adapter per
+target for now. Sharing one adapter through per-target VLANs on a managed
+switch is tracked in
+[#335](https://github.com/curtisgalloway/panio/issues/335).
+
 panio enforces this:
 
 - **`netboot set` refuses** a link whose /24 another target already uses on a
