@@ -35,7 +35,7 @@ by an LLM judge). Stdlib-only **Python 3.11+** (uses `tomllib`); no
 **Built:** 33 scenarios (c1–c8 config, r1–r9 runtime, s1–s11 serial, m1–m5 meta —
 r8 power-state, m3 discover, m4 helper, m5 setup added to cover the last few CLI
 groups; r9 tests the bare link up/down via `netif mode link`/`off`, the
-Wake-on-LAN carrier wrinkle, and `netif down-hard` for a real carrier drop); the scripted T1 grader + LLM-judge; a `run.py --check` **drift guard**
+Wake-on-LAN carrier wrinkle, and `netif down-hard`, which many USB adapters ignore); the scripted T1 grader + LLM-judge; a `run.py --check` **drift guard**
 (every scenario reference + the T1-safe allowlist is validated against the live
 `--help` surface, so a renamed subcommand or dropped flag fails loudly instead of
 silently rotting the references); the `run.py` orchestrator (sandbox, three

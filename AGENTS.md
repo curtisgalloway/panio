@@ -485,15 +485,19 @@ relay driven through the generic power hooks instead.
   interface address changes what `netif status` reports; opening the serial
   port collides with serialcap). Use `netif mode …`, `serial log`/`send`,
   `daemons stop`.
-- **`netif mode off`/`link` toggle the host IP, not the carrier; `netif
-  down-hard` drops the carrier.** Neither mode admin-downs the interface, and
-  `netif status` reports `carrier` independently of `mode`: a NIC with
-  **Wake-on-LAN** keeps the PHY energized when down, so `carrier` can read `up`
-  in `off` mode. `netif down-hard` (for testing link-drop *detection*) does
-  `mode off` + disables WoL (`ethtool -s <iface> wol d`, Linux) + admin-down;
-  `mode link`/`netboot` bring it back up, but WoL stays off until re-enabled or
-  the adapter is replugged. macOS WoL is a system-wide `pmset womp` pref, so
-  `down-hard` relies on admin-down there. `del_host_ip` releases the macOS static
+- **`netif mode off`/`link` toggle the host IP, not the carrier, and `netif
+  down-hard` often does not drop it either.** Neither mode admin-downs the
+  interface, and `netif status` reports `carrier` independently of `mode`: a NIC
+  with **Wake-on-LAN** keeps the PHY energized when down, so `carrier` can read
+  `up` in `off` mode. `netif down-hard` does `mode off` + disables WoL
+  (`ethtool -s <iface> wol d`, Linux) + admin-down; `mode link`/`netboot` bring
+  it back up, but WoL stays off until re-enabled or the adapter is replugged.
+  **Admin-down leaves the PHY up on common USB adapters** (measured: AX88179A/B
+  and RTL8153 on macOS, RTL8153 under Linux `r8152`; Apple's NCM/ECM drivers
+  cannot power the PHY off at all), and once the interface is down the host's
+  own `carrier` reads `down` regardless, so `netif status` cannot confirm the
+  drop. Check from the target side; for a guaranteed drop, unplug or disable
+  the port on a managed switch (docs/netif.md). `del_host_ip` releases the macOS static
   IP via `networksetup -setdhcp` (an `ifconfig` delete won't unset a `-setmanual`
   IP) *and then* `ifconfig <iface> inet <ip> -alias`.
 - **Interface configuration requires root:** `netif::configure_interface()` needs

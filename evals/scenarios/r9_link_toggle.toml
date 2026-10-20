@@ -17,13 +17,13 @@ traps = [
   "the bare link is `panio netif mode link` (assigns the host IP only — no DHCP/TFTP daemon, no ffx link-local); `mode netboot` would also start serving, which isn't wanted here",
   "check either state with `panio netif status` (prints mode + carrier + addresses)",
   "`mode off` is a SOFT down — it only releases the host IP and does NOT force the carrier down. A NIC with Wake-on-LAN keeps the PHY energized, so `netif status` may still report `carrier up` and the target won't see link loss",
-  "for a drop the target DETECTS, use `panio netif down-hard` — it does `mode off` then disables WoL and admin-downs the interface (carrier actually drops). Bring it back with `netif mode link`",
+  "`panio netif down-hard` goes further — `mode off` then disables WoL and admin-downs the interface — but common USB adapters keep the PHY up anyway, and the host's own `carrier` then reads down regardless, so confirm link loss from the target side (or unplug / disable a switch port). Bring it back with `netif mode link`",
 ]
 reference = [
   'panio netif mode link pico   # link up: assign the host IP only, no daemon',
   'panio netif status pico      # mode=link, carrier up, addresses',
   'panio netif down-hard pico   # hard down: mode off + disable WoL + admin-down',
-  'panio netif status pico      # mode=off, carrier down (target sees link loss)',
+  'panio netif status pico      # mode=off, carrier down (host view only; confirm on the target)',
   'panio netif mode link pico   # bring the link back up for the next iteration',
 ]
 
