@@ -59,15 +59,31 @@ jobs:
     # that lives in another repository and answers the broader "is this profile
     # executable" question at release time, and CI must not depend on a
     # personal skills repo.
+    #
+    # Stale pins only warn here; release.yml's `profile-pins` job is the one
+    # that blocks. Failing every PR made most of them carry a re-pin of a
+    # profile only a release reads (25 of 40 commits on main touched it), and
+    # the release gate still catches drift before anything is built. A
+    # malformed table (exit 2) still fails: that is a broken checker input,
+    # not drift.
     name: profile pins (RELEASE-TRAIN.md sources are current)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Check every pinned source still matches its blob id
-        run: bash scripts/ci-profile-pins.sh
+      - name: Check every pinned source still matches its blob id (warn only)
+        run: |
+          set +e
+          bash scripts/ci-profile-pins.sh
+          rc=$?
+          set -e
+          case "$rc" in
+            0) ;;
+            1) echo "::warning title=Release-train profile pins are stale::A source pinned in RELEASE-TRAIN.md changed. The release workflow will refuse to build until the sections it feeds are re-read and re-pinned; see the log above for which rows." ;;
+            *) exit "$rc" ;;
+          esac
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
       - name: Test the checker itself, and the other script guards
-        # The step above only proves this tree's pins are current; it passes
+        # The step above only reports whether this tree's pins are current; it passes
         # just as well against a checker that has stopped checking. These run
         # the script as a subprocess against synthetic profiles, so each of
         # its three verdicts -- current, stale, unreadable table -- has a test

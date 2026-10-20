@@ -27,11 +27,16 @@
 # (GitHub #219): AGENTS.md in #209 and cli/src/daemons.rs in #213. The first
 # thing to notice would otherwise be the release train itself, mid-release.
 #
+# Two callers. ci.yml runs it on every push and PR but only warns on exit 1,
+# so a PR that touches a pinned file is not forced to re-pin a profile only a
+# release reads. release.yml runs it as a blocking job ahead of every package
+# build, so a stale profile stops the release before anything is built.
+#
 # Deliberately NOT the release-train skill's `profile_check.py`. That script
 # lives in another repository and answers a broader question -- whether the
 # profile is well-formed enough for the train to execute (paths, headings,
 # channels, smoke subcommands). That belongs at release time, where the skill
-# is being invoked anyway. CI needs one question answered on every commit, and
+# is being invoked anyway. CI needs one narrow question answered, and
 # making this repo's CI clone a personal skills repo would break forks and add
 # a cross-repo dependency to every run. The two are kept in agreement by using
 # git's own blob id, which is a frozen format rather than a shared API.

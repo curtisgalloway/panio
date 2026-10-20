@@ -176,12 +176,5 @@ def test_a_backticked_path_outside_the_sources_section_is_not_a_pinned_row(tmp_p
     assert "LICENSE" not in r.stdout
 
 
-def test_the_live_profile_is_current(tmp_path):
-    """The check CI runs, run here: this tree's own RELEASE-TRAIN.md."""
-    del tmp_path
-    r = run(ROOT / "RELEASE-TRAIN.md")
-    assert r.returncode == 0, r.stdout + r.stderr
-
-
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__]))

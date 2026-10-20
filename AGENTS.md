@@ -203,6 +203,9 @@ build)`. Each package smoke step asserts the versions agree.
 1. **Pre-flight.** Be on `main`, clean, and in sync (`git fetch origin && git
    status` → `main...origin/main`), with CI green on the HEAD commit (`gh run
    list --branch main --limit 5`); the release builds that exact commit.
+   Also run `bash scripts/ci-profile-pins.sh`: CI only *warns* when a source
+   pinned in `RELEASE-TRAIN.md` has changed, but `release.yml` refuses to
+   build until the profile is re-read and re-pinned, so fix it before tagging.
 
 2. **Pick the version.** Read the latest tag (`git tag --sort=-creatordate |
    head`), then choose by contents:

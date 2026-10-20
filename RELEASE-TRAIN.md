@@ -20,6 +20,7 @@ bench-host run and by CI's new smoke step.
 - main branch: `main`; protected: PR required, required checks `cli`, `serialcap`, `netbootd`, `hdmicap`, `macos`; auto-merge off; tag ruleset "Protect release tags"
 - release workflow: `.github/workflows/release.yml`
 - ci workflow: `.github/workflows/ci.yml`; lint helpers `scripts/ci-actions-pinned.sh`, `scripts/ci-coverage-check.sh`
+- profile pins: `scripts/ci-profile-pins.sh` checks the Sources table below. `ci.yml` only warns when a row is stale; `release.yml`'s `profile-pins` job blocks every package build on it, so a stale row fails the tag push's workflow before anything is built. Run it in pre-flight and re-pin before tagging
 - bump rules: conventional prefixes where present; this repo mostly writes `<crate>: <summary>`, so apply AGENTS.md: minor for a new command, channel, helper, verb, wire-protocol or daemon-lifecycle change, or a fix that changes what a target sees; patch for small fixes and docs; on the line, take the minor
 - releaser identity: tag with the author's GitHub noreply form already in the history (`git log --format=%ae | sort -u`), passed as `-c user.email` on the tag command, never edited into config
 - helpers: `hdmicap serialcap netbootd cambrionix hidrig ch9329 shellyplug amt` (the `HELPERS` line in the release workflow, and `CRATES` in `Makefile` minus the library crates, must agree; `scripts/ci-coverage-check.sh` enforces it). The Go helper `jetkvm` is deliberately NOT in that list yet: release packaging for it is milestone 1b, and the coverage script carries the written exemption. Until then it reaches users only through the source channel (`panio setup` with Go installed). Its video path needs `ffmpeg` at runtime (JetKVM video only; HID does not), and `hdmicap` gained the `tokio-tungstenite` and `futures-util` dependencies for its RFB client, so a channel smoke that builds `hdmicap` offline needs them vendored or fetchable
@@ -165,7 +166,7 @@ feeds needs re-reading before `--update` re-pins it.
 
 | path | blob | feeds |
 |---|---|---|
-| `.github/workflows/release.yml` | 1604b46f7f6d | Channels (every arm's build and staging), Publish |
+| `.github/workflows/release.yml` | e948670cb971 | Channels (every arm's build and staging), Publish |
 | `.github/workflows/docs.yml` | 206e9ae532f2 | Publish: re-verify apt |
 | `packaging/nfpm.yaml` | 3eb5c7594cb0 | Channels: deb |
 | `packaging/scripts/build-apt-repo.sh` | 391037a4ea4c | Channels: deb, install like a user |
@@ -176,4 +177,4 @@ feeds needs re-reading before `--update` re-pins it.
 | `scripts/ci-coverage-check.sh` | 14c39a57f1c7 | Project: helpers |
 | `scripts/sync-brik.sh` | 1920fb8f6241 | Channels: windows |
 | `README.md` | 60b7de590293 | Channels: source; Publish: re-verify apt |
-| `AGENTS.md` | a4e358ef5317 | Project: bump rules, tag format; Publish |
+| `AGENTS.md` | bdf8af4a0439 | Project: bump rules, tag format; Publish |
