@@ -847,12 +847,15 @@ enum NetifCmd {
         #[command(flatten)]
         target: TargetArg,
     },
-    /// Force the link down hard: release addresses, disable Wake-on-LAN, and
-    /// admin-down the interface so the peer sees carrier loss.
+    /// Take the link down harder: release addresses, disable Wake-on-LAN, and
+    /// admin-down the interface.
     ///
     /// `mode off` only releases the host IP and can leave the carrier up (a NIC
-    /// with Wake-on-LAN keeps the PHY energized) — use this when the target must
-    /// actually detect link loss. Bring it back with `mode link`/`mode netboot`.
+    /// with Wake-on-LAN keeps the PHY energized). Admin-down still leaves the
+    /// PHY up on many USB adapters (all tested on macOS; RTL8153 on Linux), and
+    /// the host's own carrier reads down either way, so confirm the drop from
+    /// the target side. For a guaranteed drop, unplug or disable a switch port.
+    /// Bring it back with `mode link`/`mode netboot`.
     DownHard {
         #[command(flatten)]
         target: TargetArg,

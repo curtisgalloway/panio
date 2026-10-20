@@ -203,7 +203,8 @@ on the *other* link, and PXE-boot it; the log should show `completed <file>`.
 
 **Just the link, no daemon.** To assign or release the host IP without serving
 anything, use [`panio netif mode link`](netif.md) and `panio netif mode
-off`. "Off" does not force the carrier down (Wake-on-LAN keeps it up). See
+off`. "Off" does not force the carrier down, and neither does
+`netif down-hard` on many USB adapters. See
 [Link mode](netif.md#testing-the-link-up-and-down).
 
 ### The netbootd engine

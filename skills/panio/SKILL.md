@@ -348,7 +348,7 @@ panio netif mode netboot [target]        # IPv4 + DHCP + TFTP (= netboot start)
 panio netif mode link [target]           # bare link UP: host IP only, no daemon
 panio netif mode ffx [target]            # stop netboot, add host fe80::1/64 for ffx
 panio netif mode off [target]            # soft DOWN: release host IP (+ ffx LL)
-panio netif down-hard [target]           # hard DOWN: also kill WoL + admin-down the iface
+panio netif down-hard [target]           # harder DOWN: also kill WoL + admin-down (USB NICs may keep link)
 panio netif status [target]              # mode, carrier, addresses, ffx peer
 ```
 
@@ -367,13 +367,17 @@ Caveat — **soft "down" (`mode off`) only releases the host IP; it does not for
 the carrier down.** `netif status` shows `carrier` separately from `mode` because
 a NIC with **Wake-on-LAN** enabled keeps the PHY energized even when the
 interface is down, so the peer's link LED stays lit and `carrier` can still read
-`up` in `off` mode. **When you need the target to actually *detect* link loss,
-use `panio netif down-hard`** — it does `mode off` and then disables WoL
-(`ethtool -s <iface> wol d` on Linux) and admin-downs the interface, so the peer
-sees carrier go away. Bring the link back with `netif mode link` (or `netboot`);
-WoL stays off until you re-enable it (`ethtool -s <iface> wol g`) or replug the
-adapter. (macOS WoL is a system-wide pref, so there `down-hard` relies on the
-admin-down; unplugging the cable is always the unambiguous drop.)
+`up` in `off` mode. `panio netif down-hard` goes further: `mode off`, then
+disables WoL (`ethtool -s <iface> wol d` on Linux) and admin-downs the
+interface. Bring the link back with `netif mode link` (or `netboot`); WoL stays
+off until you re-enable it (`ethtool -s <iface> wol g`) or replug the adapter.
+
+**`down-hard` does not guarantee the target sees link loss.** Common USB
+adapters keep the PHY up when admin-down (measured: AX88179A/B and RTL8153 on
+macOS, RTL8153 on Linux), and after admin-down the host's own `carrier` reads
+`down` no matter what, so `netif status` is not evidence. Confirm from the
+target side (its link state, serial log, or link LED). When the target *must*
+detect link loss, unplug the cable or disable its port on a managed switch.
 
 - **Switching to ffx stops netboot first** — otherwise a power-cycle TFTP-boots a
   stale image instead of falling through to the SD card. This is the safe way to
@@ -1125,8 +1129,10 @@ the device is free just because a daemon is gone from the tracked list.
   to switch; entering ffx mode stops netboot so a power-cycle boots from SD.
 - To test the bare link: `panio netif mode link` (up) / `mode off` (soft down).
   Soft "down" only releases the host IP — with Wake-on-LAN on, `carrier` can still
-  read `up` (the PHY stays powered). For a drop the target actually detects, use
-  `panio netif down-hard` (kills WoL + admin-downs the iface), or unplug.
+  read `up` (the PHY stays powered). `panio netif down-hard` (kills WoL +
+  admin-downs the iface) still leaves the PHY up on common USB adapters, and the
+  host then reports `carrier down` regardless; confirm from the target side, or
+  unplug / disable a switch port for a guaranteed drop.
 - Remote (lab) targets: if ssh fails with "Too many authentication failures",
   set the host's `identity` (agent key-spray); if the remote can't find panio,
   set its `panio_cmd` to an absolute path.

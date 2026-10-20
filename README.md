@@ -39,7 +39,7 @@ More on the [demos page](https://panio.dev/demos/).
 | [Netboot](https://panio.dev/netboot/) | `panio netboot` | DHCP + TFTP + HTTP netboot over a direct USB-Ethernet link (Raspberry Pi; UEFI PXE / HTTP Boot) |
 | [Remote labs](https://panio.dev/distributed-control/) | `panio --lab …` | Drive targets on remote control hosts over SSH from one git-tracked lab file |
 | [Control hosts](https://panio.dev/control-host/) | `panio skill control-host` | Blank Raspberry Pi to agent-reachable control host in one human action (stock Pi OS plus a cloud-init seed) |
-| [Link mode](https://panio.dev/netif/) | `panio netif` | Switch the link between netboot, ffx-over-IPv6, `link`, and `off` modes; `down-hard` forces a real carrier drop (WoL off + admin-down) |
+| [Link mode](https://panio.dev/netif/) | `panio netif` | Switch the link between netboot, ffx-over-IPv6, `link`, and `off` modes; `down-hard` adds WoL off + admin-down (many USB adapters keep link anyway) |
 | [Video](https://panio.dev/video/) | `panio video` | HDMI capture daemon (or a network RFB source such as a JetKVM); on-device OCR |
 | [Serial](https://panio.dev/serial/) | `panio serial` | Serial console: interactive (tio), timestamped line log, read-only health, immutable receive evidence, bounded fresh wait/follow, locked request/response transactions |
 | [Power control](https://panio.dev/power/) | `panio power on/off`, `panio power-cycle`, `panio power-state`, `panio serial dtr/reset` | DTR power button (J2 header) and shell-command hooks, with optional named levels (`--level hard`) for targets with several power layers; helpers `cambrionix` (hub ports), `zigplug` (Zigbee plugs), `shellyplug` (Shelly Gen2+), `amt` (Intel AMT/vPro, verified HTTPS by default) |

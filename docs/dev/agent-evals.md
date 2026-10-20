@@ -310,7 +310,9 @@ link loss, and check again. Explain soft down vs hard down."
 → `netif status` → `netif mode link pico`.
 *Trap:* drive the link through panio, never `ifconfig`/`ip`/`networksetup` by
 hand; `mode off` is a soft down that can leave the carrier up (Wake-on-LAN keeps
-the PHY powered), so only `down-hard` makes the target see link loss.
+the PHY powered). `down-hard` also admin-downs the interface, but common USB
+adapters keep the PHY up even then, so link loss has to be confirmed from the
+target side.
 
 **R10 — `video show` says stopped, `video watch` says already running.**
 *Goal:* "Get the video daemon running again, and say what caused the

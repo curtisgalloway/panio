@@ -46,7 +46,7 @@ running, 101 hook failed, …); `--json-errors` adds a one-line JSON object. See
 | Guide | Commands | Summary |
 |---|---|---|
 | [Netboot](netboot.md) | `panio netboot` | DHCP + TFTP + HTTP over a direct USB-Ethernet link (`netbootd`), incl. UEFI PXE / HTTP Boot. |
-| [Link mode](netif.md) | `panio netif` | Switch the link between `netboot`, `link`, `ffx`-over-IPv6 (host `fe80::1`), and `off`; `down-hard` forces a real carrier drop. |
+| [Link mode](netif.md) | `panio netif` | Switch the link between `netboot`, `link`, `ffx`-over-IPv6 (host `fe80::1`), and `off`; `down-hard` adds WoL off + admin-down, which many USB adapters ignore. |
 | [Serial](serial.md) | `panio serial` | `serialcap` daemon (JSONL log, immutable raw evidence, bounded fresh wait/follow, locked request/response transactions, health snapshots and WebSocket terminal) and interactive `tio`. |
 | [Power](power.md) | `panio power on/off`, `power-cycle`, `power-state`, `serial dtr/reset` | DTR power button (J2) and shell-command hooks; helpers `cambrionix`, `zigplug`, `shellyplug`, `amt`. |
 | [Named actions](actions.md) | `panio action` | Reset lines, boot straps, recovery modes: named hook commands per target, with an optional power-state precondition. |

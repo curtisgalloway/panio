@@ -50,7 +50,8 @@ panio netif mode ffx <target>
 panio netif mode off <target>
 
 # Take the link down HARD: `mode off` + disable Wake-on-LAN + admin-down the
-# interface, so the peer actually sees carrier loss.
+# interface. Whether the peer sees carrier loss depends on the adapter's
+# driver; see "Testing the link up and down".
 panio netif down-hard <target>
 
 # Show which mode the link is in, its carrier (physical link) state, its
@@ -116,16 +117,42 @@ panio netif status <target>        # mode=off, inet (none)
 physical link. Many NICs keep the PHY (physical-layer chip) powered for
 Wake-on-LAN (WoL), so `carrier` can read `up` in `off` mode.
 
-**`netif down-hard` is the hard down**, for when the target must see link
-loss. After `mode off` it:
+**`netif down-hard` is the harder down.** After `mode off` it:
 
 - **Linux:** disables WoL (`sudo ethtool -s <iface> wol d`), then admin-downs
   the interface (`sudo ip link set <iface> down`).
 - **macOS:** admin-downs the interface (`sudo ifconfig <iface> down`); WoL is
-  system-wide there (`pmset womp`). Unplugging the cable always works.
+  system-wide there (`pmset womp`).
 
 `mode link` or `mode netboot` bring the link back. **WoL stays disabled**
 until you run `sudo ethtool -s <iface> wol g` or replug the adapter.
+
+**Admin-down does not reliably drop the physical link.** Whether the PHY powers
+off is up to the adapter's driver, and with common USB Ethernet adapters it does
+not. Measured with a second adapter cabled to the first and watching its link:
+
+| Host | Adapter (driver) | Peer saw link loss? |
+|---|---|---|
+| macOS | ASIX AX88179A/AX88179B (Apple CDC-NCM) | no |
+| macOS | Realtek RTL8153 (Apple CDC-ECM) | no |
+| Linux | Realtek RTL8153 (`r8152`) | no |
+
+Apple's NCM/ECM drivers have no way to power the PHY down, so on macOS no
+software step drops the link for these adapters. On Linux, `r8152` parks the
+PHY in its out-of-band mode on admin-down rather than powering it off, and
+`ax88179_178a` only disables receive (read from the driver source; not
+measured).
+
+**`netif status` cannot tell you whether the drop happened.** Once the
+interface is admin-down, the host reports `carrier down` regardless of the
+PHY: macOS `ifconfig` shows `status: inactive`, and Linux refuses to read
+`/sys/class/net/<iface>/carrier`, which panio treats as down. Check from the
+other end of the cable: the target's own link state, or the link LED.
+
+For a drop the target is guaranteed to see, take the link away outside the
+host: unplug the cable, disable the target's port on a managed switch between
+host and target, or cut the adapter's USB power from a hub with per-port power
+switching.
 
 ---
 
