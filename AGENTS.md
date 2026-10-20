@@ -497,7 +497,9 @@ relay driven through the generic power hooks instead.
   cannot power the PHY off at all), and once the interface is down the host's
   own `carrier` reads `down` regardless, so `netif status` cannot confirm the
   drop. Check from the target side; for a guaranteed drop, unplug or disable
-  the port on a managed switch (docs/netif.md). `del_host_ip` releases the macOS static
+  the port on a managed switch (docs/netif.md; measured working, helper not
+  built yet: #334). One netboot link serves one target; several targets behind
+  one adapter need per-target VLANs (#335). `del_host_ip` releases the macOS static
   IP via `networksetup -setdhcp` (an `ifconfig` delete won't unset a `-setmanual`
   IP) *and then* `ifconfig <iface> inet <ip> -alias`.
 - **Interface configuration requires root:** `netif::configure_interface()` needs
