@@ -103,10 +103,11 @@ sequences.
 
 ## Status and limitations
 
-**Openterface CDC on Linux:** failed connections to a selected `1a86:fe0c`
-port include a compatibility warning. Startup data echoed by the tty can leave
-the firmware parser unresponsive; a cold direct-USB drain before opening the
-tty restored operation on one tested Mini-KVM. See
+**Openterface CDC on Linux:** startup data echoed by the tty can leave the
+firmware parser of a `1a86:fe0c` port unresponsive. When GET_INFO times out on
+such a port, `ch9329` writes 261 zero bytes to flush the parser and asks once
+more (verified on a cold-replugged Mini-KVM V2, #238); if that also fails, the
+error carries a compatibility warning. See
 [the Linux guide](../docs/hid.md#openterface-cdc-on-linux) and
 [captured investigation](../notes/openterface-v2-linux-serial.md).
 `chip_version` may identify the board variant, not its firmware release. No

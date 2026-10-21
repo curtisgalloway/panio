@@ -12,6 +12,19 @@ worked too. This makes startup echo and firmware parser recovery the leading
 explanation for [#238][issue], not a blanket Linux/kernel defect. The installed
 firmware remains unidentified; no fixed minimum release has been established.
 
+**Updated 2026-10-21: fixed in `ch9329` without direct USB.** The published
+parser waits for the length its header advertises with no timeout, skips a
+frame whose checksum fails, and skips one byte at a time when there is no
+`57 AB` header. So 261 zero bytes (the longest frame: header, address,
+command, length 255, 255 data bytes, checksum) complete any stalled frame
+through the ordinary tty. Measured on this host's Mini-KVM V2 (`chip_version`
+0x02) after a cold replug of both cables: the unfixed helper failed at all
+three rates; a hand-written raw-tty probe got no GET_INFO reply, wrote the
+filler, and got a reply immediately. With the fix, `ch9329 info` on a fresh
+cold replug traced as GET_INFO, a 0.501 s timeout, the 261-byte write, GET_INFO
+answered 0.5 ms later, then the all-clear reports acknowledged. The direct-USB
+drain below stays as a fallback for firmware whose parser differs.
+
 **Terms:** CDC-ACM is USB's virtual serial interface; `cdc_acm` exposes its
 Linux tty (terminal device). Bulk OUT sends bytes to the device; bulk IN returns
 them. Line coding sets serial parameters; DTR/RTS are separate control signals.
@@ -203,8 +216,9 @@ Request a vendor-confirmed fix for partial-frame recovery and startup behavior
 on the actual hardware. Do not flash v0.0.5 just because it mentions EP3 fixes:
 it retains the implicated parser behavior and has a different OUT descriptor.
 
-The helper warns only after failed Linux connections to the selected
-`1a86:fe0c` port, resolving stable aliases. It preserves the underlying error.
+The helper flushes the parser and retries once after a GET_INFO timeout on the
+selected `1a86:fe0c` port (see the 2026-10-21 update above), and warns only
+when that also fails, resolving stable aliases. It preserves the underlying error.
 Successful connections and unknown/unrelated identities do not get the hint.
 There is no numeric firmware threshold: `chip_version` is not a reliable
 release identifier, and no minimum fixed release has been verified.
