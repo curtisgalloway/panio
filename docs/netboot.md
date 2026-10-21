@@ -64,6 +64,8 @@ netboot channel fields:
 | `--boot-file` | `kernel_2712.img` | Boot program (filename under the root, e.g. `grubaa64.efi`); served as a TFTP filename to PXE and wrapped in an `http://` URL for HTTP Boot |
 | `--http-port` | `80` | HTTP server port; also embedded in the HTTP Boot URL (omitted from the URL when 80). `0` binds an OS-assigned ephemeral port — the URL always carries the port actually bound, never a literal `0` |
 | `--content-type` | `application/octet-stream` | `Content-Type` for HTTP responses (UEFI treats octet-stream as an EFI application) |
+| `--link-down-cmd` | (none) | Shell command `netif down-hard` runs last, e.g. a switch port disable via `switchport`; empty clears. See [Link hooks](netif.md#guaranteed-link-drop-with-a-managed-switch) |
+| `--link-up-cmd` | (none) | Shell command run before `netif mode link\|netboot\|ffx` bring the link up; must be idempotent; empty clears |
 | `--host` | target default | Lab host the channel lives on |
 
 Power and DTR control live on the `power` channel (`panio power set …`, see

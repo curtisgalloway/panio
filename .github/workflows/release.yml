@@ -42,7 +42,7 @@ permissions:
 
 env:
   NFPM_VERSION: 2.46.3
-  HELPERS: hdmicap serialcap netbootd cambrionix hidrig ch9329 shellyplug amt
+  HELPERS: hdmicap serialcap netbootd cambrionix hidrig ch9329 shellyplug switchport amt
 
 jobs:
   profile-pins:
@@ -107,6 +107,7 @@ jobs:
             hidrig
             ch9329
             shellyplug
+            switchport
             amt
 
       # GITHUB_SHA, not `git rev-parse`: the container's uid differs from the
@@ -317,6 +318,7 @@ jobs:
             hidrig
             ch9329
             shellyplug
+            switchport
             amt
 
       # The portable layout the CLI's helper lookup expects on Windows:
@@ -532,6 +534,7 @@ jobs:
             hidrig
             ch9329
             shellyplug
+            switchport
             amt
 
       - name: Determine version

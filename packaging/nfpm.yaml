@@ -39,7 +39,7 @@ license: Apache-2.0
 description: |
   Agent-controlled target machine wrangler — distributed bring-up control over SSH.
   Installs the panio CLI plus its helper daemons (hdmicap, serialcap,
-  netbootd, cambrionix, hidrig, ch9329, shellyplug, amt), the
+  netbootd, cambrionix, hidrig, ch9329, shellyplug, switchport, amt), the
   linuxocr and rapidocr OCR helpers, and the bundled agent skills
   (`panio skill`).
   Run `panio setup` once per user for group membership and the

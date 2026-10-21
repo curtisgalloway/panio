@@ -206,7 +206,7 @@ Config lives in one CLI-managed **lab file** (`~/.config/panio/lab.toml`, or
 
 ```
 panio target add <name> [--host <labhost>] [--description <text>]
-panio netboot set -t <name> --interface <iface> [--tftp-root <dir>] [--host-ip <ip>] [--boot-file grubaa64.efi] [--http-port 80] [--content-type <mime>]
+panio netboot set -t <name> --interface <iface> [--tftp-root <dir>] [--host-ip <ip>] [--boot-file grubaa64.efi] [--http-port 80] [--content-type <mime>] [--link-down-cmd <cmd>] [--link-up-cmd <cmd>]
 panio serial add console -t <name> --device <path> [--baud 115200] [--sense cts] [--power-button] [--port N]
 panio power set -t <name> [--cycle-cmd C] [--on-cmd C] [--off-cmd C] [--state-cmd C] [--serial-interface console]
 panio power set -t <name> --level hard [--cycle-cmd C] [--on-cmd C] [--off-cmd C] [--state-cmd C]   # a named power level
@@ -348,7 +348,7 @@ panio netif mode netboot [target]        # IPv4 + DHCP + TFTP (= netboot start)
 panio netif mode link [target]           # bare link UP: host IP only, no daemon
 panio netif mode ffx [target]            # stop netboot, add host fe80::1/64 for ffx
 panio netif mode off [target]            # soft DOWN: release host IP (+ ffx LL)
-panio netif down-hard [target]           # harder DOWN: also kill WoL + admin-down (USB NICs may keep link)
+panio netif down-hard [target]           # harder DOWN: also kill WoL + admin-down (USB NICs may keep link); runs link_down_cmd if set
 panio netif status [target]              # mode, carrier, addresses, ffx peer
 ```
 
@@ -380,7 +380,14 @@ target side (its link state, serial log, or link LED). When the target *must*
 detect link loss, unplug the cable or disable its port on a managed switch
 (measured: link lost within 0.8 s, back ~1.7 s after re-enable). panio has no
 switch driver yet (#334); never disable the port the host manages the switch
-through. One netboot link serves one target; don't put several targets behind
+through. Configure the channel's link hooks to get that guaranteed drop through
+panio: `panio netboot set -t <name> --link-down-cmd 'switchport -d sw1
+--mgmt-port 8 port 3 off' --link-up-cmd 'switchport -d sw1 --mgmt-port 8 port 3 on'`.
+`down-hard` then runs the down hook first, before its host-side steps (a failing
+hook exits `hook_failed` after those steps still ran); `netif mode
+link|netboot|ffx` run the up hook first, so it must be idempotent; `mode off`
+runs none; `netif status` shows a `link hooks` line. An empty value clears a
+hook. One netboot link serves one target; don't put several targets behind
 a plain switch on one adapter (#335).
 
 - **Switching to ffx stops netboot first** — otherwise a power-cycle TFTP-boots a
@@ -1133,6 +1140,10 @@ the device is free just because a daemon is gone from the tracked list.
   terminal. A daemon left over from an older panio has no token —
   a named `panio daemons restart` (unknown identity is excluded from `--stale`).
 - Netboot requires passwordless `sudo` (`ip` on Linux, `ifconfig` on macOS).
+- `netif down-hard` alone does not drop a USB adapter's carrier. If the target
+  must see link loss, check `panio netif status` for `link hooks`: with none
+  configured, ask for `netboot set --link-down-cmd/--link-up-cmd` (switch port
+  hooks) rather than driving the switch by hand.
 - netboot and ffx are mutually exclusive on the link — use `panio netif mode`
   to switch; entering ffx mode stops netboot so a power-cycle boots from SD.
 - To test the bare link: `panio netif mode link` (up) / `mode off` (soft down).
