@@ -133,12 +133,15 @@ reflect the change.** Stale docs/help make the PR incomplete; fix them in the
    the macOS-only job (hdmicap AVFoundation + visionocr). Don't let `cli` tests
    rot.
 
-   Four CI lint jobs are not mirrored by `ci-local.sh`; run them on the host:
+   Five CI lint jobs are not mirrored by `ci-local.sh`; run them on the host:
    `shellcheck` (`git ls-files -z '*.sh' | xargs -0 shellcheck`), `zigplug`
    (`cd zigplug && uv sync --frozen && uv run pyink --check . && uv run
    python -m compileall -q src`), `evals-check` (`python3.12 evals/run.py
-   --check`, step 1), and `actions-pinned` (`bash scripts/ci-actions-pinned.sh`,
-   step 7).
+   --check`, step 1), `actions-pinned` (`bash scripts/ci-actions-pinned.sh`,
+   step 7), and `release-guards` (`python3 scripts/ci-release-guards.py`: every
+   `release.yml` job outside the package builds publishes, and must require
+   `github.event_name == 'push'` as well as a `v*` tag, since a manual dispatch
+   against a tag also has `ref_type == 'tag'`; #338).
 
 5. **Every crate has a CI job — no exceptions.** A crate is not finished until
    `.github/workflows/ci.yml` has a job for it (`working-directory: <crate>`,

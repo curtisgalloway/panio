@@ -21,7 +21,9 @@
 # sidecar, so a consumer (the tap's formula, in particular) can verify or
 # re-pin a download without fetching it first.
 # workflow_dispatch builds the packages as artifacts only (no Release, no tap
-# bump), for testing the pipeline.
+# bump, no apt refresh, no winget), for testing the pipeline, whether it is
+# dispatched against a branch or a tag: every publishing job requires a push
+# event as well as a v* tag (#338; scripts/ci-release-guards.py checks it).
 #
 # Linux builds run inside a debian:bookworm container so binaries link
 # against glibc 2.36 — the packages then run on Debian 12+, 13, and current
@@ -880,7 +882,10 @@ jobs:
 
   release:
     name: attach to GitHub Release
-    if: github.ref_type == 'tag'
+    # Every publishing job checks the event as well as the ref: a manual
+    # dispatch against a tag also has ref_type == 'tag', and dispatch is
+    # artifacts-only (#338). scripts/ci-release-guards.py enforces this.
+    if: github.event_name == 'push' && github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/v')
     needs: [package, package-windows, package-macos]
     runs-on: ubuntu-latest
     permissions:
@@ -907,7 +912,7 @@ jobs:
     # WINGET_TOKEN exists. The FIRST version must be submitted by hand
     # (wingetcreate or komac) to create the package — this action only updates
     # packages that already exist.
-    if: ${{ github.ref_type == 'tag' && !contains(github.ref_name, '-') }}
+    if: ${{ github.event_name == 'push' && github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-') }}
     needs: release
     runs-on: ubuntu-latest
     env:
@@ -928,7 +933,7 @@ jobs:
 
   bump-tap:
     name: bump Homebrew tap
-    if: github.ref_type == 'tag'
+    if: github.event_name == 'push' && github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/v')
     needs: release
     runs-on: ubuntu-latest
     steps:
@@ -962,7 +967,7 @@ jobs:
 
   refresh-apt-repo:
     name: refresh Pages apt repo
-    if: github.ref_type == 'tag'
+    if: github.event_name == 'push' && github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/v')
     needs: release
     runs-on: ubuntu-latest
     permissions:
