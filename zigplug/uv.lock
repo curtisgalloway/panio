@@ -1425,7 +1425,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "aiohttp", specifier = ">=3.14.3" },
+    { name = "aiohttp", specifier = ">=3.14.4" },
     { name = "typer", specifier = ">=0.12" },
     { name = "zigpy", specifier = ">=0.60" },
     { name = "zigpy-znp", specifier = ">=0.12" },
