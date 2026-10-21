@@ -131,6 +131,7 @@ const PROBE_SETTLE: Duration = Duration::from_millis(300);
 /// filler one byte at a time while hunting for the next `57 AB` header. Zero
 /// can never form that header. Measured on a cold-replugged Mini-KVM V2:
 /// GET_INFO silent before the filler, answered right after it.
+#[cfg(any(target_os = "linux", test))]
 const PARSER_FLUSH_LEN: usize = 261;
 
 /// How long a key is held before release on a `tap`/`combo`.
