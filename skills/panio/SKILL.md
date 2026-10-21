@@ -246,7 +246,10 @@ channel to a remote control host (see the lab section below).
 - `panio netboot devices` lists candidate USB-Ethernet interfaces (the
   primary NIC is excluded); `panio discover` (`--json` for machines) lists
   all lab-relevant hardware;
-  `panio configure <name> -H <host>` proposes a whole block to paste in.
+  `panio configure <name> -H <host>` proposes a whole block to paste in. It
+  never guesses between interfaces of one multi-interface serial adapter
+  (FT2232/FT4232 `-if00`/`-if01`, where `-if00` is often JTAG); pick the
+  UART channel from the comments it prints.
 - Hosts: `panio host add <name> --ssh <dest>` (plus `--description`,
   `--hostname`, `--identity`, `--panio-cmd`, `--control-path`) manages the `[hosts.*]`
   entries from the CLI; `host list` / `host show <name>` / `host set` /

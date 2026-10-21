@@ -112,6 +112,60 @@ fn str_at<'a>(v: &'a Value, key: &str) -> Option<&'a str> {
     v.get(key).and_then(Value::as_str)
 }
 
+/// Split a `/dev/serial/by-id/` name ending in `-if<NN>` or `-if<NN>-port<N>`
+/// into the adapter's name and the USB interface number `NN`. udev names every
+/// interface of a composite adapter this way (`-port<N>` for `ftdi_sio`, e.g.
+/// FT2232 `0403:6010` and FT4232 `0403:6011`; bare `-if<NN>` for CDC ACM), so
+/// the prefix identifies the physical adapter.
+fn usb_interface(path: &str) -> Option<(&str, &str)> {
+    if !path.contains("/by-id/") {
+        return None;
+    }
+    let digits = |s: &str, hex: bool| {
+        !s.is_empty()
+            && s.bytes().all(|b| {
+                if hex {
+                    b.is_ascii_hexdigit()
+                } else {
+                    b.is_ascii_digit()
+                }
+            })
+    };
+    let rest = match path.rsplit_once("-port") {
+        Some((rest, port)) if digits(port, false) => rest,
+        _ => path,
+    };
+    let (adapter, iface) = rest.rsplit_once("-if")?;
+    digits(iface, true).then_some((adapter, iface))
+}
+
+/// Group serial paths by physical adapter, keeping first-seen order. A path
+/// that is not one interface of a by-id adapter is a group of its own.
+fn group_serial_adapters<'a>(serials: &[&'a str]) -> Vec<Vec<&'a str>> {
+    let mut groups: Vec<(Option<&str>, Vec<&'a str>)> = Vec::new();
+    for &path in serials {
+        let adapter = usb_interface(path).map(|(a, _)| a);
+        match groups
+            .iter_mut()
+            .find(|(a, _)| adapter.is_some() && *a == adapter)
+        {
+            Some((_, ports)) => ports.push(path),
+            None => groups.push((adapter, vec![path])),
+        }
+    }
+    groups.into_iter().map(|(_, ports)| ports).collect()
+}
+
+/// A trailing comment naming a multi-interface adapter port's interface, with
+/// the FTDI convention that interface 00 (channel A) is usually JTAG/MPSSE.
+fn interface_note(path: &str) -> String {
+    match usb_interface(path) {
+        Some((_, "00")) => "  # interface 00: often JTAG/MPSSE on FT2232/FT4232 boards".to_string(),
+        Some((_, iface)) => format!("  # interface {iface}"),
+        None => String::new(),
+    }
+}
+
 /// Render a proposed `[targets.<name>]` lab block from a host's inventory.
 /// Best-guesses one value per channel; alternatives become comments. Meant to
 /// be reviewed and pasted into the lab — panio never writes it.
@@ -150,25 +204,47 @@ pub fn propose_target_block(name: &str, host: &str, inv: &Value) -> String {
     out.push("# tftp_root = \"/path/to/tftp\"  # set to enable netboot".to_string());
     out.push(String::new());
 
-    // serial: first device as the console; the rest as comments.
+    // serial: the first single-interface device as the console; the rest as
+    // comments. Interfaces of one multi-interface adapter (FT2232/FT4232
+    // JTAG+UART boards) are never guessed between: they become a pick-one
+    // comment block, since channel A is often JTAG/MPSSE, not the console.
     let serials: Vec<&str> = inv
         .get("serial")
         .and_then(Value::as_array)
         .map(|a| a.iter().filter_map(Value::as_str).collect())
         .unwrap_or_default();
-    if let Some(first) = serials.first() {
+    let adapters = group_serial_adapters(&serials);
+    let console = adapters
+        .iter()
+        .find_map(|ports| (ports.len() == 1).then_some(ports[0]));
+    let mut extras: Vec<String> = Vec::new();
+    for ports in &adapters {
+        if let [port] = ports.as_slice() {
+            if Some(*port) != console {
+                extras.push(format!("# another serial device: {port}"));
+            }
+        } else {
+            extras.push("# one adapter, several interfaces — pick the UART channel:".to_string());
+            for port in ports {
+                extras.push(format!("# device = \"{port}\"{}", interface_note(port)));
+            }
+        }
+    }
+    if let Some(first) = console {
         out.push(format!("[[targets.{name}.serial]]"));
         out.push("name = \"console\"".to_string());
         out.push(format!("device = \"{first}\""));
         out.push("baud = 115200".to_string());
-        for extra in &serials[1..] {
-            out.push(format!("# another serial device: {extra}"));
-        }
-    } else {
+    } else if extras.is_empty() {
         out.push(format!(
             "# [[targets.{name}.serial]]  # no serial devices discovered"
         ));
+    } else {
+        out.push(format!("# [[targets.{name}.serial]]"));
+        out.push("# name = \"console\"".to_string());
+        out.push("# baud = 115200".to_string());
     }
+    out.extend(extras);
     out.push(String::new());
 
     // video: propose the one non-built-in capture device, if unambiguous.
@@ -255,6 +331,83 @@ pub fn propose_target_block(name: &str, host: &str, inv: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const FT2232_A: &str = "/dev/serial/by-id/usb-FTDI_Dual_RS232-HS_AA00BB11-if00-port0";
+    const FT2232_B: &str = "/dev/serial/by-id/usb-FTDI_Dual_RS232-HS_AA00BB11-if01-port0";
+
+    #[test]
+    fn usb_interface_parses_by_id_interface_suffix() {
+        assert_eq!(
+            usb_interface(FT2232_B),
+            Some(("/dev/serial/by-id/usb-FTDI_Dual_RS232-HS_AA00BB11", "01"))
+        );
+        assert_eq!(
+            usb_interface("/dev/serial/by-id/usb-Raspberry_Pi_Debugprobe_AA00BB11CC22DD33-if01"),
+            Some((
+                "/dev/serial/by-id/usb-Raspberry_Pi_Debugprobe_AA00BB11CC22DD33",
+                "01"
+            ))
+        );
+        assert_eq!(
+            usb_interface("/dev/serial/by-id/usb-Prolific_PL2303-port0"),
+            None
+        );
+        assert_eq!(usb_interface("/dev/tty.usbserial-A"), None);
+        // by-path names carry the interface differently; not grouped.
+        assert_eq!(
+            usb_interface("/dev/serial/by-path/pci-0000:00:14.0-usb-0:2:1.0-port0"),
+            None
+        );
+    }
+
+    #[test]
+    fn propose_never_guesses_between_interfaces_of_one_adapter() {
+        let inv = json!({
+            "ethernet": [], "video": [],
+            "serial": [FT2232_A, FT2232_B],
+        });
+        let block = propose_target_block("t", "bench1", &inv);
+        // Neither channel is proposed live: interface 00 is usually JTAG.
+        assert!(!block.contains("\n[[targets.t.serial]]"), "{block}");
+        assert!(!block.contains("\ndevice = "), "{block}");
+        assert!(block.contains("# [[targets.t.serial]]\n"), "{block}");
+        assert!(
+            block.contains("# one adapter, several interfaces — pick the UART channel:"),
+            "{block}"
+        );
+        assert!(
+            block.contains(&format!(
+                "# device = \"{FT2232_A}\"  # interface 00: often JTAG/MPSSE"
+            )),
+            "{block}"
+        );
+        assert!(
+            block.contains(&format!("# device = \"{FT2232_B}\"  # interface 01")),
+            "{block}"
+        );
+        assert!(!block.contains("another serial device"), "{block}");
+    }
+
+    #[test]
+    fn propose_prefers_single_interface_adapter_over_composite() {
+        // Sorted order puts the FT2232 first; the plain adapter still wins.
+        let plain = "/dev/serial/by-id/usb-Prolific_PL2303-port0";
+        let inv = json!({
+            "ethernet": [], "video": [],
+            "serial": [FT2232_A, FT2232_B, plain],
+        });
+        let block = propose_target_block("t", "bench1", &inv);
+        assert!(block.contains("\n[[targets.t.serial]]\n"), "{block}");
+        assert!(
+            block.contains(&format!("\ndevice = \"{plain}\"")),
+            "{block}"
+        );
+        assert!(
+            block.contains(&format!("# device = \"{FT2232_A}\"  # interface 00")),
+            "{block}"
+        );
+        assert!(!block.contains("another serial device"), "{block}");
+    }
 
     #[test]
     fn propose_prefers_active_eth_and_first_serial() {
