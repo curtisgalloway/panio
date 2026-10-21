@@ -51,6 +51,18 @@ jobs:
       - name: Check every action reference is a commit SHA
         run: bash scripts/ci-actions-pinned.sh
 
+  release-guards:
+    # release.yml's workflow_dispatch is artifacts-only, but a dispatch against
+    # a tag also has ref_type == 'tag'. This evaluates every release job's
+    # `if:` against branch/tag dispatches and stable/prerelease tag pushes and
+    # fails if anything but a pushed v* tag would publish (#338).
+    name: release guards (only a pushed v* tag publishes)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Evaluate release.yml publishing guards
+        run: python3 scripts/ci-release-guards.py
+
   profile-pins:
     # The release-train profile states facts derived from other files; its
     # `## Sources` table pins each one's blob id so a release knows which prose
