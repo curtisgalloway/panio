@@ -48,6 +48,14 @@ List detected serial devices:
 panio serial devices
 ```
 
+One adapter can show up as several devices. On Linux, a dual- or quad-channel
+FTDI board (FT2232, FT4232) lists one `/dev/serial/by-id/...-ifNN-port0`
+entry per channel, and interface `00` (channel A) is often wired as
+JTAG/MPSSE rather than the UART console. `panio configure` therefore never
+picks between interfaces of one adapter: it lists them under "one adapter,
+several interfaces — pick the UART channel" and leaves you to choose
+(commonly `-if01-port0`).
+
 Show a target's configured interfaces:
 
 ```bash
