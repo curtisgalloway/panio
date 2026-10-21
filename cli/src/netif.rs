@@ -601,6 +601,25 @@ fn admin_down(interface: &str) {
     }
 }
 
+/// Admin-up the interface, undoing [`admin_down`]. Run before `link_up_cmd`,
+/// since the switch may be managed through this same adapter.
+fn admin_up(interface: &str) {
+    if macos() {
+        let _ = run(&["sudo", "ifconfig", interface, "up"]);
+    } else {
+        let _ = run(&["sudo", "ip", "link", "set", interface, "up"]);
+    }
+}
+
+/// Bring the interface admin-up, then run `link_up_cmd` if one is set.
+fn link_up(target: &str, interface: &str, hooks: &LinkHooks) -> Result<()> {
+    if LinkHooks::set(&hooks.up_cmd).is_none() {
+        return Ok(());
+    }
+    admin_up(interface);
+    run_link_hook(target, "link_up_cmd", hooks.up_cmd.as_deref(), "")
+}
+
 // ── modes ───────────────────────────────────────────────────────────────────
 
 pub const MODES: [&str; 4] = ["netboot", "link", "ffx", "off"];
@@ -676,7 +695,7 @@ pub fn mode_netboot(
     hooks: &LinkHooks,
 ) -> Result<()> {
     guard_primary_interface("mode netboot", interface)?;
-    run_link_hook(target, "link_up_cmd", hooks.up_cmd.as_deref(), "")?;
+    link_up(target, interface, hooks)?;
     del_host_ll(interface);
     if crate::state::is_netboot_running(target) {
         return Ok(());
@@ -692,7 +711,7 @@ pub fn mode_netboot(
 /// docs/netif.md).
 pub fn mode_link(target: &str, interface: &str, host_ip: &str, hooks: &LinkHooks) -> Result<()> {
     guard_primary_interface("mode link", interface)?;
-    run_link_hook(target, "link_up_cmd", hooks.up_cmd.as_deref(), "")?;
+    link_up(target, interface, hooks)?;
     if crate::state::is_netboot_running(target) {
         crate::netboot::stop(target)?;
     }
@@ -705,7 +724,7 @@ pub fn mode_link(target: &str, interface: &str, host_ip: &str, hooks: &LinkHooks
 /// as much as they do (and may follow a `down-hard`).
 pub fn mode_ffx(target: &str, interface: &str, hooks: &LinkHooks) -> Result<()> {
     guard_primary_interface("mode ffx", interface)?;
-    run_link_hook(target, "link_up_cmd", hooks.up_cmd.as_deref(), "")?;
+    link_up(target, interface, hooks)?;
     if crate::state::is_netboot_running(target) {
         crate::netboot::stop(target)?;
     }
@@ -731,22 +750,25 @@ pub fn mode_off(target: &str, interface: &str, host_ip: &str) -> Result<()> {
 /// loss. Bring the link back with `mode link`/`mode netboot`; WoL stays disabled
 /// until re-enabled (`ethtool -s <iface> wol g`) or the adapter is replugged.
 ///
-/// When the channel has a `link_down_cmd` it runs last, after the host-side
-/// steps: that is the guaranteed drop (e.g. a managed-switch port disable). If
-/// it fails the host-side steps stay done and the error says so.
+/// When the channel has a `link_down_cmd` it runs first, before the host-side
+/// steps, so it can still reach a switch managed through this adapter: that
+/// is the guaranteed drop (e.g. a managed-switch port disable). If it fails
+/// the host-side steps still run and the error says so.
 pub fn down_hard(target: &str, interface: &str, host_ip: &str, hooks: &LinkHooks) -> Result<()> {
     guard_primary_interface("down-hard", interface)?;
-    mode_off(target, interface, host_ip)?;
-    disable_wol(interface);
-    admin_down(interface);
-    run_link_hook(
+    // The hook runs first, while the host side is still up: the switch may be
+    // managed through this same adapter, which admin-down would cut off.
+    let hook = run_link_hook(
         target,
         "link_down_cmd",
         hooks.down_cmd.as_deref(),
-        " (the host-side steps already ran: netboot stopped, addresses released, \
+        " (the host-side steps still ran: netboot stopped, addresses released, \
          Wake-on-LAN disabled, interface admin-down; the carrier may still be up)",
-    )?;
-    Ok(())
+    );
+    mode_off(target, interface, host_ip)?;
+    disable_wol(interface);
+    admin_down(interface);
+    hook
 }
 
 pub struct NetifStatus {

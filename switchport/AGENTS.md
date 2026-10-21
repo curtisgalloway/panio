@@ -16,8 +16,8 @@ switchport/      Rust crate: standalone one-shot helper that enables/disables a
                  helper: it is wired through the netboot `link_down_cmd` /
                  `link_up_cmd` hooks (`panio netboot set -t <target>
                  --link-down-cmd '<cmd>' --link-up-cmd '<cmd>'`), which
-                 `netif down-hard` (after admin-down) and `netif mode
-                 link|netboot` (before raising the host IP) run.
+                 `netif down-hard` (before admin-down) and `netif mode
+                 link|netboot|ffx` (before raising the host IP) run.
   src/main.rs      clap CLI, backend construction, secrets, doctor, exit codes
   src/ops.rs       Backend trait + EVERY safety rule (written once)
   src/easysmart.rs TP-Link Easy Smart HTTP backend + a small JS-literal parser

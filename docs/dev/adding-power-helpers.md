@@ -323,8 +323,8 @@ panio netboot set -t <target> \
     --link-up-cmd   'switchport -d <switch> --mgmt-port <N> port <P> on'
 ```
 
-`netif down-hard` runs `link_down_cmd` after admin-down; `netif mode link` and
-`netif mode netboot` run `link_up_cmd` before raising the host IP. Its safety
+`netif down-hard` runs `link_down_cmd` before admin-down; `netif mode link|netboot|ffx`
+admin-up the interface and run `link_up_cmd` before raising the host IP. Its safety
 rules (refuse to disable the port the helper itself reaches the switch
 through, identity pinning, read-back, opt-in link wait with `--wait-link`) are
 in `switchport/AGENTS.md`; any future link helper should keep them.

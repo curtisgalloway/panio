@@ -791,7 +791,7 @@ enum NetbootCmd {
         /// Content-Type for HTTP responses (default application/octet-stream).
         #[arg(long)]
         content_type: Option<String>,
-        /// Shell command `netif down-hard` runs after its host-side steps to
+        /// Shell command `netif down-hard` runs before its host-side steps to
         /// guarantee a carrier drop, e.g. a managed-switch port disable:
         /// `switchport -d sw1 --mgmt-port 8 port 3 off`. Runs on the netboot
         /// channel's host like a power hook (`sh -c`, helper dir on PATH). An
@@ -873,9 +873,10 @@ enum NetifCmd {
     /// the host's own carrier reads down either way, so confirm the drop from
     /// the target side. For a guaranteed drop, configure `netboot set
     /// --link-down-cmd` (e.g. a managed-switch port disable via `switchport`):
-    /// down-hard then also runs that hook after the host-side steps, and a
-    /// failing hook exits as `hook_failed` with the host-side steps already
-    /// done. Bring the link back with `mode link`/`netboot`/`ffx`, which run
+    /// down-hard then runs that hook first (so it can still reach a switch
+    /// managed through this adapter), and a failing hook exits as
+    /// `hook_failed` after the host-side steps still ran. Bring the link back
+    /// with `mode link`/`netboot`/`ffx`, which admin-up the interface and run
     /// `--link-up-cmd` first.
     DownHard {
         #[command(flatten)]

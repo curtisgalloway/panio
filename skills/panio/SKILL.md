@@ -383,8 +383,8 @@ switch driver yet (#334); never disable the port the host manages the switch
 through. Configure the channel's link hooks to get that guaranteed drop through
 panio: `panio netboot set -t <name> --link-down-cmd 'switchport -d sw1
 --mgmt-port 8 port 3 off' --link-up-cmd 'switchport -d sw1 --mgmt-port 8 port 3 on'`.
-`down-hard` then runs the down hook after its host-side steps (a failing hook
-exits `hook_failed` with those steps already done); `netif mode
+`down-hard` then runs the down hook first, before its host-side steps (a failing
+hook exits `hook_failed` after those steps still ran); `netif mode
 link|netboot|ffx` run the up hook first, so it must be idempotent; `mode off`
 runs none; `netif status` shows a `link hooks` line. An empty value clears a
 hook. One netboot link serves one target; don't put several targets behind

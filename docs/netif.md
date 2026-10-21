@@ -193,13 +193,14 @@ keep the switch on an isolated bench network.
 
 With the hooks set:
 
-- `panio netif down-hard` does its host-side steps (stop netboot, release
-  addresses, WoL off, admin-down), then runs `link_down_cmd`. If the hook
-  fails, the command exits `hook_failed` (a failing program, or exit 127 for
-  a missing one is `not_configured`) and the message says the host-side steps
-  already ran and the carrier may still be up.
-- `panio netif mode link`, `netboot` and `ffx` run `link_up_cmd` first, then
-  bring the host side up. `ffx` runs it too, since a link dropped by
+- `panio netif down-hard` runs `link_down_cmd` first, while the host side is
+  still up (the switch may be managed through this same adapter), then does
+  its host-side steps (stop netboot, release addresses, WoL off, admin-down).
+  If the hook fails, the host-side steps still run, the command exits
+  `hook_failed` (a failing program, or exit 127 for a missing one is
+  `not_configured`) and the message says the carrier may still be up.
+- `panio netif mode link`, `netboot` and `ffx` admin-up the interface and run
+  `link_up_cmd` first, then bring the host side up. `ffx` runs it too, since a link dropped by
   `down-hard` has to come back before ffx can work. The hook therefore runs
   on every such mode change and must be idempotent (switching a port on that
   is already on is). `mode off` runs no hook.
@@ -207,6 +208,13 @@ With the hooks set:
   `down+up`.
 - Clear a hook with an empty value: `panio netboot set -t target-machine
   --link-down-cmd ''`.
+
+Prefer reaching the switch's management address through a different adapter
+from the netboot link. The down hook runs before admin-down for the case where
+they share one, but on macOS `mode off` and `down-hard` return the netboot
+interface's service to DHCP. When that interface is the management adapter
+itself (not a VLAN device on it), this can also remove a management alias you
+added to it by hand, and the next `link_up_cmd` then cannot reach the switch.
 
 Still confirm the drop from the target side; the host's `carrier` reads down
 after admin-down whether or not the link really dropped.

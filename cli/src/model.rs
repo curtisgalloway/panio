@@ -232,7 +232,7 @@ pub struct NetbootChannel {
     /// `Content-Type` for HTTP responses (default `application/octet-stream`).
     pub content_type: Option<String>,
     /// Shell command run on the netboot channel's host by `netif down-hard`,
-    /// after the host-side steps, to guarantee a carrier drop the host cannot
+    /// before the host-side steps, to guarantee a carrier drop the host cannot
     /// force itself (typically a managed-switch port disable, e.g.
     /// `switchport -d sw1 --mgmt-port 8 port 3 off`). Runs like a power hook.
     pub link_down_cmd: Option<String>,
