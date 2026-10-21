@@ -119,9 +119,10 @@ the client lease follows.
 one adapter: netbootd leases a single fixed address per link (`.100` in the
 link's /24) and serves one boot file, and it leases to any DHCP client,
 including a managed switch's own management interface. Use one adapter per
-target for now. Sharing one adapter through per-target VLANs on a managed
-switch is tracked in
-[#335](https://github.com/curtisgalloway/panio/issues/335).
+target, or give each target its own VLAN on a managed switch
+([Several targets through one switch](#several-targets-through-one-switch));
+each VLAN interface is then a separate link and the rules below apply to it
+unchanged.
 
 panio enforces this:
 
@@ -159,6 +160,86 @@ do not delete it while a daemon is running. Linux retains exclusive
 `SO_BINDTODEVICE` binds without port sharing. When upgrading from an older
 macOS daemon, stop it before starting multiple links: its sockets do not
 permit port sharing.
+
+### Several targets through one switch
+
+One adapter can serve several targets through a managed switch that does
+802.1Q VLANs (tagged Ethernet: one cable carries several separate networks,
+each frame labeled with a VLAN number, its *tag*). Each target gets its own
+VLAN, and the control host gets one VLAN interface per tag. To panio every
+VLAN interface is an ordinary link: one target, one /24, one netbootd.
+
+```
+control host -- adapter --(tagged 11, 12, 13)-- switch port 8
+  VLAN 11  host 192.168.99.1    port 1 (untagged, PVID 11) -- target A
+  VLAN 12  host 192.168.98.1    port 2 (untagged, PVID 12) -- target B
+  VLAN 13  host 192.168.97.1    port 3 (untagged, PVID 13) -- target C
+```
+
+*Untagged* means the switch strips the tag on the way out of that port, so the
+target sees plain Ethernet; the port's *PVID* is the VLAN it puts the target's
+own (untagged) frames into.
+
+**1. Configure the switch.** In its 802.1Q VLAN page, create one VLAN per
+target with that target's port as an untagged member and the uplink port (the
+one cabled to the control host) as a tagged member, then set each target
+port's PVID to its VLAN, and take each target port out of VLAN 1. Keep the
+uplink an untagged member of VLAN 1 so you can still reach the switch's web
+page from the parent adapter.
+
+**Give the switch a static management address first.** Its DHCP client asks
+on the target VLANs too, not only on its management VLAN: on a TP-Link
+TL-SG108PE, turning 802.1Q on made the switch take a target VLAN's netboot
+lease, and because netbootd serves one client per session the real target then
+got nothing (`ignoring DHCP request from …: the netboot lease is held by …` in
+`panio netboot logs`). If that happens, set the address, then `netboot stop`
+and `start` that target to clear the lease.
+
+**2. Create the VLAN interfaces on the control host**, one per target:
+
+```bash
+panio netif vlan add --parent en7 --tag 11      # prints the new device, e.g. vlan0
+panio netif vlan add --parent en7 --tag 12      # vlan1
+panio netif vlan list                           # device, parent, tag, service
+```
+
+On macOS this runs `sudo networksetup -createVLAN` and the system names the
+device (`vlan0`, `vlan1`, …); the VLAN persists across reboots. Not every USB
+adapter supports VLANs on macOS: `networksetup -listdevicesthatsupportVLAN`
+lists the ones that do. `vlan add` also sets the VLAN's MTU to the parent's
+minus 4 bytes (1496 on a 1500 adapter), because USB adapters drop tagged frames
+longer than a full untagged one even though they advertise `VLAN_MTU`
+(measured on an AX88179A: every tagged frame over 1514 bytes is lost in both
+directions). At the full 1500, DHCP and small pings still work while any TCP
+transfer that fills a packet (HTTP boot, a web page) stalls.
+
+On Linux `vlan add` runs `sudo ip link add … type vlan` and names the device
+`<parent>.<tag>` (`vlan<tag>` when that would exceed the 15-character
+interface-name limit); the interface does **not** survive a reboot, so re-run
+`vlan add` (it is idempotent) or create it in your distribution's network
+configuration. Linux leaves the VLAN at the parent's MTU; the tagged-frame
+limit above has not been measured there, so if large transfers stall on a Linux
+control host, try `sudo ip link set <vlan> mtu 1496`. Add `-H <host>` to run
+either on a lab host. `panio netboot devices` lists VLAN interfaces as `VLAN
+<tag> on <parent>`.
+
+**3. Point each target at its VLAN interface**, each in its own /24:
+
+```bash
+panio netboot set -t target-a --interface vlan0 --host-ip 192.168.99.1 --tftp-root ~/tftp/target-a
+panio netboot set -t target-b --interface vlan1 --host-ip 192.168.98.1 --tftp-root ~/tftp/target-b
+panio netboot start target-a
+panio netboot start target-b
+```
+
+`panio netif vlan rm <device>` removes one; it refuses while the device still
+holds an address (run `panio netif mode off <target>` first, or pass
+`--force`) and refuses anything that is not a VLAN interface.
+
+The targets share the adapter's bandwidth (1 Gbps on most USB adapters):
+plenty for boot images, slower for several large transfers at once. A switch
+that can disable ports also gives a reliable per-target link drop
+([netif: Testing the link up and down](netif.md#testing-the-link-up-and-down)).
 
 ### Privileges and sudo
 

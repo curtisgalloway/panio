@@ -353,7 +353,23 @@ panio netif mode ffx [target]            # stop netboot, add host fe80::1/64 for
 panio netif mode off [target]            # soft DOWN: release host IP (+ ffx LL)
 panio netif down-hard [target]           # harder DOWN: also kill WoL + admin-down (USB NICs may keep link); runs link_down_cmd if set
 panio netif status [target]              # mode, carrier, addresses, ffx peer
+panio netif vlan add --parent <if> --tag <n> [-H host]   # VLAN interface for one more target; prints device
+panio netif vlan list [-H host]          # device, parent, tag, service
+panio netif vlan rm <device> [--force] [-H host]         # refuses while it holds an address
 ```
+
+**Several targets on one adapter** need a managed switch with one 802.1Q VLAN
+per target (target port untagged with that PVID, uplink tagged). Create one
+VLAN interface per target with `netif vlan add`, then `netboot set -t <t>
+--interface <vlan device> --host-ip <own /24>`; each VLAN interface is a normal
+one-target link. Linux VLAN interfaces vanish on reboot (re-run `vlan add`; it
+is idempotent); macOS ones persist. Give the switch a **static** management
+address first: its DHCP client asks on target VLANs too and can take a target's
+netboot lease (`netboot logs` shows "lease is held by" another MAC; fix the
+switch, then `netboot stop`/`start`). On macOS `vlan add` sets the VLAN MTU to
+1496: at 1500, USB adapters drop full-size tagged frames, so DHCP works but HTTP
+boot and other large TCP transfers stall. Details: docs/netboot.md "Several
+targets through one switch".
 
 
 **Testing the link up/down.** To check that the link itself comes up and drops —
@@ -381,8 +397,8 @@ macOS, RTL8153 on Linux), and after admin-down the host's own `carrier` reads
 `down` no matter what, so `netif status` is not evidence. Confirm from the
 target side (its link state, serial log, or link LED). When the target *must*
 detect link loss, unplug the cable or disable its port on a managed switch
-(measured: link lost within 0.8 s, back ~1.7 s after re-enable). panio has no
-switch driver yet (#334); never disable the port the host manages the switch
+(measured: link lost within 0.8 s, back ~1.7 s after re-enable). The `switchport`
+helper drives the port (#334); never disable the port the host manages the switch
 through. Configure the channel's link hooks to get that guaranteed drop through
 panio: `panio netboot set -t <name> --link-down-cmd 'switchport -d sw1
 --mgmt-port 8 port 3 off' --link-up-cmd 'switchport -d sw1 --mgmt-port 8 port 3 on'`.
@@ -391,7 +407,7 @@ hook exits `hook_failed` after those steps still ran); `netif mode
 link|netboot|ffx` run the up hook first, so it must be idempotent; `mode off`
 runs none; `netif status` shows a `link hooks` line. An empty value clears a
 hook. One netboot link serves one target; don't put several targets behind
-a plain switch on one adapter (#335).
+a plain switch on one adapter: give each its own VLAN (above).
 
 - **Switching to ffx stops netboot first** — otherwise a power-cycle TFTP-boots a
   stale image instead of falling through to the SD card. This is the safe way to

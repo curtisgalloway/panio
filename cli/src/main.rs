@@ -887,6 +887,57 @@ enum NetifCmd {
         #[command(flatten)]
         target: TargetArg,
     },
+    /// Create, remove, or list 802.1Q VLAN interfaces on a control host, so
+    /// several targets can netboot through one adapter and a managed switch
+    /// (one VLAN per target).
+    ///
+    /// Each VLAN interface is its own netboot link: point a target at it with
+    /// `netboot set --interface <device> --host-ip <a /24 no other link uses>`.
+    /// The switch port to each target must carry that VLAN untagged, and the
+    /// adapter's port must trunk them all.
+    Vlan {
+        #[command(subcommand)]
+        cmd: NetifVlanCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum NetifVlanCmd {
+    /// Create a VLAN interface on a parent adapter (needs passwordless sudo).
+    ///
+    /// Idempotent: an existing VLAN with the same parent and tag is reused.
+    /// Prints only the new device name on stdout, so a script can capture it.
+    Add {
+        /// Physical interface the VLAN rides on (for example `en7` or `eth0`).
+        #[arg(long)]
+        parent: String,
+        /// 802.1Q VLAN tag, 1-4094.
+        #[arg(long)]
+        tag: u16,
+        /// Run on this lab host instead of locally.
+        #[arg(long, short = 'H')]
+        host: Option<String>,
+    },
+    /// Remove a VLAN interface (needs passwordless sudo).
+    ///
+    /// Refuses a device that is not a VLAN, and one that still holds an IPv4
+    /// address unless --force (run `netif mode off` on its target first).
+    Rm {
+        /// VLAN device name, as printed by `netif vlan list`.
+        device: String,
+        /// Remove the VLAN even if it still holds an IPv4 address.
+        #[arg(long)]
+        force: bool,
+        /// Run on this lab host instead of locally.
+        #[arg(long, short = 'H')]
+        host: Option<String>,
+    },
+    /// List VLAN interfaces: device, parent, tag, and network service (macOS).
+    List {
+        /// Run on this lab host instead of locally.
+        #[arg(long, short = 'H')]
+        host: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -5129,7 +5180,83 @@ fn netif_cmd(lab_flag: Option<&str>, cmd: NetifCmd) -> Result<()> {
             print_netif_status(&target, &iface, &host_ip, &hooks);
             Ok(())
         }
+        NetifCmd::Vlan { cmd } => netif_vlan_cmd(lab_flag, cmd),
     }
+}
+
+/// The lab host a `netif vlan` verb was asked to run on, if any.
+fn vlan_host(cmd: &NetifVlanCmd) -> Option<&str> {
+    match cmd {
+        NetifVlanCmd::Add { host, .. }
+        | NetifVlanCmd::Rm { host, .. }
+        | NetifVlanCmd::List { host } => host.as_deref(),
+    }
+}
+
+/// The remote argv for a dispatched `netif vlan` verb: the same verb with
+/// `--host` removed, so the control host runs it locally.
+fn vlan_remote_argv(cmd: &NetifVlanCmd) -> Vec<String> {
+    let mut argv: Vec<String> = ["netif", "vlan"].map(String::from).to_vec();
+    match cmd {
+        NetifVlanCmd::Add { parent, tag, .. } => {
+            argv.extend(["add", "--parent", parent, "--tag", &tag.to_string()].map(String::from));
+        }
+        NetifVlanCmd::Rm { device, force, .. } => {
+            argv.push("rm".to_string());
+            if *force {
+                argv.push("--force".to_string());
+            }
+            argv.push("--".to_string());
+            argv.push(device.clone());
+        }
+        NetifVlanCmd::List { .. } => argv.push("list".to_string()),
+    }
+    argv
+}
+
+/// `netif vlan`, locally or on the lab host named by `--host`. Not tied to a
+/// target, so it never goes through target-based dispatch.
+fn netif_vlan_cmd(lab_flag: Option<&str>, cmd: NetifVlanCmd) -> Result<()> {
+    if let Some(host) = vlan_host(&cmd) {
+        let resolved = resolve_host(lab_flag, host)?;
+        if !resolved.is_local(host) {
+            let lab = load_for_read(lab_flag)?;
+            let code = dispatch::run_on_host(&lab, host, &vlan_remote_argv(&cmd))?;
+            if code != 0 {
+                std::process::exit(code);
+            }
+            return Ok(());
+        }
+    }
+    match cmd {
+        NetifVlanCmd::Add { parent, tag, .. } => {
+            let device = netif::vlan_add(&parent, tag)?;
+            println!("{device}");
+            eprintln!(
+                "next: panio netboot set -t <target> --interface {device} --host-ip <a /24 not used by another link>"
+            );
+        }
+        NetifVlanCmd::Rm { device, force, .. } => {
+            netif::vlan_rm(&device, force)?;
+            eprintln!("removed {device}");
+        }
+        NetifVlanCmd::List { .. } => {
+            let vlans = netif::list_vlans();
+            if vlans.is_empty() {
+                println!("No VLAN interfaces.");
+            }
+            for v in vlans {
+                println!(
+                    "{}\t{}\t{}\t{}",
+                    v.device,
+                    v.parent,
+                    v.tag,
+                    v.service.as_deref().unwrap_or("-")
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 fn print_netif_status(target: &str, iface: &str, host_ip: &str, hooks: &netif::LinkHooks) {
@@ -7264,6 +7391,50 @@ mod tests {
         }
     }
 
+    /// The three `netif vlan` verbs parse, `add` needs both flags, and the
+    /// remote argv drops `--host`.
+    #[test]
+    fn netif_vlan_verbs_parse_and_build_remote_argv() {
+        let vlan = |argv: &[&str]| -> NetifVlanCmd {
+            match parse(argv)
+                .unwrap_or_else(|e| panic!("{argv:?}: {e}"))
+                .command
+            {
+                Command::Netif {
+                    cmd: NetifCmd::Vlan { cmd },
+                } => cmd,
+                _ => panic!("{argv:?}: not netif vlan"),
+            }
+        };
+        let add = vlan(&[
+            "netif", "vlan", "add", "--parent", "en7", "--tag", "11", "-H", "bench1",
+        ]);
+        assert_eq!(vlan_host(&add), Some("bench1"));
+        assert_eq!(
+            vlan_remote_argv(&add),
+            ["netif", "vlan", "add", "--parent", "en7", "--tag", "11"]
+        );
+        assert!(parse(&["netif", "vlan", "add", "--parent", "en7"]).is_err());
+        assert!(parse(&["netif", "vlan", "add", "--tag", "11"]).is_err());
+        let rm = vlan(&["netif", "vlan", "rm", "--force", "vlan0"]);
+        assert_eq!(vlan_host(&rm), None);
+        assert_eq!(
+            vlan_remote_argv(&rm),
+            ["netif", "vlan", "rm", "--force", "--", "vlan0"]
+        );
+        let list = vlan(&["netif", "vlan", "list", "--host", "bench1"]);
+        assert_eq!(vlan_remote_argv(&list), ["netif", "vlan", "list"]);
+        // The full u16 range parses; the range check is netif::validate_vlan_tag.
+        for tag in ["0", "4095", "65535"] {
+            let cmd = vlan(&["netif", "vlan", "add", "--parent", "en7", "--tag", tag]);
+            let NetifVlanCmd::Add { tag, .. } = cmd else {
+                unreachable!()
+            };
+            assert!(netif::validate_vlan_tag(tag).is_err());
+        }
+        assert!(parse(&["netif", "vlan", "add", "--parent", "en7", "--tag", "65536"]).is_err());
+    }
+
     /// The merged value is what the handler acts on, for both spellings.
     #[test]
     fn netboot_and_netif_handlers_see_the_merged_target() {
@@ -7282,6 +7453,7 @@ mod tests {
                     NetifCmd::Mode { target, .. }
                     | NetifCmd::DownHard { target }
                     | NetifCmd::Status { target } => target.name().map(str::to_string),
+                    NetifCmd::Vlan { .. } => panic!("{argv:?}: netif vlan takes no target"),
                 },
                 _ => panic!("{argv:?}: not netboot or netif"),
             }

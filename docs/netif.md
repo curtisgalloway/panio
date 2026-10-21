@@ -57,7 +57,17 @@ panio netif down-hard <target>
 # Show which mode the link is in, its carrier (physical link) state, its
 # addresses, and any discovered ffx peer.
 panio netif status <target>
+
+# Create, list, or remove an 802.1Q VLAN interface on the control host, so
+# several targets share one adapter through a managed switch (one VLAN each).
+# Host-level, not per-target; -H <host> runs it on a lab host.
+panio netif vlan add --parent <adapter> --tag <1-4094>   # prints the device
+panio netif vlan list
+panio netif vlan rm <device> [--force]
 ```
+
+The VLAN verbs, the switch layout, and the per-OS details are in
+[netboot: Several targets through one switch](netboot.md#several-targets-through-one-switch).
 
 Omit `<target>` when exactly one is configured, or pass it as `-t/--target`
 (`panio netif mode link -t pi5`). Giving both is refused.
