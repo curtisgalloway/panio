@@ -57,6 +57,8 @@ pub fn build_slice(lab: &Lab, target: &str, host: &str) -> Result<String, LabErr
                 nb.boot_file.as_deref(),
                 nb.http_port.as_deref(),
                 nb.content_type.as_deref(),
+                nb.link_down_cmd.as_deref(),
+                nb.link_up_cmd.as_deref(),
                 None,
             )?;
         }
@@ -895,6 +897,8 @@ mod tests {
             host = "bench1"
             [targets.fortune.netboot]
             interface = "en0"
+            link_down_cmd = "switchport -d sw1 --mgmt-port 8 port 3 off"
+            link_up_cmd = "switchport -d sw1 --mgmt-port 8 port 3 on"
             [[targets.fortune.serial]]
             name = "console"
             device = "/dev/ttyUSB0"
@@ -969,6 +973,25 @@ mod tests {
         let reparsed = model::parse(&s).unwrap();
         let v = reparsed.targets["fortune"].video.as_ref().unwrap();
         assert_eq!(v.change_threshold, Some(4));
+    }
+
+    /// The link hooks run on the netboot channel's host, so the slice that
+    /// host receives must carry them.
+    #[test]
+    fn slice_carries_the_netboot_link_hooks() {
+        let s = build_slice(&lab(), "fortune", "bench1").unwrap();
+        let nb = model::parse(&s).unwrap().targets["fortune"]
+            .netboot
+            .clone()
+            .unwrap();
+        assert_eq!(
+            nb.link_down_cmd.as_deref(),
+            Some("switchport -d sw1 --mgmt-port 8 port 3 off")
+        );
+        assert_eq!(
+            nb.link_up_cmd.as_deref(),
+            Some("switchport -d sw1 --mgmt-port 8 port 3 on")
+        );
     }
 
     /// Fixed daemon ports have to reach the control host, which is where the

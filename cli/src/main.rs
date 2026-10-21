@@ -791,6 +791,19 @@ enum NetbootCmd {
         /// Content-Type for HTTP responses (default application/octet-stream).
         #[arg(long)]
         content_type: Option<String>,
+        /// Shell command `netif down-hard` runs after its host-side steps to
+        /// guarantee a carrier drop, e.g. a managed-switch port disable:
+        /// `switchport -d sw1 --mgmt-port 8 port 3 off`. Runs on the netboot
+        /// channel's host like a power hook (`sh -c`, helper dir on PATH). An
+        /// empty value clears it.
+        #[arg(long)]
+        link_down_cmd: Option<String>,
+        /// Shell command run before `netif mode link|netboot|ffx` bring the
+        /// link up, undoing --link-down-cmd, e.g. `switchport -d sw1
+        /// --mgmt-port 8 port 3 on`. Runs on every such mode change, so it
+        /// must be idempotent. An empty value clears it.
+        #[arg(long)]
+        link_up_cmd: Option<String>,
         #[arg(long)]
         host: Option<String>,
     },
@@ -841,6 +854,10 @@ enum NetifCmd {
     /// `link` brings just the host IP up (no DHCP/TFTP daemon, no ffx
     /// link-local) and `off` releases it — together they test the bare link
     /// up/down. `off` releases the IP only; it does not force the carrier down.
+    ///
+    /// `link`, `netboot` and `ffx` first run the channel's `link_up_cmd` (set
+    /// with `netboot set --link-up-cmd`) when one is configured, so a link
+    /// dropped by `down-hard` comes back; `off` runs no hook.
     Mode {
         /// netboot | link | ffx | off.
         mode: String,
@@ -854,8 +871,12 @@ enum NetifCmd {
     /// with Wake-on-LAN keeps the PHY energized). Admin-down still leaves the
     /// PHY up on many USB adapters (all tested on macOS; RTL8153 on Linux), and
     /// the host's own carrier reads down either way, so confirm the drop from
-    /// the target side. For a guaranteed drop, unplug or disable a switch port.
-    /// Bring it back with `mode link`/`mode netboot`.
+    /// the target side. For a guaranteed drop, configure `netboot set
+    /// --link-down-cmd` (e.g. a managed-switch port disable via `switchport`):
+    /// down-hard then also runs that hook after the host-side steps, and a
+    /// failing hook exits as `hook_failed` with the host-side steps already
+    /// done. Bring the link back with `mode link`/`netboot`/`ffx`, which run
+    /// `--link-up-cmd` first.
     DownHard {
         #[command(flatten)]
         target: TargetArg,
@@ -4761,6 +4782,8 @@ fn netboot_cmd(lab_flag: Option<&str>, cmd: NetbootCmd) -> Result<()> {
             boot_file,
             http_port,
             content_type,
+            link_down_cmd,
+            link_up_cmd,
             host,
         } => {
             edit_lab(lab_flag, |lf| {
@@ -4772,6 +4795,8 @@ fn netboot_cmd(lab_flag: Option<&str>, cmd: NetbootCmd) -> Result<()> {
                     boot_file.as_deref(),
                     http_port.as_deref(),
                     content_type.as_deref(),
+                    link_down_cmd.as_deref(),
+                    link_up_cmd.as_deref(),
                     host.as_deref(),
                 )
             })?;
@@ -4869,6 +4894,7 @@ struct NetbootRuntime {
     host_ip: String,
     tftp_root: Option<String>,
     boot: netboot::BootOptions,
+    hooks: netif::LinkHooks,
 }
 
 impl NetbootRuntime {
@@ -4945,6 +4971,10 @@ fn netboot_runtime(lab_flag: Option<&str>, target: Option<&str>) -> Result<Netbo
             boot_file: nb.boot_file,
             http_port: nb.http_port,
             content_type: nb.content_type,
+        },
+        hooks: netif::LinkHooks {
+            down_cmd: nb.link_down_cmd,
+            up_cmd: nb.link_up_cmd,
         },
     })
 }
@@ -5054,6 +5084,7 @@ fn netif_cmd(lab_flag: Option<&str>, cmd: NetifCmd) -> Result<()> {
                 interface: iface,
                 host_ip,
                 boot,
+                hooks,
                 ..
             } = &runtime;
             match mode.as_str() {
@@ -5064,13 +5095,14 @@ fn netif_cmd(lab_flag: Option<&str>, cmd: NetifCmd) -> Result<()> {
                         host_ip,
                         runtime.require_tftp_root()?,
                         boot,
+                        hooks,
                     )?;
                 }
-                "link" => netif::mode_link(target, iface, host_ip)?,
-                "ffx" => netif::mode_ffx(target, iface)?,
+                "link" => netif::mode_link(target, iface, host_ip, hooks)?,
+                "ffx" => netif::mode_ffx(target, iface, hooks)?,
                 _ => netif::mode_off(target, iface, host_ip)?,
             }
-            print_netif_status(target, iface, host_ip);
+            print_netif_status(target, iface, host_ip, hooks);
             Ok(())
         }
         NetifCmd::DownHard { target } => {
@@ -5078,10 +5110,11 @@ fn netif_cmd(lab_flag: Option<&str>, cmd: NetifCmd) -> Result<()> {
                 target,
                 interface: iface,
                 host_ip,
+                hooks,
                 ..
             } = netboot_runtime(lab_flag, target.name())?;
-            netif::down_hard(&target, &iface, &host_ip)?;
-            print_netif_status(&target, &iface, &host_ip);
+            netif::down_hard(&target, &iface, &host_ip, &hooks)?;
+            print_netif_status(&target, &iface, &host_ip, &hooks);
             Ok(())
         }
         NetifCmd::Status { target } => {
@@ -5089,18 +5122,20 @@ fn netif_cmd(lab_flag: Option<&str>, cmd: NetifCmd) -> Result<()> {
                 target,
                 interface: iface,
                 host_ip,
+                hooks,
                 ..
             } = netboot_runtime(lab_flag, target.name())?;
-            print_netif_status(&target, &iface, &host_ip);
+            print_netif_status(&target, &iface, &host_ip, &hooks);
             Ok(())
         }
     }
 }
 
-fn print_netif_status(target: &str, iface: &str, host_ip: &str) {
+fn print_netif_status(target: &str, iface: &str, host_ip: &str, hooks: &netif::LinkHooks) {
     let s = netif::get_status(target, iface, host_ip);
     println!("target\t{target}");
     println!("interface\t{iface}");
+    println!("link hooks\t{}", hooks.summary());
     println!("mode\t{}", s.mode);
     println!("carrier\t{}", if s.carrier { "up" } else { "down" });
     println!(
@@ -7192,6 +7227,39 @@ mod tests {
             let mut argv = verb.to_vec();
             argv.extend(["-t", "a"]);
             parse(&argv).unwrap_or_else(|e| panic!("{argv:?}: {e}"));
+        }
+    }
+
+    /// `netboot set` takes both link hooks as flags.
+    #[test]
+    fn netboot_set_parses_the_link_hook_flags() {
+        let cli = parse(&[
+            "netboot",
+            "set",
+            "-t",
+            "pi5",
+            "--link-down-cmd",
+            "switchport -d sw1 --mgmt-port 8 port 3 off",
+            "--link-up-cmd",
+            "",
+        ])
+        .unwrap();
+        match cli.command {
+            Command::Netboot {
+                cmd:
+                    NetbootCmd::Set {
+                        link_down_cmd,
+                        link_up_cmd,
+                        ..
+                    },
+            } => {
+                assert_eq!(
+                    link_down_cmd.as_deref(),
+                    Some("switchport -d sw1 --mgmt-port 8 port 3 off")
+                );
+                assert_eq!(link_up_cmd.as_deref(), Some(""));
+            }
+            _ => panic!("not netboot set"),
         }
     }
 

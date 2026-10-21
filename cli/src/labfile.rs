@@ -404,8 +404,11 @@ impl LabFile {
         boot_file: Option<&str>,
         http_port: Option<&str>,
         content_type: Option<&str>,
+        link_down_cmd: Option<&str>,
+        link_up_cmd: Option<&str>,
         host: Option<&str>,
     ) -> Result<(), LabError> {
+        // An empty link hook clears it (the `plugin_path` convention).
         self.set_singleton(
             target,
             "netboot",
@@ -419,6 +422,22 @@ impl LabFile {
                 ("host", host),
             ],
         )?;
+        for (key, v) in [
+            ("link_down_cmd", link_down_cmd),
+            ("link_up_cmd", link_up_cmd),
+        ] {
+            let c = self
+                .target_mut(target)?
+                .get_mut("netboot")
+                .and_then(|i| i.as_table_mut())
+                .ok_or_else(|| LabError(format!("target '{target}': netboot is not a table")))?;
+            match v {
+                Some("") => {
+                    c.remove(key);
+                }
+                other => set_opt(c, key, other),
+            }
+        }
         // No edit may leave *this* link sharing a /24 with another link on
         // its host — a second link left at the default host_ip included. Only
         // the edited target is judged: a clash between two other targets is
@@ -1098,6 +1117,8 @@ mod tests {
             None,
             None,
             None,
+            None,
+            None,
         )
         .unwrap();
         lf.add_serial(
@@ -1138,6 +1159,83 @@ mod tests {
         );
         assert_eq!(t.serial.len(), 2);
         assert_eq!(t.serial[1].baud, 9600);
+    }
+
+    /// The link hooks survive save → load, a later edit that omits them keeps
+    /// them, one can be replaced alone, and an empty value removes the key.
+    #[test]
+    fn netboot_link_hooks_round_trip_and_clear() {
+        let (_d, path) = tmp();
+        let mut lf = LabFile::create(&path);
+        lf.add_target("t", None, None).unwrap();
+        lf.set_netboot(
+            "t",
+            Some("en9"),
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some("switchport -d sw1 --mgmt-port 8 port 3 off"),
+            Some("switchport -d sw1 --mgmt-port 8 port 3 on"),
+            None,
+        )
+        .unwrap();
+        lf.save().unwrap();
+        let nb = |p: &Path| {
+            model::load(p).unwrap().targets["t"]
+                .netboot
+                .clone()
+                .unwrap()
+        };
+        let n = nb(&path);
+        assert_eq!(
+            n.link_down_cmd.as_deref(),
+            Some("switchport -d sw1 --mgmt-port 8 port 3 off")
+        );
+        assert_eq!(
+            n.link_up_cmd.as_deref(),
+            Some("switchport -d sw1 --mgmt-port 8 port 3 on")
+        );
+
+        let mut lf = LabFile::load(&path).unwrap();
+        lf.set_netboot(
+            "t",
+            None,
+            None,
+            Some("/srv/tftp/t"),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        lf.save().unwrap();
+        let n = nb(&path);
+        assert!(n.link_down_cmd.is_some() && n.link_up_cmd.is_some(), "kept");
+
+        let mut lf = LabFile::load(&path).unwrap();
+        lf.set_netboot(
+            "t",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(""),
+            None,
+            None,
+        )
+        .unwrap();
+        lf.save().unwrap();
+        let n = nb(&path);
+        assert_eq!(n.link_down_cmd, None, "empty string clears");
+        assert!(n.link_up_cmd.is_some(), "the other hook is untouched");
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(!text.contains("link_down_cmd"), "{text}");
     }
 
     /// `plugin_path` survives add → save → load, `host set` replaces it, and
@@ -1595,11 +1693,33 @@ mod tests {
         for t in ["a", "b", "c"] {
             lf.add_target(t, Some("bench1"), None).unwrap();
         }
-        lf.set_netboot("a", Some("eth1"), None, None, None, None, None, None)
-            .unwrap();
+        lf.set_netboot(
+            "a",
+            Some("eth1"),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
         // b at the default by omission: refused, and said so.
         let e = lf
-            .set_netboot("b", Some("eth2"), None, None, None, None, None, None)
+            .set_netboot(
+                "b",
+                Some("eth2"),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
             .unwrap_err();
         assert!(e.0.contains("(the default, since none is set)"), "{}", e.0);
         assert!(e.0.contains("target 'a' already uses on eth1"), "{}", e.0);
@@ -1609,6 +1729,8 @@ mod tests {
                 "b",
                 None,
                 Some("192.168.99.7"),
+                None,
+                None,
                 None,
                 None,
                 None,
@@ -1627,12 +1749,25 @@ mod tests {
             None,
             None,
             None,
+            None,
+            None,
         )
         .unwrap();
         lf.save().unwrap();
         // The same adapter time-shared by another target is not a clash.
-        lf.set_netboot("c", Some("eth1"), None, None, None, None, None, None)
-            .unwrap();
+        lf.set_netboot(
+            "c",
+            Some("eth1"),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
         // A clash written by hand still loads and saves: editing an uninvolved
         // target is never blocked by it, and the repair itself goes through.
         std::fs::write(
@@ -1653,17 +1788,32 @@ mod tests {
             None,
             None,
             None,
+            None,
+            None,
         )
         .unwrap();
         lf.save().unwrap();
         let e = lf
-            .set_netboot("b", None, None, Some("/srv/tftp/b"), None, None, None, None)
+            .set_netboot(
+                "b",
+                None,
+                None,
+                Some("/srv/tftp/b"),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
             .unwrap_err();
         assert!(e.0.contains("target 'b' netboot"), "{}", e.0);
         lf.set_netboot(
             "b",
             None,
             Some("192.168.100.1"),
+            None,
+            None,
             None,
             None,
             None,

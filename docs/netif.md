@@ -159,9 +159,50 @@ host on one port and a second adapter on another: disabling the second port
 dropped that adapter's link within 0.8 s, and re-enabling it brought the link
 back about 1.7 s later (normal gigabit renegotiation). panio does not drive
 switches yet; until it does, disable the port from the switch's own web page
-or tool. Never disable the port the host manages the switch through.
-A switch helper is tracked in
-[#334](https://github.com/curtisgalloway/panio/issues/334).
+or tool, or let panio do it with a link hook (next section). Never disable the
+port the host manages the switch through.
+
+### Guaranteed link drop with a managed switch
+
+A *link hook* is a shell command stored on the target's netboot channel. It
+runs on the channel's host the way a power hook does (`sh -c`, panio's helper
+directory first on `PATH`, under the target's hook lock). panio itself knows
+nothing about switches; the `switchport` helper does the port control.
+
+```bash
+panio netboot set -t target-machine \
+  --link-down-cmd 'switchport -d sw1 --mgmt-port 8 port 3 off' \
+  --link-up-cmd   'switchport -d sw1 --mgmt-port 8 port 3 on'
+```
+
+Here `sw1` is the managed switch, `--mgmt-port 8` is the port the control host
+reaches the switch through, and `3` is the port of the target's adapter.
+Other `switchport` options: `--backend easysmart|snmp` selects the switch
+protocol; `port <N> on|off|status` is the verb; the password comes from the
+`SWITCHPORT_PASSWORD` environment variable, `--password-file`, or
+`--password-command` (never put it on the command line). `switchport` refuses
+to disable the management port and verifies each change by reading the port
+back. See `switchport --help` for the full list.
+
+With the hooks set:
+
+- `panio netif down-hard` does its host-side steps (stop netboot, release
+  addresses, WoL off, admin-down), then runs `link_down_cmd`. If the hook
+  fails, the command exits `hook_failed` (a failing program, or exit 127 for
+  a missing one is `not_configured`) and the message says the host-side steps
+  already ran and the carrier may still be up.
+- `panio netif mode link`, `netboot` and `ffx` run `link_up_cmd` first, then
+  bring the host side up. `ffx` runs it too, since a link dropped by
+  `down-hard` has to come back before ffx can work. The hook therefore runs
+  on every such mode change and must be idempotent (switching a port on that
+  is already on is). `mode off` runs no hook.
+- `panio netif status` prints a `link hooks` line: `none`, `down`, `up`, or
+  `down+up`.
+- Clear a hook with an empty value: `panio netboot set -t target-machine
+  --link-down-cmd ''`.
+
+Still confirm the drop from the target side; the host's `carrier` reads down
+after admin-down whether or not the link really dropped.
 
 ---
 
@@ -211,7 +252,7 @@ To go back to TFTP bring-up: `panio netif mode netboot fortune`.
   …`** means the lab file's `interface` is the real NIC. Point it at the
   USB-Ethernet adapter (see *Interface safety*).
 - **`mode off` is the soft down.** Use `down-hard` when the target must see
-  link loss.
+  link loss, and set a `--link-down-cmd` switch hook for a guaranteed drop.
 - **macOS service order.** `mode link`/`mode netboot` set the host IP as the
   service's router (`networksetup -setmanual` requires one). Keep the netboot
   adapter *below* your real NIC in `networksetup -listnetworkserviceorder`, or

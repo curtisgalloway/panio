@@ -231,6 +231,15 @@ pub struct NetbootChannel {
     pub http_port: Option<String>,
     /// `Content-Type` for HTTP responses (default `application/octet-stream`).
     pub content_type: Option<String>,
+    /// Shell command run on the netboot channel's host by `netif down-hard`,
+    /// after the host-side steps, to guarantee a carrier drop the host cannot
+    /// force itself (typically a managed-switch port disable, e.g.
+    /// `switchport -d sw1 --mgmt-port 8 port 3 off`). Runs like a power hook.
+    pub link_down_cmd: Option<String>,
+    /// Shell command run before `netif mode link|netboot|ffx` bring the link
+    /// up, undoing `link_down_cmd` (e.g. `switchport -d sw1 --mgmt-port 8
+    /// port 3 on`). Must be idempotent: it runs on every such mode change.
+    pub link_up_cmd: Option<String>,
     pub host: Option<String>,
 }
 
@@ -628,6 +637,8 @@ impl Lab {
             push_opt(&mut f, "boot_file", &nb.boot_file);
             push_opt(&mut f, "http_port", &nb.http_port);
             push_opt(&mut f, "content_type", &nb.content_type);
+            push_opt(&mut f, "link_down_cmd", &nb.link_down_cmd);
+            push_opt(&mut f, "link_up_cmd", &nb.link_up_cmd);
             channels.push(ResolvedChannel {
                 kind: ChannelKind::Netboot,
                 name: "netboot".into(),

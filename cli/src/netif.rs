@@ -605,6 +605,67 @@ fn admin_down(interface: &str) {
 
 pub const MODES: [&str; 4] = ["netboot", "link", "ffx", "off"];
 
+/// The netboot channel's link hooks: shell commands that drive something
+/// outside the host (typically a managed-switch port) so the carrier really
+/// drops (`down_cmd`, run by `down-hard`) and comes back (`up_cmd`, run before
+/// `mode link|netboot|ffx`). Empty strings count as unset.
+#[derive(Debug, Default, Clone)]
+pub struct LinkHooks {
+    pub down_cmd: Option<String>,
+    pub up_cmd: Option<String>,
+}
+
+impl LinkHooks {
+    fn set(cmd: &Option<String>) -> Option<&str> {
+        cmd.as_deref().filter(|c| !c.trim().is_empty())
+    }
+
+    /// `none`, `down`, `up` or `down+up`, for `netif status`.
+    pub fn summary(&self) -> &'static str {
+        match (Self::set(&self.down_cmd), Self::set(&self.up_cmd)) {
+            (None, None) => "none",
+            (Some(_), None) => "down",
+            (None, Some(_)) => "up",
+            (Some(_), Some(_)) => "down+up",
+        }
+    }
+}
+
+/// Run one optional link hook on this host the way a power hook runs: under
+/// the target's hook lock, `sh -c`, helper dir first on PATH. `which` names
+/// the hook (`link_down_cmd`) and `note` is appended to a failure message so
+/// the caller can say what had already happened. No hook is a no-op. A failure
+/// is `hook_failed` (exit-status contract).
+fn run_link_hook(target: &str, which: &str, cmd: Option<&str>, note: &str) -> Result<()> {
+    let Some(cmd) = cmd.filter(|c| !c.trim().is_empty()) else {
+        return Ok(());
+    };
+    let lock = crate::actions::hook_lock(target, crate::actions::LOCK_WAIT)?;
+    eprintln!("Running {which} for '{target}' via {cmd}");
+    let envs = crate::daemons::hook_helper_name(cmd)
+        .map(|n| crate::daemons::helper_env(&n, None))
+        .unwrap_or_default();
+    let (k, v) = lock.env();
+    let status = crate::platform::shell_command(cmd)
+        .env("PATH", crate::daemons::hook_path())
+        .envs(envs)
+        .env(k, v)
+        .status()?;
+    if status.success() {
+        return Ok(());
+    }
+    Err(crate::error::hook_failed(
+        status,
+        format!(
+            "{which} exited with code {}{note}",
+            crate::error::shell_code(status)
+        ),
+    )
+    .target(target)
+    .channel("netboot")
+    .into())
+}
+
 /// netboot mode: tear down ffx, start DHCP+TFTP (idempotent).
 pub fn mode_netboot(
     target: &str,
@@ -612,8 +673,10 @@ pub fn mode_netboot(
     host_ip: &str,
     tftp_root: &str,
     opts: &crate::netboot::BootOptions,
+    hooks: &LinkHooks,
 ) -> Result<()> {
     guard_primary_interface("mode netboot", interface)?;
+    run_link_hook(target, "link_up_cmd", hooks.up_cmd.as_deref(), "")?;
     del_host_ll(interface);
     if crate::state::is_netboot_running(target) {
         return Ok(());
@@ -627,8 +690,9 @@ pub fn mode_netboot(
 /// it). Idempotent. Note `mode off` only releases the IP; it does not force the
 /// physical carrier down (the NIC can hold the link up for Wake-on-LAN — see
 /// docs/netif.md).
-pub fn mode_link(target: &str, interface: &str, host_ip: &str) -> Result<()> {
+pub fn mode_link(target: &str, interface: &str, host_ip: &str, hooks: &LinkHooks) -> Result<()> {
     guard_primary_interface("mode link", interface)?;
+    run_link_hook(target, "link_up_cmd", hooks.up_cmd.as_deref(), "")?;
     if crate::state::is_netboot_running(target) {
         crate::netboot::stop(target)?;
     }
@@ -636,9 +700,12 @@ pub fn mode_link(target: &str, interface: &str, host_ip: &str) -> Result<()> {
     configure_interface(interface, host_ip)
 }
 
-/// ffx mode: stop netboot first, then add the host IPv6 link-local.
-pub fn mode_ffx(target: &str, interface: &str) -> Result<()> {
+/// ffx mode: stop netboot first, then add the host IPv6 link-local. Like the
+/// other link-up modes it runs `link_up_cmd` first, since ffx needs the link
+/// as much as they do (and may follow a `down-hard`).
+pub fn mode_ffx(target: &str, interface: &str, hooks: &LinkHooks) -> Result<()> {
     guard_primary_interface("mode ffx", interface)?;
+    run_link_hook(target, "link_up_cmd", hooks.up_cmd.as_deref(), "")?;
     if crate::state::is_netboot_running(target) {
         crate::netboot::stop(target)?;
     }
@@ -663,11 +730,22 @@ pub fn mode_off(target: &str, interface: &str, host_ip: &str) -> Result<()> {
 /// energized) — use this when you need the target to actually *detect* link
 /// loss. Bring the link back with `mode link`/`mode netboot`; WoL stays disabled
 /// until re-enabled (`ethtool -s <iface> wol g`) or the adapter is replugged.
-pub fn down_hard(target: &str, interface: &str, host_ip: &str) -> Result<()> {
+///
+/// When the channel has a `link_down_cmd` it runs last, after the host-side
+/// steps: that is the guaranteed drop (e.g. a managed-switch port disable). If
+/// it fails the host-side steps stay done and the error says so.
+pub fn down_hard(target: &str, interface: &str, host_ip: &str, hooks: &LinkHooks) -> Result<()> {
     guard_primary_interface("down-hard", interface)?;
     mode_off(target, interface, host_ip)?;
     disable_wol(interface);
     admin_down(interface);
+    run_link_hook(
+        target,
+        "link_down_cmd",
+        hooks.down_cmd.as_deref(),
+        " (the host-side steps already ran: netboot stopped, addresses released, \
+         Wake-on-LAN disabled, interface admin-down; the carrier may still be up)",
+    )?;
     Ok(())
 }
 
@@ -716,6 +794,71 @@ pub fn get_status(target: &str, interface: &str, host_ip: &str) -> NetifStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Run `cmd` through `run_link_hook` under a private runtime base.
+    fn run_hook_isolated(cmd: Option<&str>) -> Result<()> {
+        let _guard = crate::daemons::RUNTIME_BASE_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let base = tempfile::tempdir().unwrap();
+        let prev = std::env::var_os("PANIO_RUNTIME_BASE");
+        // Safe: serialized by RUNTIME_BASE_LOCK; restored below.
+        unsafe { std::env::set_var("PANIO_RUNTIME_BASE", base.path()) };
+        let r = run_link_hook("link-hook-test", "link_down_cmd", cmd, " [note]");
+        match prev {
+            Some(p) => unsafe { std::env::set_var("PANIO_RUNTIME_BASE", p) },
+            None => unsafe { std::env::remove_var("PANIO_RUNTIME_BASE") },
+        }
+        r
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_hook_actually_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("ran");
+        let cmd = format!("touch '{}'", marker.display());
+        run_hook_isolated(Some(&cmd)).unwrap();
+        assert!(marker.exists(), "the hook command must have executed");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_failing_link_hook_is_hook_failed_and_carries_the_note() {
+        let err = run_hook_isolated(Some("exit 7")).unwrap_err();
+        let pe = err.downcast_ref::<crate::error::PanioError>().unwrap();
+        assert_eq!(pe.kind, crate::error::Kind::HelperFailed);
+        assert_eq!(pe.child_exit, Some(7));
+        let msg = err.to_string();
+        assert!(msg.contains("link_down_cmd exited with code 7"), "{msg}");
+        assert!(msg.contains("[note]"), "{msg}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_missing_link_hook_program_is_not_configured() {
+        let err = run_hook_isolated(Some("panio-no-such-link-helper-xyz")).unwrap_err();
+        let pe = err.downcast_ref::<crate::error::PanioError>().unwrap();
+        assert_eq!(pe.kind, crate::error::Kind::NotConfigured);
+    }
+
+    #[test]
+    fn unset_or_blank_link_hooks_do_nothing() {
+        run_hook_isolated(None).unwrap();
+        run_hook_isolated(Some("  ")).unwrap();
+    }
+
+    #[test]
+    fn link_hook_summary_names_what_is_configured() {
+        let mut h = LinkHooks::default();
+        assert_eq!(h.summary(), "none");
+        h.down_cmd = Some("x".into());
+        assert_eq!(h.summary(), "down");
+        h.up_cmd = Some("y".into());
+        assert_eq!(h.summary(), "down+up");
+        h.down_cmd = Some(String::new());
+        assert_eq!(h.summary(), "up");
+    }
 
     #[test]
     fn the_default_route_interface_is_primary() {
