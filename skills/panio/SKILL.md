@@ -723,6 +723,10 @@ panio power set -t pi5 \
     --state-cmd "cambrionix -d /dev/cu.usbserial-AA00BB11 state 4"
 ```
 
+A Cambrionix port `off`/`cycle` cuts VBUS only; D+/D- stay connected. A
+device that does not sense VBUS stays enumerated through the cycle, so do not
+treat a cambrionix cycle as a USB unplug when a test needs re-enumeration.
+
 See `docs/power.md` for the full `cambrionix` command surface.
 
 ### Intel AMT / vPro (example)
