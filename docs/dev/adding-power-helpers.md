@@ -15,6 +15,7 @@ Shipped examples:
 |---|---|---|
 | [`cambrionix/`](https://github.com/curtisgalloway/panio/tree/main/cambrionix) | Rust | Cambrionix USB hubs, over the hub's control UART (serial port) |
 | [`shellyplug/`](https://github.com/curtisgalloway/panio/tree/main/shellyplug) | Rust | Shelly Gen2+ plugs, over their local HTTP RPC |
+| [`switchport/`](https://github.com/curtisgalloway/panio/tree/main/switchport) | Rust | Managed-switch port link/PoE (TP-Link Easy Smart, SNMP): a *link* helper, see below |
 | [`zigplug/`](https://github.com/curtisgalloway/panio/tree/main/zigplug) | Python | Zigbee smart plugs, via a CC2652 coordinator dongle |
 
 ---
@@ -305,3 +306,25 @@ Assistant example in [power.md](../power.md)).
       one-shot-shaped (`hidrig serve` does the same on the KVM path).
 - **Make `state` cheap and accurate.** Agents poll it. Never cache on the
   helper side; fail loudly rather than guess.
+
+## 8. Link-control helpers (`switchport`)
+
+Not every device a helper drives is a power switch. `switchport` turns a
+managed switch's port on and off so the target sees a real link drop (USB
+Ethernet adapters keep the PHY powered when the host interface is down). It is
+a one-shot, stateless helper like the power helpers, with the same CLI
+conventions (`-d <device>`, `doctor --json`, read-back on every write, secrets
+through the `secret` crate), but it is wired into the **netboot link hooks**
+rather than the power hooks:
+
+```bash
+panio netboot set -t <target> \
+    --link-down-cmd 'switchport -d <switch> --mgmt-port <N> port <P> off' \
+    --link-up-cmd   'switchport -d <switch> --mgmt-port <N> port <P> on'
+```
+
+`netif down-hard` runs `link_down_cmd` before admin-down; `netif mode link|netboot|ffx`
+admin-up the interface and run `link_up_cmd` before raising the host IP. Its safety
+rules (refuse to disable the port the helper itself reaches the switch
+through, identity pinning, read-back, opt-in link wait with `--wait-link`) are
+in `switchport/AGENTS.md`; any future link helper should keep them.

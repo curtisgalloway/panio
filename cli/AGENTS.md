@@ -187,7 +187,7 @@ cli/src/
   adb.rs        adb transport (argv, shell exec, run/input passthrough, exec-out
                 screencap → PNG); generic transport in core, no helper
   netboot.rs    netbootd lifecycle (spawn with log, stop, status)
-  netif.rs      interface discovery/config (sudo), netboot/link/ffx/off modes
+  netif.rs      interface discovery/config (sudo), netboot/link/ffx/off modes, link hooks (`link_down_cmd` after `down-hard`, `link_up_cmd` before link|netboot|ffx; `run_link_hook`)
   power.rs      generic power hooks (on/off/cycle/state_cmd via sh -c), DTR via
                 serialcap /button (+ direct-serial fallback), power_on sense
   state.rs      netboot state files (JSON-compatible with the Python's)

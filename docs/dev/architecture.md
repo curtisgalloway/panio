@@ -103,6 +103,8 @@ host_ip = "192.168.99.1"         # static IP on that interface; also the TFTP/HT
 tftp_root = "/path/to/pxe"       # required to start netboot
 # boot_file = "grubaa64.efi"     # UEFI NBP for PXE / HTTP Boot clients (http_port,
 #                                #   content_type optional; see netboot.md)
+# link_down_cmd = "switchport -d sw1 --mgmt-port 8 port 3 off"  # netif down-hard hook
+# link_up_cmd   = "switchport -d sw1 --mgmt-port 8 port 3 on"   # run before mode link|netboot|ffx
 
 [[targets.target-machine.serial]] # repeatable — a target may have several named consoles
 name = "console"
@@ -267,7 +269,9 @@ The active mode is **probed** (daemons + interface addresses), not stored, so
 
 `panio netif down-hard` goes beyond `mode off` when the target must *detect* link loss: it disables
 Wake-on-LAN (which keeps the PHY energized) and admin-downs the interface so the peer sees
-carrier drop, using netboot's `sudo` path.
+carrier drop, using netboot's `sudo` path. The netboot channel's optional `link_down_cmd` /
+`link_up_cmd` hooks (run like power hooks, `netif::run_link_hook`) add a guaranteed drop, e.g. a
+managed-switch port disable: `down-hard` runs the down hook last; `mode link|netboot|ffx` run the up hook first.
 
 ### Serial console ([`serial.md`](../serial.md))
 One `serialcap` daemon **per target exclusively owns all its serial interfaces**. Per interface,
