@@ -445,7 +445,7 @@ fn hook_path_prefix(plugin_path: Option<&str>) -> String {
     };
     format!(
         "pp={roots}; \
-         pd=$(IFS=:; set -f; for r in $pp; do case $r in /*) \
+         pd=$(IFS=:; set -f; for r in $pp; do case $r in (/*) \
          printf '%s/libexec/panio/bin:' \"$r\";; esac; done); \
          PATH=\"$HOME/.local/libexec/panio/bin:/usr/libexec/panio/bin:$pd$PATH\";"
     )
