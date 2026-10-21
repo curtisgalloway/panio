@@ -154,9 +154,21 @@ pub fn list_usb_ethernet_interfaces() -> Vec<EthInterface> {
 }
 
 /// The networksetup service name for a device (macOS only).
+///
+/// The service order is asked first because it names the *service*: two
+/// adapters of one model share a Hardware Port name (`AX88179A`) while their
+/// services differ (`AX88179A`, `AX88179A 2`), so the port name would point
+/// `-setmanual` at the wrong adapter. It also lists VLAN devices, which are not
+/// Hardware Ports at all. The Hardware Port listing is the fallback.
 fn find_network_service(interface: &str) -> Option<String> {
     if !macos() {
         return None;
+    }
+    if let Some(e) = network_service_order()
+        .into_iter()
+        .find(|e| e.device == interface)
+    {
+        return Some(e.service);
     }
     let o = run(&["networksetup", "-listallhardwareports"]).ok()?;
     let text = String::from_utf8_lossy(&o.stdout).into_owned();
@@ -170,17 +182,7 @@ fn find_network_service(interface: &str) -> Option<String> {
             }
         }
     }
-    // VLAN devices are not Hardware Ports; the service order lists them.
-    network_service_for_device(interface)
-}
-
-/// The service `networksetup -listnetworkserviceorder` binds to `device`.
-fn network_service_for_device(device: &str) -> Option<String> {
-    let o = run(&["networksetup", "-listnetworkserviceorder"]).ok()?;
-    parse_service_order(&String::from_utf8_lossy(&o.stdout))
-        .into_iter()
-        .find(|(_, d)| d == device)
-        .map(|(s, _)| s)
+    None
 }
 
 /// The interface carrying the system default route, or None.
@@ -412,8 +414,24 @@ pub struct VlanInfo {
     pub parent: String,
     /// The 802.1Q tag.
     pub tag: u16,
-    /// The macOS network service bound to the device (None on Linux).
+    /// The macOS network service bound to the device (None on Linux). macOS
+    /// names it `<name> Configuration`; `-setmanual` takes this.
     pub service: Option<String>,
+    /// The macOS VLAN's own name (`networksetup -createVLAN <name>`), which
+    /// `-deleteVLAN` takes; the service order reports it as the Hardware Port.
+    /// None on Linux.
+    pub name: Option<String>,
+}
+
+/// One service from `networksetup -listnetworkserviceorder`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ServiceEntry {
+    /// The service name (`AX88179A 2`, `panio-en7-11 Configuration`).
+    service: String,
+    /// The Hardware Port; for a VLAN, the VLAN's own name.
+    port: String,
+    /// The BSD device (`en7`, `vlan0`).
+    device: String,
 }
 
 fn vlan_port_label(v: &VlanInfo) -> String {
@@ -437,28 +455,37 @@ fn parse_ifconfig_vlan(out: &str) -> Option<(u16, String)> {
     })
 }
 
-/// `(service, device)` pairs from `networksetup -listnetworkserviceorder`:
-/// a `(N) Name` or `(*) Name` line (the asterisk marks a disabled service)
-/// followed by `(Hardware Port: ..., Device: vlan0)`. Services with no device
-/// are dropped. Pure.
-fn parse_service_order(out: &str) -> Vec<(String, String)> {
-    let mut pairs = Vec::new();
+/// Services from `networksetup -listnetworkserviceorder`: a `(N) Name` or
+/// `(*) Name` line (the asterisk marks a disabled service) followed by
+/// `(Hardware Port: <port>, Device: <device>)`. Services with no device are
+/// dropped. Pure.
+fn parse_service_order(out: &str) -> Vec<ServiceEntry> {
+    let mut entries = Vec::new();
     let mut service: Option<String> = None;
     for line in out.lines() {
         let line = line.trim();
-        if line.starts_with("(Hardware Port:") {
-            if let (Some(s), Some(i)) = (service.take(), line.rfind("Device:")) {
-                let device = line[i + "Device:".len()..].trim().trim_end_matches(')');
-                let device = device.trim();
-                if !device.is_empty() {
-                    pairs.push((s, device.to_string()));
-                }
+        if let Some(rest) = line.strip_prefix("(Hardware Port:") {
+            let Some(s) = service.take() else {
+                continue;
+            };
+            let Some(i) = rest.rfind(", Device:") else {
+                continue;
+            };
+            let port = rest[..i].trim();
+            let device = rest[i + ", Device:".len()..].trim().trim_end_matches(')');
+            let device = device.trim();
+            if !device.is_empty() {
+                entries.push(ServiceEntry {
+                    service: s,
+                    port: port.to_string(),
+                    device: device.to_string(),
+                });
             }
         } else if line.starts_with('(') {
             service = line.find(") ").map(|i| line[i + 2..].trim().to_string());
         }
     }
-    pairs
+    entries
 }
 
 /// `(parent, tag)` from `ip -d -o link show dev <vlan>`: the second token is
@@ -491,15 +518,13 @@ pub fn list_vlans() -> Vec<VlanInfo> {
                 continue;
             };
             if let Some((tag, parent)) = parse_ifconfig_vlan(&String::from_utf8_lossy(&o.stdout)) {
-                let service = services
-                    .iter()
-                    .find(|(_, d)| d == dev)
-                    .map(|(s, _)| s.clone());
+                let entry = services.iter().find(|e| e.device == dev);
                 out.push(VlanInfo {
                     device: dev.to_string(),
                     parent,
                     tag,
-                    service,
+                    service: entry.map(|e| e.service.clone()),
+                    name: entry.map(|e| e.port.clone()),
                 });
             }
         }
@@ -524,6 +549,7 @@ pub fn list_vlans() -> Vec<VlanInfo> {
                     parent,
                     tag,
                     service: None,
+                    name: None,
                 });
             }
         }
@@ -532,7 +558,7 @@ pub fn list_vlans() -> Vec<VlanInfo> {
     out
 }
 
-fn network_service_order() -> Vec<(String, String)> {
+fn network_service_order() -> Vec<ServiceEntry> {
     run(&["networksetup", "-listnetworkserviceorder"])
         .map(|o| parse_service_order(&String::from_utf8_lossy(&o.stdout)))
         .unwrap_or_default()
@@ -571,8 +597,43 @@ fn interface_exists(name: &str) -> bool {
     }
 }
 
+/// The MTU of `interface` from `ifconfig` output (`... mtu 1500`). Pure.
+fn parse_ifconfig_mtu(out: &str) -> Option<u32> {
+    let first = out.lines().next()?;
+    let mut toks = first.split_whitespace();
+    toks.find(|t| *t == "mtu")?;
+    toks.next()?.parse().ok()
+}
+
+/// The MTU a macOS VLAN on a parent with `parent_mtu` must use: four bytes
+/// less, room for the 802.1Q tag. USB adapters advertise `VLAN_MTU` yet drop
+/// tagged frames longer than an untagged maximum one (measured: AX88179A
+/// under Apple's driver, valid MTU range 1280-1500, loses every tagged frame
+/// over 1514 bytes both ways), so a full-MTU VLAN stalls any transfer that
+/// fills a packet while small ones (DHCP, pings) still work. Pure.
+fn macos_vlan_mtu(parent_mtu: u32) -> u32 {
+    parent_mtu.saturating_sub(4)
+}
+
+/// Set a macOS VLAN's MTU to its parent's minus the tag (persistent, via
+/// `networksetup -setMTU`, which takes the device name).
+fn set_macos_vlan_mtu(parent: &str, device: &str) -> Result<()> {
+    let o = run(&["ifconfig", parent])?;
+    let Some(parent_mtu) = parse_ifconfig_mtu(&String::from_utf8_lossy(&o.stdout)) else {
+        bail!("could not read the MTU of '{parent}' from ifconfig");
+    };
+    let mtu = macos_vlan_mtu(parent_mtu).to_string();
+    let o = run(&["sudo", "networksetup", "-setMTU", device, &mtu])?;
+    let text = failure_text(&o);
+    if !o.status.success() || text.contains("** Error") {
+        bail!("networksetup -setMTU {device} {mtu} failed: {text}\n{SUDO_HINT}");
+    }
+    Ok(())
+}
+
 /// Create the VLAN `tag` on `parent` (sudo) and return its device name.
-/// Idempotent: an existing VLAN with the same parent and tag is returned as is.
+/// Idempotent: an existing VLAN with the same parent and tag is returned as
+/// is. On macOS both paths (re)apply the VLAN MTU ([`macos_vlan_mtu`]).
 pub fn vlan_add(parent: &str, tag: u16) -> Result<String> {
     validate_vlan_tag(tag)?;
     if !macos() && !cfg!(target_os = "linux") {
@@ -597,6 +658,9 @@ pub fn vlan_add(parent: &str, tag: u16) -> Result<String> {
             "note: VLAN {tag} on {parent} already exists as {}",
             v.device
         );
+        if macos() {
+            set_macos_vlan_mtu(parent, &v.device)?;
+        }
         return Ok(v.device.clone());
     }
     if macos() {
@@ -622,7 +686,10 @@ pub fn vlan_add(parent: &str, tag: u16) -> Result<String> {
             .into_iter()
             .find(|v| v.parent == parent && v.tag == tag)
         {
-            Some(v) => Ok(v.device),
+            Some(v) => {
+                set_macos_vlan_mtu(parent, &v.device)?;
+                Ok(v.device)
+            }
             None => bail!(
                 "networksetup created service '{service}' but no VLAN {tag} on {parent} \
                  appeared; a USB adapter may not support VLANs \
@@ -677,15 +744,15 @@ pub fn vlan_rm(device: &str, force: bool) -> Result<()> {
         }
     }
     if macos() {
-        let Some(service) = &v.service else {
-            bail!("no network service is bound to '{device}'; remove it in System Settings");
+        let Some(name) = &v.name else {
+            bail!("no VLAN name found for '{device}' in the service order; remove it in System Settings");
         };
         let tag_s = v.tag.to_string();
         let o = run(&[
             "sudo",
             "networksetup",
             "-deleteVLAN",
-            service,
+            name,
             &v.parent,
             &tag_s,
         ])?;
@@ -1160,13 +1227,31 @@ mod tests {
     }
 
     #[test]
-    fn service_order_pairs_services_with_devices() {
-        let out = "An asterisk (*) denotes that a network service is disabled.\n(1) Ethernet\n(Hardware Port: Ethernet, Device: en0)\n\n(*) panio-en7-11\n(Hardware Port: panio-en7-11, Device: vlan0)\n\n(3) Orphan\n(Hardware Port: Orphan, Device: )\n";
+    fn service_order_keeps_service_port_and_device_apart() {
+        // Shape captured from macOS with two same-model USB adapters and a
+        // VLAN made by `networksetup -createVLAN panio-en7-11 en7 11`: the
+        // second adapter's service is "AX88179A 2" though its port is
+        // "AX88179A", and the VLAN's service gains a " Configuration" suffix
+        // while its port is the VLAN's own name.
+        let out = "An asterisk (*) denotes that a network service is disabled.\n\
+                   (1) Ethernet\n(Hardware Port: Ethernet, Device: en0)\n\n\
+                   (7) AX88179A\n(Hardware Port: AX88179A, Device: en7)\n\n\
+                   (9) AX88179A 2\n(Hardware Port: AX88179A, Device: en8)\n\n\
+                   (*) panio-en7-11 Configuration\n\
+                   (Hardware Port: panio-en7-11, Device: vlan0)\n\n\
+                   (3) Orphan\n(Hardware Port: Orphan, Device: )\n";
+        let e = |service: &str, port: &str, device: &str| ServiceEntry {
+            service: service.to_string(),
+            port: port.to_string(),
+            device: device.to_string(),
+        };
         assert_eq!(
             parse_service_order(out),
             vec![
-                ("Ethernet".to_string(), "en0".to_string()),
-                ("panio-en7-11".to_string(), "vlan0".to_string()),
+                e("Ethernet", "Ethernet", "en0"),
+                e("AX88179A", "AX88179A", "en7"),
+                e("AX88179A 2", "AX88179A", "en8"),
+                e("panio-en7-11 Configuration", "panio-en7-11", "vlan0"),
             ]
         );
     }
@@ -1177,6 +1262,15 @@ mod tests {
         assert_eq!(parse_ip_link_vlan(out), Some(("eth0".to_string(), 11)));
         let plain = "2: eth0: <BROADCAST,MULTICAST,UP> mtu 1500 qdisc fq_codel\\    link/ether 00:11:22:33:44:55\n";
         assert_eq!(parse_ip_link_vlan(plain), None);
+    }
+
+    #[test]
+    fn macos_vlan_mtu_leaves_room_for_the_tag() {
+        let out = "en7: flags=8863<UP,BROADCAST,SMART,RUNNING,SIMPLEX,MULTICAST> mtu 1500\n\
+                   \toptions=404<VLAN_MTU,CHANNEL_IO>\n";
+        assert_eq!(parse_ifconfig_mtu(out), Some(1500));
+        assert_eq!(macos_vlan_mtu(1500), 1496);
+        assert_eq!(parse_ifconfig_mtu("en7: flags=8863<UP>\n"), None);
     }
 
     #[test]
