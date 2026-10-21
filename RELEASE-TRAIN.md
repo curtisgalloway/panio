@@ -166,15 +166,15 @@ feeds needs re-reading before `--update` re-pins it.
 
 | path | blob | feeds |
 |---|---|---|
-| `.github/workflows/release.yml` | d951c563d6c2 | Channels (every arm's build and staging), Publish |
+| `.github/workflows/release.yml` | a9fbf69e327e | Channels (every arm's build and staging), Publish |
 | `.github/workflows/docs.yml` | 206e9ae532f2 | Publish: re-verify apt |
-| `packaging/nfpm.yaml` | 3eb5c7594cb0 | Channels: deb |
+| `packaging/nfpm.yaml` | a4a812d176dc | Channels: deb |
 | `packaging/scripts/build-apt-repo.sh` | 391037a4ea4c | Channels: deb, install like a user |
-| `Makefile` | 845ee83ba422 | Project: helpers; Channels: source |
-| `cli/src/setup.rs` | 4937880b653e | Channels: source |
+| `Makefile` | 37267d1242f1 | Project: helpers; Channels: source |
+| `cli/src/setup.rs` | addba03ca821 | Channels: source |
 | `cli/src/skills.rs` | 0cf3c3778373 | Smoke contract S2; Channels: homebrew, windows |
 | `cli/src/daemons.rs` | 3279e85db233 | Smoke contract S3 |
 | `scripts/ci-coverage-check.sh` | 14c39a57f1c7 | Project: helpers |
 | `scripts/sync-brik.sh` | 1920fb8f6241 | Channels: windows |
 | `README.md` | 6a46a384e3f5 | Channels: source; Publish: re-verify apt |
-| `AGENTS.md` | 8b214335de1d | Project: bump rules, tag format; Publish |
+| `AGENTS.md` | c26e11a559cd | Project: bump rules, tag format; Publish |
