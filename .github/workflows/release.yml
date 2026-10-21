@@ -43,7 +43,20 @@ env:
   HELPERS: hdmicap serialcap netbootd cambrionix hidrig ch9329 shellyplug amt
 
 jobs:
+  profile-pins:
+    # The blocking half of ci.yml's warn-only `profile-pins` job: a source
+    # pinned in RELEASE-TRAIN.md that changed since the profile was written
+    # means some of the profile's prose may be stale, so nothing is built
+    # until it is re-read and re-pinned (scripts/ci-profile-pins.sh says how).
+    name: profile pins (RELEASE-TRAIN.md sources are current)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check every pinned source still matches its blob id
+        run: bash scripts/ci-profile-pins.sh
+
   package:
+    needs: profile-pins
     name: package (${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
     container: debian:bookworm
@@ -277,6 +290,7 @@ jobs:
           if-no-files-found: error
 
   package-windows:
+    needs: profile-pins
     name: package (windows x86_64)
     runs-on: windows-latest
     # `environment: release` is what puts `:environment:` in the OIDC subject
@@ -479,6 +493,7 @@ jobs:
           if-no-files-found: error
 
   package-macos:
+    needs: profile-pins
     name: package (macos universal)
     runs-on: macos-14
     # The six secrets that gate Developer ID signing + notarization below are
