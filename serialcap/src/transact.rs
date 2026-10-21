@@ -347,10 +347,14 @@ mod tests {
             read_far(&mut target, 2);
             target.write_all(b"partial").unwrap();
         });
+        // The deadline must outlast the round trip that makes `partial`
+        // pending (pty write, capture-thread read, pending update); at 300 ms
+        // a loaded CI runner ended the call first, with nothing pending (#348).
+        // The outcome under test is the timeout's shape, not its duration.
         let result = run(
             handle.clone(),
             Bytes::from_static(b"a\r"),
-            params("OK", 300, 4096),
+            params("OK", 2_000, 4096),
         )
         .await
         .unwrap();
