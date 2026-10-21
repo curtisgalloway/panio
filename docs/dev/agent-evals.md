@@ -312,7 +312,8 @@ link loss, and check again. Explain soft down vs hard down."
 hand; `mode off` is a soft down that can leave the carrier up (Wake-on-LAN keeps
 the PHY powered). `down-hard` also admin-downs the interface, but common USB
 adapters keep the PHY up even then, so link loss has to be confirmed from the
-target side.
+target side. With `--link-down-cmd` (a switch port disable) set on the netboot
+channel, `down-hard` also runs it, the guaranteed drop.
 
 **R10 — `video show` says stopped, `video watch` says already running.**
 *Goal:* "Get the video daemon running again, and say what caused the

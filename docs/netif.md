@@ -159,9 +159,65 @@ host on one port and a second adapter on another: disabling the second port
 dropped that adapter's link within 0.8 s, and re-enabling it brought the link
 back about 1.7 s later (normal gigabit renegotiation). panio does not drive
 switches yet; until it does, disable the port from the switch's own web page
-or tool. Never disable the port the host manages the switch through.
-A switch helper is tracked in
-[#334](https://github.com/curtisgalloway/panio/issues/334).
+or tool, or let panio do it with a link hook (next section). Never disable the
+port the host manages the switch through.
+
+### Guaranteed link drop with a managed switch
+
+A *link hook* is a shell command stored on the target's netboot channel. It
+runs on the channel's host the way a power hook does (`sh -c`, panio's helper
+directory first on `PATH`, under the target's hook lock). panio itself knows
+nothing about switches; the `switchport` helper does the port control.
+
+```bash
+panio netboot set -t target-machine \
+  --link-down-cmd 'switchport -d sw1 --mgmt-port 8 port 3 off' \
+  --link-up-cmd   'switchport -d sw1 --mgmt-port 8 port 3 on'
+```
+
+Here `sw1` is the managed switch, `--mgmt-port 8` is the port the control host
+reaches the switch through, and `3` is the port of the target's adapter.
+Other `switchport` options: `--backend easysmart|snmp` selects the switch
+protocol; `port <N> on|off|status` is the verb; the password comes from the
+`SWITCHPORT_PASSWORD` environment variable, `--password-file`, or
+`--password-command` (never put it on the command line). `switchport` refuses
+to disable the management port and verifies each change by reading the port
+back. See `switchport --help` for the full list.
+
+Give the switch a **static management address**. A TP-Link Easy Smart switch
+left on DHCP runs its DHCP client on every VLAN it is a member of, so once a
+netboot link passes through it, it can take a lease from panio's netboot
+server and move its management address onto the netboot subnet. The Easy Smart
+web interface is cleartext HTTP and binds a login to the client's address:
+keep the switch on an isolated bench network.
+
+With the hooks set:
+
+- `panio netif down-hard` runs `link_down_cmd` first, while the host side is
+  still up (the switch may be managed through this same adapter), then does
+  its host-side steps (stop netboot, release addresses, WoL off, admin-down).
+  If the hook fails, the host-side steps still run, the command exits
+  `hook_failed` (a failing program, or exit 127 for a missing one is
+  `not_configured`) and the message says the carrier may still be up.
+- `panio netif mode link`, `netboot` and `ffx` admin-up the interface and run
+  `link_up_cmd` first, then bring the host side up. `ffx` runs it too, since a link dropped by
+  `down-hard` has to come back before ffx can work. The hook therefore runs
+  on every such mode change and must be idempotent (switching a port on that
+  is already on is). `mode off` runs no hook.
+- `panio netif status` prints a `link hooks` line: `none`, `down`, `up`, or
+  `down+up`.
+- Clear a hook with an empty value: `panio netboot set -t target-machine
+  --link-down-cmd ''`.
+
+Prefer reaching the switch's management address through a different adapter
+from the netboot link. The down hook runs before admin-down for the case where
+they share one, but on macOS `mode off` and `down-hard` return the netboot
+interface's service to DHCP. When that interface is the management adapter
+itself (not a VLAN device on it), this can also remove a management alias you
+added to it by hand, and the next `link_up_cmd` then cannot reach the switch.
+
+Still confirm the drop from the target side; the host's `carrier` reads down
+after admin-down whether or not the link really dropped.
 
 ---
 
@@ -211,7 +267,7 @@ To go back to TFTP bring-up: `panio netif mode netboot fortune`.
   …`** means the lab file's `interface` is the real NIC. Point it at the
   USB-Ethernet adapter (see *Interface safety*).
 - **`mode off` is the soft down.** Use `down-hard` when the target must see
-  link loss.
+  link loss, and set a `--link-down-cmd` switch hook for a guaranteed drop.
 - **macOS service order.** `mode link`/`mode netboot` set the host IP as the
   service's router (`networksetup -setmanual` requires one). Keep the netboot
   adapter *below* your real NIC in `networksetup -listnetworkserviceorder`, or
