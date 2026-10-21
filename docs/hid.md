@@ -40,9 +40,19 @@ a malformed frame. Subsequent commands then time out despite successful USB
 writes. This is the leading explanation from a captured Mini-KVM investigation;
 it is not a claim that every unit or firmware build has the same defect.
 
-On failed Linux connections, `ch9329` adds a compatibility warning when the
-selected serial port's USB identity is `1a86:fe0c`. It preserves the underlying
-error, follows stable serial-path aliases, and does not warn on successful
+**`ch9329` recovers from this on its own.** On Linux, when the selected serial
+port's USB identity is `1a86:fe0c` (stable serial-path aliases are followed)
+and GET_INFO gets no reply, it writes 261 zero bytes and asks once more. That
+is the longest frame the protocol can advertise, so it completes whatever
+malformed frame the parser is holding; the frame fails its checksum and is
+dropped, and the parser skips the leftover zeros while hunting for the next
+`57 AB` header. A healthy port never sees the filler, and the recovery costs
+one reply timeout (about 0.5 s) on the open that needs it. Verified on a
+cold-replugged Mini-KVM V2: silent before the filler, answered right after it,
+then the normal session followed.
+
+If the retry also times out, `ch9329` adds a compatibility warning to the
+error and preserves the underlying error. It does not warn on successful
 connections or adapters whose identity is unknown.
 
 **There is no verified minimum firmware release to recommend yet.** The
@@ -51,7 +61,8 @@ the inspected Openterface source uses it as a board selector. Its v0.0.5 source
 contains response-endpoint fixes but still has the implicated partial-frame
 parser behavior. Do not select firmware solely by VID/PID or `chip_version`.
 
-A bench workaround was verified on one Mini-KVM: unplug **both** USB cables,
+If the automatic recovery does not help, a bench workaround was verified on
+one Mini-KVM: unplug **both** USB cables,
 reconnect, avoid opening its tty, then use the repository's
 `scripts/openterface_probe.py` to drain startup bytes through direct USB before
 sending GET_INFO. Restore the serial driver, then use the normal helper. The

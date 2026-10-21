@@ -118,6 +118,22 @@ const MAX_REL_TOTAL: i32 = 32_767;
 /// command. Measured on macOS against a 9600 chip: 1.14 s → 1.75 s to open.
 const PROBE_SETTLE: Duration = Duration::from_millis(300);
 
+/// Filler written to an Openterface CDC port (`1a86:fe0c`) whose GET_INFO
+/// timed out on Linux (#238): the longest frame the protocol can advertise
+/// (`57 AB`, addr, cmd, len 255, 255 data bytes, sum).
+///
+/// On a cold open the Linux tty echoes the device's startup output back to it
+/// before raw mode takes effect. The firmware parser (`CH9329_DataParser` in
+/// TechxArtisanStudio/Openterface_KM) then holds a malformed frame and waits,
+/// with no timeout, for the length its header advertised, so every later
+/// command is swallowed. This many filler bytes completes any such frame,
+/// which then fails its checksum and is skipped; the parser drops leftover
+/// filler one byte at a time while hunting for the next `57 AB` header. Zero
+/// can never form that header. Measured on a cold-replugged Mini-KVM V2:
+/// GET_INFO silent before the filler, answered right after it.
+#[cfg(any(target_os = "linux", test))]
+const PARSER_FLUSH_LEN: usize = 261;
+
 /// How long a key is held before release on a `tap`/`combo`.
 const HOLD: Duration = Duration::from_millis(30);
 /// Hold used instead of [`HOLD`] when a tap/combo involves a lock key
@@ -216,7 +232,8 @@ fn probe_order(first: Option<u32>) -> Vec<u32> {
 /// Whether an error message from [`Session::send`]/[`Session::read_reply`] is
 /// the specific "no reply within the timeout" case, as opposed to a NAK, a
 /// checksum mismatch, or a write failure. Only this case means "the chip does
-/// not implement this command" for [`Session::usb_cmd`]'s reply-timeout gloss.
+/// not implement this command" for [`Session::usb_cmd`]'s reply-timeout gloss,
+/// and the only failure that earns an Openterface CDC parser flush on open.
 fn is_reply_timeout(msg: &str) -> bool {
     msg.starts_with("timed out")
 }
@@ -329,7 +346,8 @@ impl Session {
                 return error.context(
                     "warning: Openterface CDC (1a86:fe0c) has a known Linux startup \
                      compatibility issue: tty echo of startup data can leave its \
-                     firmware parser unresponsive. Firmware release is unknown; \
+                     firmware parser unresponsive. ch9329 already sent its parser \
+                     flush and it did not help. Firmware release is unknown; \
                      chip_version is not a reliable release number. See \
                      https://panio.dev/hid/#openterface-cdc-on-linux \
                      for diagnosis and the cold-start/direct-USB workaround; verify \
@@ -342,6 +360,9 @@ impl Session {
     }
 
     fn try_open_candidates(device: &str, candidates: &[u32]) -> Result<Session> {
+        #[cfg(target_os = "linux")]
+        let openterface_cdc =
+            serialport::available_ports().is_ok_and(|ports| openterface_cdc_port(device, &ports));
         let mut last_err: Option<anyhow::Error> = None;
         let last_index = candidates.len() - 1;
         for (i, &rate) in candidates.iter().enumerate() {
@@ -375,7 +396,15 @@ impl Session {
                 keys: Vec::new(),
                 buttons: 0,
             };
-            match s.get_info() {
+            let info = s.get_info();
+            #[cfg(target_os = "linux")]
+            let info = match info {
+                Err(e) if openterface_cdc && is_reply_timeout(&e.to_string()) => {
+                    s.flush_parser_and_retry()
+                }
+                other => other,
+            };
+            match info {
                 Ok(_) => {
                     // The chip remembers its last HID report independent of
                     // our process; start every session from a clean slate
@@ -410,6 +439,17 @@ impl Session {
 
     pub fn baud(&self) -> u32 {
         self.baud
+    }
+
+    /// Clear a stalled Openterface CDC parser with [`PARSER_FLUSH_LEN`] zero
+    /// bytes, then ask GET_INFO once more. Run only after a GET_INFO timeout,
+    /// so a healthy port never sees the filler.
+    #[cfg(any(target_os = "linux", test))]
+    fn flush_parser_and_retry(&mut self) -> Result<Info> {
+        self.port
+            .write_all(&[0u8; PARSER_FLUSH_LEN])
+            .map_err(|e| anyhow!("serial write failed: {e}"))?;
+        self.get_info()
     }
 
     // -- framing -------------------------------------------------------------
@@ -1354,6 +1394,32 @@ mod tests {
         ];
         assert_eq!(keys_needed(&chord, &held), 3);
         assert_eq!(keys_needed(&[], &[]), 0);
+    }
+
+    #[test]
+    fn parser_flush_completes_the_longest_frame_then_asks_again() {
+        let log = WriteLog::default();
+        let mut port = FakePort::new(log.clone());
+        port.queue_reply(&ack(CMD_GET_INFO, &[0x02, 0x01, 0x00]));
+        let mut s = session_on(port);
+        let info = s.flush_parser_and_retry().unwrap();
+        assert_eq!(info.chip_version, 0x02);
+        let writes = log.snapshot();
+        assert_eq!(writes.len(), 2);
+        // 57 AB, addr, cmd, len 255, 255 data bytes, sum: any stalled frame
+        // is complete after this many bytes, and zero never forms a header.
+        assert_eq!(writes[0], vec![0u8; 5 + 255 + 1]);
+        assert_eq!(writes[1], Session::frame(CMD_GET_INFO, &[]));
+    }
+
+    #[test]
+    fn only_a_missing_reply_triggers_the_parser_flush() {
+        let mut s = session_on(FakePort::new(WriteLog::default()));
+        assert!(is_reply_timeout(&s.get_info().unwrap_err().to_string()));
+        let mut port = FakePort::new(WriteLog::default());
+        port.queue_reply(&frame_bytes(ADDR, CMD_GET_INFO | 0x80, &[0x02]));
+        let mut s = session_on(port);
+        assert!(!is_reply_timeout(&s.get_info().unwrap_err().to_string()));
     }
 
     #[test]

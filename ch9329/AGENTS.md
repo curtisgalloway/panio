@@ -46,10 +46,13 @@ ch9329/          WCH CH9329 UART->USB-HID bridge client. Verified on an
                      coalesced away).
                    - `chip_version` is not a reliable Openterface firmware
                      release; no minimum-version check is possible.
-                   - Failed Linux opens add a compatibility hint only for the
-                     selected USB 1a86:fe0c port. Startup echo and the
-                     direct-USB drain workaround: notes/openterface-v2-linux-serial.md,
-                     docs/hid.md.
+                   - On Linux, a GET_INFO timeout on the selected USB
+                     1a86:fe0c port gets PARSER_FLUSH_LEN (261) zero bytes
+                     and one retry before the next baud candidate (#238);
+                     only a timeout triggers it, never a malformed reply.
+                     A failure after that adds a compatibility hint.
+                     Startup echo and the manual direct-USB drain:
+                     notes/openterface-v2-linux-serial.md, docs/hid.md.
                    - `test_support` (`#[cfg(test)]` FakePort, an in-memory
                      SerialPort stub) lets tests run real wire behavior.
   src/uart.rs      UART owner (daemon path): one thread holding a long-lived
