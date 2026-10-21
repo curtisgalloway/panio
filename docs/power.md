@@ -460,10 +460,20 @@ cambrionix -d <device> cycle <port> [--delay-ms 3000]
 - **`cycle`** restores Sync (`s`) if the port was Sync, otherwise charging
   (`c`).
 - **Every change is confirmed by re-reading the port table**, since the hub
-  does not acknowledge `mode`. `on` requires mode `C` or `S`, `off` requires
+  does not acknowledge `mode`. `on` requires a powered state, `off` requires
   `O`; a mismatch exits non-zero.
-- **`state <port>`** maps `C`/`S`/`I` to `on`, `O` to `off`, and errors on any
-  other letter.
+- **`state <port>`** reads the second flag of the PDSync port table, which
+  is case-sensitive: `I` (idle), `C` (charging), `F` (finished charging: the
+  device stopped drawing current), `c` (power on, no device) and `S` (host
+  port) are `on`; `O` is `off`; any other letter is an error.
+- **`off` and `cycle` switch VBUS only, not the data lines.** On a
+  PDSync-4, D+/D- stayed connected while a port was off (Cambrionix's mode
+  description says otherwise), so a USB device that does not sense VBUS (a
+  board whose VBUS-detect input is strapped valid, a self-powered device)
+  stays enumerated on its host through a whole cycle. The hub's `mode`
+  command (`c`, `s`, `b`, `o`) has no data-only disconnect, so the helper
+  offers none. A test that needs a real re-enumeration must use a device
+  that drops its pull-up on VBUS loss, or a physical unplug.
 - **Bounded responses:** 3 s and 64 KiB each; a hub error line fails the
   command, so a wrong `-d` fails fast instead of hanging the hook.
 

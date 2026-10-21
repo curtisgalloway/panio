@@ -64,6 +64,10 @@ enum Cmd {
         port: u8,
     },
     /// Set a port off (mode o <port>) and confirm by read-back.
+    ///
+    /// This removes VBUS only: on a PDSync-4, D+/D- were measured to stay
+    /// connected, so a device that does not watch VBUS stays enumerated on
+    /// its host. The hub's `mode` command has no data-only disconnect.
     Off {
         /// Port number (1–15).
         #[arg(value_parser = clap::value_parser!(u8).range(1..=15))]
@@ -71,6 +75,9 @@ enum Cmd {
     },
     /// Power-cycle a port: turn it off (confirmed), wait, then restore its
     /// previous mode (confirmed).
+    ///
+    /// Like `off`, this cycles VBUS only: it is not a USB unplug, and a
+    /// device that ignores VBUS does not re-enumerate.
     Cycle {
         /// Port number (1–15).
         #[arg(value_parser = clap::value_parser!(u8).range(1..=15))]

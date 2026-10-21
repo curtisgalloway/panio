@@ -38,42 +38,54 @@ pub struct PortRow {
     pub volts_raw: u16,
     /// Current in milliamps.
     pub milliamps: u16,
-    /// Attach-state letter: 'A' attached, 'D' disconnected, 'P' host port.
+    /// First flag (PDSync firmware): 'A' attached, 'D' detached, 'P' PD
+    /// contract established, 'C' Type-C cable with no device.
     pub attach: char,
-    /// Mode letter: 'C' charge, 'S' sync, 'O' off, 'I' idle, 'F' host-port flag.
+    /// Second flag (PDSync firmware), case-sensitive: 'I' idle, 'S' host
+    /// port connected, 'C' charging, 'F' finished charging, 'c' power on
+    /// but no device, 'O' off. See [`vbus_on`].
     pub mode: char,
     /// Remaining raw columns (exactly as received).
     pub rest: String,
 }
 
 impl PortRow {
-    /// Whether the port is **on**, from an allow-list of the mode letters
-    /// this crate knows: `C` (charge), `S` (sync), and `I` (idle) are on,
-    /// `O` is off. Any other letter is an error carrying the raw value — the
-    /// `state_cmd` contract wants a real read-back, not a guess about a mode
-    /// the hub has never shown us.
+    /// Whether the port is **on** (see [`vbus_on`]). A letter outside the
+    /// table is an error carrying the raw value — the `state_cmd` contract
+    /// wants a real read-back, not a guess about a mode the hub has never
+    /// shown us.
     pub fn is_on(&self) -> Result<bool> {
-        match self.mode.to_ascii_uppercase() {
-            'C' | 'S' | 'I' => Ok(true),
-            'O' => Ok(false),
-            other => bail!(
-                "port {}: hub reports mode {other:?}, which this helper does not map to on or off",
-                self.port
-            ),
-        }
+        vbus_on(self.mode).ok_or_else(|| {
+            anyhow!(
+                "port {}: hub reports mode {:?}, which this helper does not map to on or off",
+                self.port,
+                self.mode
+            )
+        })
+    }
+}
+
+/// Map a second-flag letter from the PDSync `state` table to whether the
+/// port's power is on. Every state the hub can move a port into after `mode
+/// c` is on: `I` idle, `C` charging, `F` finished charging (a device that has
+/// stopped drawing current, #329), and `c` power enabled with no device;
+/// `S` is the connected host port. `O` is off. Flags are case-sensitive per
+/// the Cambrionix CLI manual, so anything else (lowercase `o` included) is
+/// `None`.
+pub fn vbus_on(mode: char) -> Option<bool> {
+    match mode {
+        'I' | 'S' | 'C' | 'F' | 'c' => Some(true),
+        'O' => Some(false),
+        _ => None,
     }
 }
 
 /// Whether a read-back mode letter confirms a commanded transition: any
-/// powered profile (`C` charge, `S` sync, `I` idle) after `mode c`, and `O`
-/// after `mode o`. Idle counts as on because a port with nothing attached can
-/// report it while VBUS is enabled; what the check must catch is the hub
-/// leaving the port `O` (or answering with something unmapped) after an `on`.
+/// powered state after `mode c`, `O` after `mode o` (see [`vbus_on`]). What
+/// the check must catch is the hub leaving the port `O` (or answering with
+/// something unmapped) after an `on`.
 pub fn mode_confirms(mode: char, want_on: bool) -> bool {
-    matches!(
-        (mode.to_ascii_uppercase(), want_on),
-        ('C' | 'S' | 'I', true) | ('O', false)
-    )
+    vbus_on(mode) == Some(want_on)
 }
 
 /// Parse the multi-line text returned by the `state` command into a Vec of
@@ -293,6 +305,19 @@ mod tests {
         assert!(!row.is_on().unwrap(), "mode O should be off");
     }
 
+    /// #329: a charge-mode port whose device has stopped drawing current
+    /// reads `F` (finished charging), with `P` (PD contract) in the first
+    /// column. VBUS is still on, so `state` and the `on` read-back say on.
+    #[test]
+    fn charge_finished_port_is_on() {
+        let row = parse_state_line(" 4, 0511, 0000, P F -, 0, x, 0.00").unwrap();
+        assert_eq!(row.attach, 'P');
+        assert_eq!(row.mode, 'F');
+        assert!(row.is_on().unwrap(), "mode F (finished charging) is on");
+        assert!(mode_confirms(row.mode, true), "F confirms on");
+        assert!(!mode_confirms(row.mode, false), "F must not confirm off");
+    }
+
     #[test]
     fn is_on_is_an_allow_list() {
         let with_mode = |mode: char| PortRow {
@@ -303,15 +328,14 @@ mod tests {
             mode,
             rest: String::new(),
         };
-        for m in ['C', 'S', 'I', 'c', 's', 'i'] {
+        for m in ['I', 'S', 'C', 'F', 'c'] {
             assert!(with_mode(m).is_on().unwrap(), "mode {m}");
         }
-        for m in ['O', 'o'] {
-            assert!(!with_mode(m).is_on().unwrap(), "mode {m}");
-        }
-        // The host-row flag and anything undocumented are errors that carry
-        // the raw letter, not a guessed `on`.
-        for m in ['F', 'X', '-', '?'] {
+        assert!(!with_mode('O').is_on().unwrap(), "mode O");
+        // Flags are case-sensitive (lowercase `c` is its own state), so a
+        // letter the PDSync table does not list is an error that carries the
+        // raw letter, not a guessed `on`.
+        for m in ['o', 's', 'i', 'f', 'X', '-', '?'] {
             let err = with_mode(m).is_on().expect_err(&format!("mode {m}"));
             assert!(err.to_string().contains(&format!("{m:?}")), "{err}");
         }
@@ -319,16 +343,15 @@ mod tests {
 
     #[test]
     fn mode_confirms_only_the_commanded_profile() {
-        for m in ['C', 'S', 'I', 'c', 's', 'i'] {
+        for m in ['I', 'S', 'C', 'F', 'c'] {
             assert!(mode_confirms(m, true), "{m} confirms on");
+            assert!(!mode_confirms(m, false), "{m} must not confirm off");
         }
-        for m in ['O', 'F', 'X'] {
+        for m in ['O', 'o', 'X'] {
             assert!(!mode_confirms(m, true), "{m} must not confirm on");
         }
-        for m in ['O', 'o'] {
-            assert!(mode_confirms(m, false), "{m} confirms off");
-        }
-        for m in ['C', 'S', 'I', 'F'] {
+        assert!(mode_confirms('O', false), "O confirms off");
+        for m in ['o', 'X'] {
             assert!(!mode_confirms(m, false), "{m} must not confirm off");
         }
     }
