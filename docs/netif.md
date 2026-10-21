@@ -184,6 +184,13 @@ protocol; `port <N> on|off|status` is the verb; the password comes from the
 to disable the management port and verifies each change by reading the port
 back. See `switchport --help` for the full list.
 
+Give the switch a **static management address**. A TP-Link Easy Smart switch
+left on DHCP runs its DHCP client on every VLAN it is a member of, so once a
+netboot link passes through it, it can take a lease from panio's netboot
+server and move its management address onto the netboot subnet. The Easy Smart
+web interface is cleartext HTTP and binds a login to the client's address:
+keep the switch on an isolated bench network.
+
 With the hooks set:
 
 - `panio netif down-hard` does its host-side steps (stop netboot, release
