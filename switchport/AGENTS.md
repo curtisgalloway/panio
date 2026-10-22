@@ -121,6 +121,12 @@ password change at first login: do it in a browser; the helper reports it
   `tip` but the helper reads back `sys_portsetting.html` as usual.
 - **Timing** (measured): port off, the peer adapter lost carrier 1.1 s later;
   port on, carrier back 2.7 s later.
+- **Helper verified on hardware** (2026-10-21, this branch's build):
+  `doctor --json` all ok (identity, "5 reported", mgmt-port); `port <M> off`
+  refused (exit 2); `port N off --wait-link 10` returned "admin off, link
+  down" and the host adapter lost carrier about 0.1 s after the helper exited
+  (the switch sees the link drop before the host does); `port N on --wait-link
+  10` returned "admin on, link up (1000M full)".
 
 ## SNMP facts
 
