@@ -788,7 +788,8 @@ a close/reopen and corrupt the next command), and SH-UR04A replies end in a NUL.
 ### DSD TECH Bluetooth LE relay board (dsdble)
 
 The `dsdble` helper switches a channel of a DSD TECH SH-BT01E Bluetooth LE
-relay board over BLE. Wiring is the same hardcoded **NC** as `dsdrelay`
+relay board over BLE. It is usable but blind, so prefer `dsdrelay` or
+`shellyplug` (which read state back) and use this as the wireless fallback. Wiring is the same hardcoded **NC** as `dsdrelay`
 (`on` releases the coil, `off` energizes it; an unpowered board leaves the
 target powered). Select the board with `-a <addr>`: its MAC on Linux, the
 per-host CoreBluetooth UUID on macOS (find either with `dsdble scan`, which

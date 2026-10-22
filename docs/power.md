@@ -140,10 +140,10 @@ helpers:
 |---|---|---|
 | `cambrionix` | A port on a Cambrionix USB hub | [Cambrionix hub control](#cambrionix-hub-control) |
 | `dsdrelay` | A channel of a DSD TECH USB serial relay board (NC wiring) | [USB serial relay board control](#usb-serial-relay-board-control-dsdrelay) |
-| `dsdble` | A channel of a DSD TECH Bluetooth LE relay board (NC wiring, write-only: no state read-back) | [Bluetooth LE relay board control](#bluetooth-le-relay-board-control-dsdble) |
 | `zigplug` | A Zigbee smart plug | [Zigbee smart plug control](#zigbee-smart-plug-control-zigplug) |
 | `shellyplug` | A Shelly Wi-Fi plug or relay | [Shelly smart plug control](#shelly-smart-plug-control-shellyplug) |
 | `amt` | An Intel AMT (vPro) machine's own power | [Intel AMT power control](#intel-amt-power-control-amt) |
+| `dsdble` | A channel of a DSD TECH Bluetooth LE relay board (NC wiring; wireless fallback, no state read-back) | [Bluetooth LE relay board control](#bluetooth-le-relay-board-control-dsdble) |
 
 Helpers install into the private libexec dir (`~/.local/libexec/panio/bin`),
 not onto `PATH`. Hook strings name them bare; panio looks in libexec first.
@@ -615,9 +615,13 @@ that owns the relay's USB port (`--host`).
 The `dsdble` helper switches a channel of a DSD TECH **SH-BT01E** Bluetooth LE
 relay board (1 channel; DSD sells 2- and 4-channel variants that speak the
 same protocol, and `dsdble` accepts channels 1 to 4 because the board cannot
-report its channel count). It is the wireless sibling of
-[`dsdrelay`](#usb-serial-relay-board-control-dsdrelay): same NC wiring, same
-verbs, but **it cannot read the relay back**.
+report its channel count). It is usable, but blind: an easy off-the-shelf
+wireless option, with the caveat that panio cannot confirm its state.
+
+Prefer a device that can read its state back when you have a choice:
+[`dsdrelay`](#usb-serial-relay-board-control-dsdrelay) (USB; same NC wiring
+and verbs) or [`shellyplug`](#shelly-smart-plug-control-shellyplug). Reach for
+`dsdble` when a wire or network plug is not an option.
 
 Terms used here: *BLE* is Bluetooth Low Energy. *GATT* is BLE's way of
 exposing a device as services that hold readable/writable values
