@@ -143,6 +143,7 @@ helpers:
 | `zigplug` | A Zigbee smart plug | [Zigbee smart plug control](#zigbee-smart-plug-control-zigplug) |
 | `shellyplug` | A Shelly Wi-Fi plug or relay | [Shelly smart plug control](#shelly-smart-plug-control-shellyplug) |
 | `amt` | An Intel AMT (vPro) machine's own power | [Intel AMT power control](#intel-amt-power-control-amt) |
+| `dsdble` | A channel of a DSD TECH Bluetooth LE relay board (NC wiring; wireless fallback, no state read-back) | [Bluetooth LE relay board control](#bluetooth-le-relay-board-control-dsdble) |
 
 Helpers install into the private libexec dir (`~/.local/libexec/panio/bin`),
 not onto `PATH`. Hook strings name them bare; panio looks in libexec first.
@@ -606,6 +607,119 @@ panio power set -t pi5 \
 `panio power on pi5`, `panio power off pi5`, `panio power-cycle pi5`, and
 `panio power-state pi5` then work. Install the helper on the control host
 that owns the relay's USB port (`--host`).
+
+---
+
+## Bluetooth LE relay board control (dsdble)
+
+The `dsdble` helper switches a channel of a DSD TECH **SH-BT01E** Bluetooth LE
+relay board (1 channel; DSD sells 2- and 4-channel variants that speak the
+same protocol, and `dsdble` accepts channels 1 to 4 because the board cannot
+report its channel count). It is usable, but blind: an easy off-the-shelf
+wireless option, with the caveat that panio cannot confirm its state.
+
+Prefer a device that can read its state back when you have a choice:
+[`dsdrelay`](#usb-serial-relay-board-control-dsdrelay) (USB; same NC wiring
+and verbs) or [`shellyplug`](#shelly-smart-plug-control-shellyplug). Reach for
+`dsdble` when a wire or network plug is not an option.
+
+Terms used here: *BLE* is Bluetooth Low Energy. *GATT* is BLE's way of
+exposing a device as services that hold readable/writable values
+(characteristics); see the [glossary](glossary.md).
+
+### Protocol
+
+Measured on hardware (SH-BT01E, device-info model `SH-K09-1.0`, firmware
+6.1.2, advertising the name `DSD TECH`):
+
+- The board exposes GATT service `FFE0` with characteristic `FFE1`
+  (write / write-without-response / notify). `FFE1` **cannot be read**.
+- A command is 4 bytes, `A0 <channel> <state> <checksum>`, where the checksum
+  is `(0xA0 + channel + state) & 0xFF`: `A0 01 01 A2` energizes channel 1's coil
+  and `A0 01 00 A1` releases it. Commands are idempotent and written with
+  write-with-response.
+- The board **never reports state**: it sends no notifications and has no
+  readable state value. Unknown frames are ignored.
+- Every board has the same name, serial number and system id, so the
+  Bluetooth address (Linux) or CoreBluetooth UUID (macOS) is the only way to
+  tell two apart.
+
+### Wiring: targets go on the NC contact
+
+Hardcoded, as for `dsdrelay`: the target's power runs through the relay's
+normally closed (NC) contact, so `on <ch>` releases the coil and `off <ch>`
+energizes it. An unpowered board leaves every target **powered**; do not rely
+on it for a fail-safe cut-off.
+
+### No read-back: what that means for hooks
+
+`on`, `off` and `cycle` succeed when the board acknowledges the BLE write.
+That proves the board received the frame, not that the relay moved or that the
+target lost power. `dsdble state <ch>` **always fails** with `state unknown`
+(exit 1, nothing on stdout) instead of guessing, and `dsdble` never remembers
+what it last wrote. The hook contract accepts only `on` or `off` as
+`state_cmd` output and treats a non-zero exit as an error, so **do not wire a
+`state_cmd`** for this helper; `panio power-state` then falls back to a
+power-sense input if the target has one, or reports no state. Confirm power
+changes some other way (a serial console, a power-sense line, the target's
+network presence).
+
+### Platforms
+
+Linux (BlueZ over D-Bus) is the supported platform; install the helper on a
+Linux control host. The .deb depends on `libdbus-1-3`; building from source
+needs `pkg-config` and `libdbus-1-dev`. macOS is best effort: the binary
+works only when launched from a terminal app that has been granted Bluetooth
+permission, and an unbundled command-line tool started any other way
+(including through SSH or from a power hook) is killed by the system, so use
+over SSH on macOS is unsupported for now. Windows builds but is untested.
+
+### Installation
+
+`make install` / `panio setup` installs it into the private libexec dir. Run
+it by hand via `panio helper dsdble …`.
+
+### Commands
+
+```bash
+dsdble scan [--timeout 8]                      # boards advertising FFE0: address, name, RSSI (connects to nothing)
+dsdble -a <addr> on <ch>                       # release the coil (one BLE write; not confirmed)
+dsdble -a <addr> off <ch>                      # energize the coil (one BLE write; not confirmed)
+dsdble -a <addr> cycle <ch> [--delay-ms 3000]  # off → hold → on, on one connection
+dsdble -a <addr> state <ch>                    # always fails: "state unknown"
+dsdble -a <addr> doctor [--json] [<ch>]        # read-only health check (panio doctor)
+```
+
+- **Address:** `-a/--address <addr>`, before the verb. On Linux this is the
+  board's MAC (`00:11:22:33:44:55`). On macOS it is the per-host
+  CoreBluetooth UUID (`00000000-0000-4000-8000-000000000001`) that `scan`
+  prints on that Mac. Matching is case-insensitive. `--find-timeout <secs>`
+  (default 10) bounds how long a command scans for the board before giving up.
+- **Connection:** each command scans for the board, connects, writes, and
+  disconnects. A board already connected to a phone app is not advertising and
+  will not be found; disconnect it there first.
+- `doctor` checks the adapter, that the board is in range, that it accepts a
+  connection, and that `FFE1` is present and writable. It never writes to the
+  board and stays inside panio's 10 s doctor budget (it scans for at most 4 s).
+- The helper only ever writes to `FFE1`. The board's firmware-update service is
+  never touched.
+
+### Wiring into panio power hooks
+
+Example: a Raspberry Pi 5 on relay channel 1, with the board's MAC as a
+placeholder (use the value `scan` prints). No `--state-cmd`, for the reason
+above:
+
+```bash
+panio power set -t pi5 \
+    --cycle-cmd "dsdble -a 00:11:22:33:44:55 cycle 1" \
+    --on-cmd    "dsdble -a 00:11:22:33:44:55 on 1" \
+    --off-cmd   "dsdble -a 00:11:22:33:44:55 off 1" \
+    --doctor
+```
+
+Install the helper on the Linux control host (`--host`) that is within
+Bluetooth range of the board.
 
 ---
 
