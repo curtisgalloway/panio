@@ -57,7 +57,7 @@ See the [netboot](netboot.md) and [link mode](netif.md) guides.
 |---|---|
 | [TP-Link UE330 — 3-port USB 3.0 hub + Gigabit Ethernet](https://www.amazon.com/dp/B01N9M32TA) | Direct host↔target Ethernet link plus spare USB ports. |
 | [Anker USB-C to Gigabit Ethernet adapter](https://www.amazon.com/dp/B08CK9X9Z8) | USB-C adapter for the direct link. |
-| TP-Link TL-SG108PE (hardware 3.0) managed switch | Guaranteed link drop: the [`switchport` helper](netif.md#guaranteed-link-drop-with-a-managed-switch) disables the target's port over the switch's web interface (`--backend easysmart`). A USB Ethernet adapter cannot drop its own link. Measured: the peer loses carrier 0.8 s after `off`, back 1.7 s after `on`. |
+| TP-Link TL-SG108PE (hardware 3.0) or TL-SG205E (hardware 1.0) managed switch | Guaranteed link drop: the [`switchport` helper](netif.md#guaranteed-link-drop-with-a-managed-switch) disables the target's port over the switch's web interface (`--backend easysmart`). A USB Ethernet adapter cannot drop its own link. Measured (SG108PE): the peer loses carrier 0.8 s after `off`, back 1.7 s after `on` (SG205E: 1.1 s / 2.7 s). |
 | D-Link DGS-1100-05V2 (hardware A1, firmware 1.00.003) managed switch | Same role over SNMP (`--backend snmp`; SNMP must be enabled and saved once, see the `managed-switch` skill). No PoE. Measured: carrier lost 0.6 s after `off`, back 1.7 s after `on`; the saved configuration survives a power cycle. |
 
 ### Cabling a managed switch

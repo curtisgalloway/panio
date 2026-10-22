@@ -179,7 +179,11 @@ port the host manages the switch through.
 | Switch | Backend | Measured | Link drop / restore |
 |---|---|---|---|
 | TP-Link TL-SG108PE, hardware 3.0, firmware 1.0.0 Build 20200415 | `easysmart` (web UI, password) | yes | carrier lost 0.8 s after `off`, back 1.7 s after `on` |
+| TP-Link TL-SG205E, hardware 1.0, firmware 1.0.1 Build 20250609 | `easysmart` (web UI, password; the 2025 UI is detected at login) | yes | carrier lost 1.1 s after `off`, back 2.7 s after `on` |
 | D-Link DGS-1100-05V2, hardware A1, firmware 1.00.003 | `snmp` (v2c, read-write community) | yes | carrier lost 0.6 s after `off`, back 1.7 s after `on` |
+
+The TL-SG205E's 2025 firmware forces a password change at first login; do that
+once in a browser before the helper can log in.
 
 The D-Link has no PoE, so its `poe` verbs do not apply. It ships with SNMP
 disabled and a web UI that must enable it, so the setup is a procedure: the
@@ -220,7 +224,7 @@ Give the switch a **static management address**. A TP-Link Easy Smart switch
 left on DHCP runs its DHCP client on every VLAN it is a member of, so once a
 netboot link passes through it, it can take a lease from panio's netboot
 server and move its management address onto the netboot subnet. The Easy Smart
-web interface is cleartext HTTP and binds a login to the client's address:
+web interface is cleartext HTTP (the older UI binds a login to the client's address):
 keep the switch on an isolated bench network.
 
 With the hooks set:

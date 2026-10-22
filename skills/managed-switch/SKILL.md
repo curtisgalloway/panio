@@ -9,7 +9,7 @@ description: >
   to enable SNMP on a switch, or when `switchport` or its link hooks come up.
   Covers reaching a factory switch, enabling and saving SNMP, finding the
   management port, verifying, and wiring the hooks. Other switches: the
-  TP-Link Easy Smart backend already exists; the last section says what to
+  TP-Link Easy Smart backend (TL-SG108PE, TL-SG205E) already exists; the last section says what to
   measure for a new model.
 ---
 
@@ -324,7 +324,12 @@ rm -r switch-setup
 ## TP-Link Easy Smart
 
 The `easysmart` backend (the default) drives a TP-Link TL-SG108PE (hardware
-3.0). It needs the switch's web password, not SNMP. Its protocol facts and
+3.0) and a TL-SG205E (hardware 1.0, firmware 1.0.1 Build 20250609). It
+detects at login which of the two web UIs the switch speaks. The TL-SG205E's
+2025 firmware forces a password change at first login: set it in a browser
+(at the TP-Link factory default address printed on the label), then give the
+helper the new password; if it is not done, the helper says so and stops. It
+needs the switch's web password, not SNMP. Its protocol facts and
 safety rules are in `switchport/AGENTS.md`; the hook wiring is step 10 with
 `--backend easysmart` and `SWITCHPORT_PASSWORD`, `--password-file` or
 `--password-command` in place of the community. This skill has no TP-Link
