@@ -322,3 +322,21 @@ def test_every_other_job_is_gated_and_strips(ci):
         assert nxt.get("shell") == "bash", f"{name}: needs shell: bash (Windows)"
         assert nxt.get("working-directory") == "${{ github.workspace }}", (
             f"{name}: job defaults may set a subdirectory; strip must run at the root")
+
+
+def test_skippable_jobs_have_literal_names(ci):
+    # A job skipped by `if:` reports its check under its `name:`, but GitHub
+    # expands `${{ matrix.* }}` (or any expression) in that name only when the
+    # job runs. A skipped matrix job reports the raw text, e.g. `matrix.name`,
+    # so a required check named after the expanded value never reports and a
+    # doc-only PR waits forever. Observed on the first doc-only PR (#354):
+    # "netbootd (fmt, clippy, test)" was missing. Skippable jobs therefore use
+    # a literal name and no matrix; split a matrix into one job per leg.
+    for name in skippable(ci):
+        job = ci["jobs"][name]
+        assert "${{" not in str(job.get("name", name)), (
+            f"{name}: a skippable job's name must be literal; an expression "
+            "is not expanded when the job is skipped")
+        assert "strategy" not in job, (
+            f"{name}: a skipped matrix job reports unexpanded names; use one "
+            "job per leg instead")
