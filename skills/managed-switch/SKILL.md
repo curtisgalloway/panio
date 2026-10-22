@@ -103,16 +103,24 @@ page that resets cookies and redirects to `/`. The static files live under a
 prefix that includes the firmware version, so read it from the root page
 instead of hardcoding it.
 
+`switch-setup` will hold a session token, so it is created private (mode
+0700). It is scratch state: never commit it, and delete it (`rm -r
+switch-setup`) whenever you stop, whether the procedure finished or failed.
+
 ```bash
-mkdir -p switch-setup
+mkdir -m 700 switch-setup
 curl -sS -H 'Referer: http://10.90.90.90/' http://10.90.90.90/ > switch-setup/root.html
-grep -o "RT='[^']*'" switch-setup/root.html
+sed -n "s/.*RT='\([^']*\)'.*/\1/p" switch-setup/root.html | head -1 | grep -x -E '/DGS-1100-05V2_[0-9.]+/' > switch-setup/rt
+cat switch-setup/rt
 ```
 
-Expect `RT='/DGS-1100-05V2_1.00.003/'`. Measured on hardware A1, firmware
-1.00.003, boot 1.0.0. A different model or firmware is not covered here;
-stop and see the last section. Put the printed path (the part between the quotes, with its leading and trailing slash) in
-the commands below wherever you see `<RT>`.
+Expect `/DGS-1100-05V2_1.00.003/`. Measured on hardware A1, firmware
+1.00.003, boot 1.0.0. If nothing prints, the page is not this model's: stop
+and see the last section. A different firmware version prints a different
+number; it is not covered here, so stop and say so. The value is device
+output, so it is checked against a strict pattern and saved to
+`switch-setup/rt`; later commands read it from that file. Never paste device
+output into a command by hand.
 
 ## Step 3 — log in
 
@@ -121,8 +129,9 @@ cookie `Gambit=login`. The session comes back **in the response body as
 JavaScript**, not as a `Set-Cookie` header:
 `document.cookie='SessID=1;path=/';document.cookie='Gambit=<token>;path=/';`.
 
-**Run this once. If it fails, stop and report; do not retry** 
-failed logins can lock the UI).
+**Run this once. If it fails, stop and report; do not retry.** Whether this
+switch locks out after failed logins was not measured, and panio never
+retries authentication.
 
 ```bash
 { printf 'pass='; printf '%s' admin | openssl dgst -md5 -r | cut -d' ' -f1 | tr -d '\n'; } > switch-setup/login.body
@@ -137,11 +146,11 @@ in place of `admin` (from a file, not typed into shared history).
 
 ## Step 4 — confirm the device and the port settings
 
-Page data is in `<RT>DS/<Name>.js` files. `const.js` names the model and port
+Page data is in `DS/<Name>.js` files under the prefix saved in `switch-setup/rt`. `const.js` names the model and port
 count; `Port.js` has one row per port.
 
 ```bash
-curl -sS -H 'Referer: http://10.90.90.90/' -H @switch-setup/cookie.hdr 'http://10.90.90.90<RT>DS/const.js' | grep -E "g_SwitchInfo|g_PortNum|g_bPoE_Support"
+curl -sS -H 'Referer: http://10.90.90.90/' -H @switch-setup/cookie.hdr "http://10.90.90.90$(cat switch-setup/rt)DS/const.js" | grep -E "g_SwitchInfo|g_PortNum|g_bPoE_Support"
 ```
 
 Expect `g_SwitchInfo=['DGS-1100-05V2','1.00.003','1.0.0']`, `g_PortNum=5`,
@@ -168,7 +177,7 @@ cat /sys/class/net/<iface>/address
 Then the table. Each entry is `[port,'AA-BB-CC-DD-EE-FF',vid,type]`:
 
 ```bash
-curl -sS -H 'Referer: http://10.90.90.90/' -H @switch-setup/cookie.hdr 'http://10.90.90.90<RT>DS/DFT.js'
+curl -sS -H 'Referer: http://10.90.90.90/' -H @switch-setup/cookie.hdr "http://10.90.90.90$(cat switch-setup/rt)DS/DFT.js"
 ```
 
 The port number in the entry whose MAC matches the adapter (the switch writes
@@ -179,32 +188,37 @@ reread; do not guess.
 
 SNMP is off by default. Enable it (the trap setting stays off):
 
+The reply is the settings page's HTML, which says nothing about success, so
+it goes to a file and the stored state is read back instead:
+
 ```bash
-curl -sS -H 'Referer: http://10.90.90.90/' -H @switch-setup/cookie.hdr --data 'Snmp=1&Trap=0&item=00000' http://10.90.90.90/cgi/snmp_global.cgi
-curl -sS -H 'Referer: http://10.90.90.90/' -H @switch-setup/cookie.hdr 'http://10.90.90.90<RT>DS/SNMP_Global.js'
+curl -sS -H 'Referer: http://10.90.90.90/' -H @switch-setup/cookie.hdr --data 'Snmp=1&Trap=0&item=00000' -o switch-setup/snmp.out http://10.90.90.90/cgi/snmp_global.cgi
+curl -sS -H 'Referer: http://10.90.90.90/' -H @switch-setup/cookie.hdr "http://10.90.90.90$(cat switch-setup/rt)DS/SNMP_Global.js"
 ```
 
-The `ds_Snmp` array's first element must now be `1`. The communities are in
-`DS/SNMP_Community.js` (`ds_SnmpCom=['private','public']` at the factory).
+It must print `var ds_Snmp = [1,...` (first element `1`). The communities are
+in `DS/SNMP_Community.js` (`ds_SnmpCom=['private','public']` at the factory).
 
 ## Step 7 — save to flash
 
-Without a save, the settings are lost at power-off. **Save only when every
-port is admin-up**, so a port disabled while testing is not made permanent.
-Check `DS/Port.js` first:
+Without a save, the settings are lost at power-off; with it they survive (a
+power cycle was measured: SNMP answered on a fresh boot with no further
+setup). **Save only when every port is admin-up**, so a port disabled while
+testing is not made permanent. In `DS/Port.js` each port is one row of
+`ds_PortSetting`, and the **second field is the admin state**: `1` enabled,
+`0` disabled (measured by disabling a port over SNMP). The first field is the
+link (`2` up, `0` down). The command below refuses to save when any row's
+second field is `0`, then reads the result message back:
 
 ```bash
-curl -sS -H 'Referer: http://10.90.90.90/' -H @switch-setup/cookie.hdr 'http://10.90.90.90<RT>DS/Port.js'
+curl -sS -H 'Referer: http://10.90.90.90/' -H @switch-setup/cookie.hdr "http://10.90.90.90$(cat switch-setup/rt)DS/Port.js" > switch-setup/port.js
+grep -q 'ds_PortSetting' switch-setup/port.js && ! grep -q -E "\[[0-9]+,0,[0-9]+,[0-9]+,[0-9]+,'" switch-setup/port.js && curl -sS -H 'Referer: http://10.90.90.90/' -H @switch-setup/cookie.hdr --data '' -o switch-setup/save.out http://10.90.90.90/cgi/save.cgi && curl -sS -H 'Referer: http://10.90.90.90/' -H @switch-setup/cookie.hdr "http://10.90.90.90$(cat switch-setup/rt)DS/Message.js"
 ```
 
-Read the rows: every port must be enabled (admin-up). If one is not, stop and ask. Then save (empty body):
-
-```bash
-curl -sS -H 'Referer: http://10.90.90.90/' -H @switch-setup/cookie.hdr --data '' http://10.90.90.90/cgi/save.cgi
-```
-
-The reply loads `DS/Message.js` with `ds_nMsgID=2`, the UI's "The
-configuration has been saved."
+It must print `var ds_nMsgID=2;`, the UI's "The configuration has been
+saved." No output means it did not save: either the port table was not read
+or a port is disabled. Look at `switch-setup/port.js`, and stop and ask if a
+port is disabled.
 
 ## Step 8 — store the community and run doctor
 
@@ -266,6 +280,17 @@ rm -r switch-setup
 ```
 
 ## Gotchas
+
+- **`--mgmt-port` protects only the port you name, so pin the cabling.** Any
+  port works as the management port, but the hooks hardcode its number. If
+  the cables are later swapped, a hook still saying `--mgmt-port 1 ... port 5
+  off` disables the host's own path to the switch without complaint. This
+  happened on the bench: the cables came back in swapped ports, and step 5
+  found the management port had moved from 1 to 5. Use one fixed port for the
+  control host, label it on the switch, and rerun step 5 after any recabling.
+  Recovery if it happens anyway: power-cycle the switch. Port changes made by
+  `switchport` are not saved, and step 7 refuses to save while a port is
+  disabled, so the switch boots with every port enabled.
 
 - **The host alias is not permanent and the switch stays at 10.90.90.90.**
   The hook reaches the switch at that address, so the alias from step 1 must
