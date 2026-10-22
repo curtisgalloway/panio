@@ -133,6 +133,20 @@ reflect the change.** Stale docs/help make the PR incomplete; fix them in the
    the macOS-only job (hdmicap AVFoundation + visionocr). Don't let `cli` tests
    rot.
 
+   **Doc-only PRs skip the build and test jobs.** `scripts/ci-doc-only.sh`
+   defines doc-only: `*.md` anywhere, everything under `docs/`, `mkdocs.yml`,
+   and `LICENSE`. When every changed path matches, the `changes` job reports
+   `code=false` and every skippable job in `ci.yml` is skipped (a job-level
+   `if:`, never workflow-level `paths-ignore`, which would leave required
+   checks pending). The gate fails open: anything unexpected runs everything.
+   To keep the skip safe, every skippable job deletes all doc-only files from
+   its checkout (`ci-doc-only.sh strip`) on every run, and `ci-local.sh` does
+   the same to its copy, so no build or test may read a doc file. A job that
+   must read one (for example `profile-pins`, which hashes `AGENTS.md`) goes
+   in the always-run set in the comment on the `changes` job, and the
+   allowlist should then be revisited. `scripts/tests/test_ci_doc_only.py`
+   fails the build when a new job has neither the gate nor the strip step.
+
    Five CI lint jobs are not mirrored by `ci-local.sh`; run them on the host:
    `shellcheck` (`git ls-files -z '*.sh' | xargs -0 shellcheck`), `zigplug`
    (`cd zigplug && uv sync --frozen && uv run pyink --check . && uv run
