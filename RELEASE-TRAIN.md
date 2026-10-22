@@ -1,6 +1,6 @@
 # Release train profile: panio
 
-Derived from commit 35c893f on 2026-09-16. Executed by the `release-train`
+Derived from commit 6049b75 on 2026-09-16. Executed by the `release-train`
 skill (public-skills, `plugins/dev-tools/skills/release-train`); kept honest by
 its `profile_check.py` against the `## Sources` table below. Read `AGENTS.md`
 "Cutting a release" first: everything there still holds, this file only adds
@@ -60,8 +60,12 @@ plugin root (#303) adds entries to the S2/S3 lists.
 ## Channels
 
 Only the channels this repo ships. There is no crates.io or PyPI publish; the
-from-source path is the `source` arm. winget is a no-op until its token
-exists and is not an arm.
+from-source path is the `source` arm. winget is not an arm: `WINGET_TOKEN`
+exists (2026-10-19), but the release job skips with a notice until the
+hand-submitted first version (`CurtisGalloway.Panio`) is merged into
+`microsoft/winget-pkgs`; after that it opens an update PR there on each tag.
+v0.12.0 predates the skip and is not on winget: once the package exists,
+`gh run rerun <that release run> --failed` publishes it.
 
 The arms run in parallel and the release worktree is their **source only**.
 Each arm stages into its own scratch directory outside the worktree — export
@@ -166,7 +170,7 @@ feeds needs re-reading before `--update` re-pins it.
 
 | path | blob | feeds |
 |---|---|---|
-| `.github/workflows/release.yml` | b543223cd365 | Channels (every arm's build and staging), Publish |
+| `.github/workflows/release.yml` | bd38399097c2 | Channels (every arm's build and staging), Publish |
 | `.github/workflows/docs.yml` | 206e9ae532f2 | Publish: re-verify apt |
 | `packaging/nfpm.yaml` | fc69c86857d8 | Channels: deb |
 | `packaging/scripts/build-apt-repo.sh` | 391037a4ea4c | Channels: deb, install like a user |
