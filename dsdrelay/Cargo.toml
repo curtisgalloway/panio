@@ -17,7 +17,7 @@ name = "dsdrelay"
 version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
-description = "CLI for DSD TECH SH-UR01A-style USB serial AT relay boards (power control, NC wiring)"
+description = "CLI for DSD TECH SH-UR01A and SH-UR04A USB serial AT relay boards (power control, NC wiring)"
 
 [[bin]]
 name = "dsdrelay"
