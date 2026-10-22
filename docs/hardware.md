@@ -15,7 +15,7 @@ See the [power guide](power.md).
 | [ThirdReality Zigbee Smart Plug (15 A, energy monitoring)](https://www.amazon.com/dp/B0BPY5D1KC) | Switched mains outlet driven by `zigplug`. |
 | [AINOPE USB 3.0 extension cable (6.6 ft)](https://www.amazon.com/dp/B07RQRMGKB) | Moves the Zigbee dongle away from USB 3 devices, whose RF noise (especially video capture) breaks Zigbee pairing. |
 | Cambrionix programmable USB hub | Per-port USB power switching via the [`cambrionix` helper](power.md#cambrionix-hub-control) (control UART, 115200 8N1). |
-| DSD TECH SH-UR01A USB serial relay board (1-channel; 4-channel sibling) | Per-channel power switching via the [`dsdrelay` helper](power.md#usb-serial-relay-board-control-dsdrelay) (CP2102N, 9600 8N1 AT commands). Wired NC: an unpowered board leaves the target powered. |
+| DSD TECH SH-UR01A (1-channel) and SH-UR04A (4-channel) USB serial relay boards | Per-channel power switching via the [`dsdrelay` helper](power.md#usb-serial-relay-board-control-dsdrelay) (9600 8N1 AT commands). Wired NC: an unpowered board leaves the target powered. The SH-UR01A's CP2102N has a unique USB serial (select it with `-s`); the SH-UR04A's CP2102 reports the factory default `0001`, so select it by port path (`-d`). |
 | [Shelly Plug US Gen4 (S4PL-00116US, Wi-Fi, energy monitoring)](https://www.amazon.com/dp/B0G2YY8TCJ) | Wi-Fi mains outlet driven by the [`shellyplug` helper](power.md#shelly-smart-plug-control-shellyplug) over local HTTP RPC (no cloud). Any Shelly Gen2+ device works. |
 | Dell OptiPlex 7060 (Intel vPro) | Intel AMT target driven by the [`amt` helper](power.md#intel-amt-power-control-amt) (WS-Management over verified HTTPS, port 16993; legacy HTTP on port 16992 requires explicit opt-in), with true power-state readback; no plug hardware. |
 
@@ -57,6 +57,22 @@ See the [netboot](netboot.md) and [link mode](netif.md) guides.
 |---|---|
 | [TP-Link UE330 — 3-port USB 3.0 hub + Gigabit Ethernet](https://www.amazon.com/dp/B01N9M32TA) | Direct host↔target Ethernet link plus spare USB ports. |
 | [Anker USB-C to Gigabit Ethernet adapter](https://www.amazon.com/dp/B08CK9X9Z8) | USB-C adapter for the direct link. |
+| TP-Link TL-SG108PE (hardware 3.0) managed switch | Guaranteed link drop: the [`switchport` helper](netif.md#guaranteed-link-drop-with-a-managed-switch) disables the target's port over the switch's web interface (`--backend easysmart`). A USB Ethernet adapter cannot drop its own link. Measured: the peer loses carrier 0.8 s after `off`, back 1.7 s after `on`. |
+| D-Link DGS-1100-05V2 (hardware A1, firmware 1.00.003) managed switch | Same role over SNMP (`--backend snmp`; SNMP must be enabled and saved once, see the `managed-switch` skill). No PoE. Measured: carrier lost 0.6 s after `off`, back 1.7 s after `on`; the saved configuration survives a power cycle. |
+
+### Cabling a managed switch
+
+Any port can carry the control host's connection to the switch (the
+*management port*), but keep it on one fixed port and label it. The link
+hooks name it by number (`--mgmt-port`), and it is the only port `switchport`
+refuses to turn off. If the cables are later swapped, a hook can turn off the
+host's own path to the switch without any warning. On the bench this nearly
+happened: after a replug the host had moved from port 1 to port 5. Suggested
+layout for a 5-port switch: port 5 for the control host, ports 1 to 4 for
+targets. After any recabling, find the management port again before relying
+on the hooks (the `managed-switch` skill, step 5). If a port is turned off by
+mistake, power-cycle the switch: port changes made by `switchport` are not
+saved, so every port comes back enabled.
 
 ______________________________________________________________________
 
