@@ -53,8 +53,19 @@ ch9329/          WCH CH9329 UART->USB-HID bridge client. Verified on an
                      A failure after that adds a compatibility hint.
                      Startup echo and the manual direct-USB drain:
                      notes/openterface-v2-linux-serial.md, docs/hid.md.
+                   - Cancellation (#328): `tap`/`combo`/`type_text`/`click`/
+                     `move_rel`/`scroll` take a `Cancel` (`&dyn Fn() -> bool`),
+                     polled between reports and inside holds/pacing sleeps
+                     (taken in 20 ms slices, `sleep_unless_cancelled`). A
+                     cancelled command releases what it pressed (keys held
+                     earlier with `down` stay) and fails with `CANCELLED`
+                     ("cancelled: client went away"), which is not a
+                     transport error. The no-daemon path passes
+                     `never_cancelled`. `execute_line` has no `delay`/`sleep`
+                     (only `run` files do, client-side).
                    - `test_support` (`#[cfg(test)]` FakePort, an in-memory
-                     SerialPort stub) lets tests run real wire behavior.
+                     SerialPort stub; `FakePort::acking` ACKs every frame)
+                     lets tests run real wire behavior.
   src/uart.rs      UART owner (daemon path): one thread holding a long-lived
                    Session, serializing CLI and WebSocket commands (plus a
                    shutdown Release) onto the wire, one in flight; this also
@@ -65,7 +76,13 @@ ch9329/          WCH CH9329 UART->USB-HID bridge client. Verified on an
                    for the caller. A persistent timeout reopens the session;
                    a reopen toggles DTR/RTS, which resets a KVM-Go's MCU. A
                    request whose client gave up (reply channel closed) is
-                   dropped, so a timed-out command is not injected late. A
+                   dropped, so a timed-out command is not injected late, and
+                   one already running is cancelled the same way
+                   (`serve_line` passes `|| reply.is_closed()` down to the
+                   session; the cancel is broadcast as an error event and
+                   logged at info). The daemon's wait is `proto::budget(line)`
+                   (a `type`: 10 s + 100 ms per character; else 30 s), the
+                   same function the CLI uses (+ `CLIENT_MARGIN` 5 s). A
                    shutdown Release reopens a dropped link first, since the
                    chip holds its last report independent of this process
   src/keys.rs      key name -> USB HID usage (adafruit_hid Keycode names, US
@@ -75,7 +92,11 @@ ch9329/          WCH CH9329 UART->USB-HID bridge client. Verified on an
                    reachable; an empty /send body is a no-op, not a forwarded
                    blank command), POST /stop (authenticated shutdown;
                    `ch9329 stop` never signals the discovery-file PID),
-                   /status, /version
+                   /status, /version. Cancellation: hyper drops a /send
+                   handler when its client disconnects, which closes the
+                   reply channel; `handle_ws` races each in-flight `send`
+                   against the socket's next frame and drops the send on
+                   close (frames arriving meanwhile queue and run in order)
   src/auth.rs      token + loopback Host/Origin layer; byte-identical copy in
                    serialcap/hdmicap/hidrig
   src/daemon.rs    `serve`/`stop`: owns the UART and publishes the same
@@ -84,5 +105,14 @@ ch9329/          WCH CH9329 UART->USB-HID bridge client. Verified on an
                    `Notify`) releases held keys/buttons via uart.rs's Release
                    first, and never touches the USB mux; lock-file rule in
                    ../hdmicap/AGENTS.md
+  src/main.rs      client. Through a daemon, `post_send_within` waits
+                   `budget + 5 s`; on its own timeout, a mid-request
+                   connection failure, or the daemon's "did not answer
+                   within" error it queues a no-op `version` (never touches
+                   the wire, answered only after the earlier command has
+                   stopped) and waits 5 s: answered = exit 40 (cancelled and
+                   confirmed stopped), else exit 41 (may still be typing).
+                   Anything else still exits 1. panio reports these as
+                   101 `helper_failed` with `child_exit` 40/41
   README.md        wiring, extras beyond hidrig (`info`, `baud`), status
 ```

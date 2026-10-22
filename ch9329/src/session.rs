@@ -155,6 +155,50 @@ const CLICK_HOLD: Duration = Duration::from_millis(80);
 const CLICK_SETTLE: Duration = Duration::from_millis(60);
 /// Per-character hold/pacing for `type`.
 const TYPE_GAP: Duration = Duration::from_millis(15);
+/// Longest single sleep inside a multi-report command. A longer wait is taken
+/// in slices of this size so a cancellation is noticed within about this long
+/// (#328).
+const CANCEL_SLICE: Duration = Duration::from_millis(20);
+
+/// Error text of a command stopped because its requester went away. The
+/// daemon matches it with [`is_cancelled`]; it is deliberately not shaped like
+/// a transport error, so a cancellation never makes the owner reopen the link.
+pub const CANCELLED: &str = "cancelled: client went away";
+
+/// Whether an error message is the [`CANCELLED`] outcome.
+pub fn is_cancelled(msg: &str) -> bool {
+    msg.starts_with("cancelled:")
+}
+
+/// A cheap "has the requester gone away?" probe, polled between HID reports
+/// and inside long sleeps. The daemon passes one that checks its reply
+/// channel; the direct (no-daemon) path passes [`never_cancelled`].
+pub type Cancel<'a> = &'a dyn Fn() -> bool;
+
+/// A [`Cancel`] that never fires: the one-shot CLI path has no requester that
+/// can go away mid-command.
+pub fn never_cancelled() -> bool {
+    false
+}
+
+/// Sleep for `total` in [`CANCEL_SLICE`] pieces, stopping early when `cancel`
+/// fires. Returns true when it was cancelled.
+fn sleep_unless_cancelled(total: Duration, cancel: Cancel<'_>) -> bool {
+    let mut left = total;
+    while !left.is_zero() {
+        if cancel() {
+            return true;
+        }
+        let step = left.min(CANCEL_SLICE);
+        sleep(step);
+        left -= step;
+    }
+    cancel()
+}
+
+fn cancelled_error() -> anyhow::Error {
+    anyhow!(CANCELLED)
+}
 
 /// Hold duration for a tap/chord: [`LOCK_HOLD`] if any key is a lock key,
 /// [`HOLD`] otherwise.
@@ -703,15 +747,23 @@ impl Session {
     /// best-effort attempt to restore the previously-held state before
     /// returning — so a transport hiccup mid-tap does not leave `key` stuck
     /// down on the target.
-    pub fn tap(&mut self, key: Key) -> Result<()> {
+    ///
+    /// The hold is taken in slices; if `cancel` fires during it the key is
+    /// released at once and the tap reports [`CANCELLED`].
+    pub fn tap(&mut self, key: Key, cancel: Cancel<'_>) -> Result<()> {
         self.apply_down(key);
         let pressed = self.push_keyboard();
+        let mut cancelled = false;
         if pressed.is_ok() {
-            sleep(hold_for(&[key]));
+            cancelled = sleep_unless_cancelled(hold_for(&[key]), cancel);
         }
         self.apply_up(key);
         let released = self.push_keyboard();
-        self.finish_hold(pressed, released)
+        self.finish_hold(pressed, released)?;
+        if cancelled {
+            return Err(cancelled_error());
+        }
+        Ok(())
     }
 
     /// Chord: press every key together, hold, then release back to held
@@ -719,7 +771,7 @@ impl Session {
     /// counting keys already held with `down` — is refused rather than
     /// silently truncated. Modifiers have their own byte and never take a
     /// slot. Errors after the press are handled like [`Session::tap`].
-    pub fn combo(&mut self, chord: &[Key]) -> Result<()> {
+    pub fn combo(&mut self, chord: &[Key], cancel: Cancel<'_>) -> Result<()> {
         let needed = keys_needed(chord, &self.keys);
         if needed > KEY_SLOTS {
             return Err(anyhow!(
@@ -732,14 +784,19 @@ impl Session {
             self.apply_down(k);
         }
         let pressed = self.push_keyboard();
+        let mut cancelled = false;
         if pressed.is_ok() {
-            sleep(hold_for(chord));
+            cancelled = sleep_unless_cancelled(hold_for(chord), cancel);
         }
         for &k in chord {
             self.apply_up(k);
         }
         let released = self.push_keyboard();
-        self.finish_hold(pressed, released)
+        self.finish_hold(pressed, released)?;
+        if cancelled {
+            return Err(cancelled_error());
+        }
+        Ok(())
     }
 
     pub fn key_down(&mut self, key: Key) -> Result<()> {
@@ -811,10 +868,19 @@ impl Session {
     /// keystroke would silently not register. On any error after a report has
     /// been written, this makes a best-effort attempt to restore the
     /// previously-held state before returning, like [`Session::tap`].
-    pub fn type_text(&mut self, text: &str) -> Result<()> {
+    ///
+    /// `cancel` is polled before every character (nothing of this command is
+    /// pressed at that point, since each character is released before the next
+    /// begins) and inside the pacing sleeps; when it fires the command stops
+    /// with [`CANCELLED`] and the held state is exactly what it was before the
+    /// command, keys held earlier with `down` included.
+    pub fn type_text(&mut self, text: &str, cancel: Cancel<'_>) -> Result<()> {
         check_type_len(text)?;
         let mut prev: u8 = 0;
         for c in text.chars() {
+            if cancel() {
+                return Err(cancelled_error());
+            }
             let (usage, shift) = crate::keys::char_to_usage(c)?;
             let already_held = self.keys.contains(&usage);
             if already_held {
@@ -847,12 +913,16 @@ impl Session {
                 data[3 + i] = k;
             }
             let pressed = self.send(CMD_KB_GENERAL, &data).map(|_| ());
+            let mut cancelled = false;
             if pressed.is_ok() {
-                sleep(TYPE_GAP);
+                cancelled = sleep_unless_cancelled(TYPE_GAP, cancel);
             }
             let released = self.push_keyboard(); // restore held state
             prev = usage;
             self.finish_hold(pressed, released)?;
+            if cancelled {
+                return Err(cancelled_error());
+            }
         }
         Ok(())
     }
@@ -889,10 +959,13 @@ impl Session {
         self.push_mouse_abs(tx, ty, self.buttons)
     }
 
-    pub fn click(&mut self, button: &str) -> Result<()> {
+    pub fn click(&mut self, button: &str, cancel: Cancel<'_>) -> Result<()> {
         let mask = button_mask(button)?;
-        // Let any just-issued positioning move land first.
-        sleep(CLICK_SETTLE);
+        // Let any just-issued positioning move land first. Nothing is pressed
+        // yet, so a cancellation here just stops.
+        if sleep_unless_cancelled(CLICK_SETTLE, cancel) {
+            return Err(cancelled_error());
+        }
         // Press/release via the RELATIVE report (zero motion). The absolute
         // report reliably positions the pointer, but a same-coordinate abs
         // button transition gets coalesced by libinput and never registers as
@@ -900,8 +973,13 @@ impl Session {
         // the pointer currently is — so a prior `moveabs` (even in a separate
         // process invocation) sets the spot.
         self.push_mouse_rel(self.buttons | mask, 0, 0, 0)?;
-        sleep(CLICK_HOLD);
-        self.push_mouse_rel(self.buttons, 0, 0, 0)
+        let cancelled = sleep_unless_cancelled(CLICK_HOLD, cancel);
+        // The release always goes out, cancelled or not.
+        self.push_mouse_rel(self.buttons, 0, 0, 0)?;
+        if cancelled {
+            return Err(cancelled_error());
+        }
+        Ok(())
     }
 
     pub fn mouse_down(&mut self, button: &str) -> Result<()> {
@@ -922,9 +1000,12 @@ impl Session {
 
     /// Relative move, split into per-report int8 deltas. Each axis's total is
     /// clamped to [`MAX_REL_TOTAL`] per call.
-    pub fn move_rel(&mut self, dx: i32, dy: i32) -> Result<()> {
+    pub fn move_rel(&mut self, dx: i32, dy: i32, cancel: Cancel<'_>) -> Result<()> {
         let (mut dx, mut dy) = (clamp_rel_total(dx), clamp_rel_total(dy));
         loop {
+            if cancel() {
+                return Err(cancelled_error());
+            }
             let sx = dx.clamp(-127, 127);
             let sy = dy.clamp(-127, 127);
             if sx == 0 && sy == 0 {
@@ -943,9 +1024,12 @@ impl Session {
 
     /// Scroll the wheel; positive is up. Split into per-report int8 steps; the
     /// total is clamped to [`MAX_REL_TOTAL`] per call.
-    pub fn scroll(&mut self, amount: i32) -> Result<()> {
+    pub fn scroll(&mut self, amount: i32, cancel: Cancel<'_>) -> Result<()> {
         let mut amount = clamp_rel_total(amount);
         while amount != 0 {
+            if cancel() {
+                return Err(cancelled_error());
+            }
             let step = amount.clamp(-127, 127);
             self.push_mouse_rel(self.buttons, 0, 0, step as i8)?;
             amount -= step;
@@ -1016,6 +1100,9 @@ pub(crate) mod test_support {
     pub(crate) struct FakePort {
         inbox: VecDeque<u8>,
         log: WriteLog,
+        /// Answer every written frame with a success ACK, so a long command
+        /// runs to completion without a reply script.
+        auto_ack: bool,
     }
 
     impl FakePort {
@@ -1023,6 +1110,15 @@ pub(crate) mod test_support {
             FakePort {
                 inbox: VecDeque::new(),
                 log,
+                auto_ack: false,
+            }
+        }
+
+        /// A port that ACKs every frame written to it.
+        pub(crate) fn acking(log: WriteLog) -> Self {
+            FakePort {
+                auto_ack: true,
+                ..FakePort::new(log)
             }
         }
 
@@ -1052,6 +1148,9 @@ pub(crate) mod test_support {
     impl io::Write for FakePort {
         fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
             self.log.0.lock().unwrap().push(buf.to_vec());
+            if self.auto_ack && buf.len() > 3 {
+                self.inbox.extend(frame_bytes(ADDR, buf[3] | 0x80, &[0x00]));
+            }
             Ok(buf.len())
         }
         fn flush(&mut self) -> io::Result<()> {
@@ -1428,7 +1527,7 @@ mod tests {
         let port = FakePort::new(log.clone());
         let mut s = session_on(port);
         let seven: Vec<Key> = (0x04..0x0b).map(Key::Usage).collect(); // 7 distinct usages
-        let err = s.combo(&seven).unwrap_err().to_string();
+        let err = s.combo(&seven, &never_cancelled).unwrap_err().to_string();
         assert!(err.contains('6'), "{err}");
         assert!(log.snapshot().is_empty(), "refused before any write");
     }
@@ -1512,7 +1611,10 @@ mod tests {
         let mut port = FakePort::new(log.clone());
         port.queue_reply(&ack(CMD_KB_GENERAL, &[0x00])); // only the press gets a reply
         let mut s = session_on(port);
-        let err = s.tap(Key::Usage(0x04)).unwrap_err().to_string();
+        let err = s
+            .tap(Key::Usage(0x04), &never_cancelled)
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("timed out"), "{err}");
         let writes = log.snapshot();
         // press, release attempt, and the best-effort retry of the release.
@@ -1538,7 +1640,7 @@ mod tests {
         port.queue_reply(&ack(CMD_KB_GENERAL, &[0x00])); // restore
         let mut s = session_on(port);
         s.keys.push(0x04); // A already held via `down`
-        s.type_text("a").unwrap();
+        s.type_text("a", &never_cancelled).unwrap();
         let writes = log.snapshot();
         assert_eq!(writes.len(), 3);
         assert!(
@@ -1557,5 +1659,75 @@ mod tests {
             writes[2]
         );
         assert_eq!(s.keys, vec![0x04]);
+    }
+
+    // -- #328: cancellation --------------------------------------------------
+
+    /// A cancel that fires after `n` polls.
+    fn cancel_after(n: usize) -> impl Fn() -> bool {
+        let polls = std::cell::Cell::new(0usize);
+        move || {
+            polls.set(polls.get() + 1);
+            polls.get() > n
+        }
+    }
+
+    /// A `tap` cancelled during its hold releases the key at once and reports
+    /// the cancellation; a `click` cancelled during its hold releases the
+    /// button.
+    #[test]
+    fn a_cancel_during_a_hold_releases_what_was_pressed() {
+        let log = WriteLog::default();
+        let mut s = session_on(FakePort::acking(log.clone()));
+        let err = s.tap(Key::Usage(0x04), &cancel_after(0)).unwrap_err();
+        assert!(is_cancelled(&err.to_string()), "{err}");
+        let writes = log.snapshot();
+        assert_eq!(writes.len(), 2, "press then release");
+        assert_eq!(writes[0][7], 0x04);
+        assert_eq!(&writes[1][5..13], &[0u8; 8]);
+        assert!(s.keys.is_empty());
+
+        let log = WriteLog::default();
+        let mut s = session_on(FakePort::acking(log.clone()));
+        // Survives the settle sleep's polls, then fires during the hold.
+        let err = s.click("left", &cancel_after(4)).unwrap_err();
+        assert!(is_cancelled(&err.to_string()), "{err}");
+        let writes = log.snapshot();
+        assert_eq!(writes.len(), 2, "press then release");
+        assert_eq!(writes[0][6], 1, "left button down");
+        assert_eq!(writes[1][6], 0, "button released");
+    }
+
+    /// A cancel before a `click`'s press stops without pressing anything.
+    #[test]
+    fn a_cancel_before_a_click_presses_nothing() {
+        let log = WriteLog::default();
+        let mut s = session_on(FakePort::acking(log.clone()));
+        assert!(s.click("left", &|| true).is_err());
+        assert!(log.snapshot().is_empty());
+    }
+
+    /// `move` and `scroll` stop between reports.
+    #[test]
+    fn a_cancel_stops_move_and_scroll_between_reports() {
+        let log = WriteLog::default();
+        let mut s = session_on(FakePort::acking(log.clone()));
+        assert!(s.move_rel(5000, 0, &cancel_after(2)).is_err());
+        assert_eq!(log.snapshot().len(), 2);
+        let log = WriteLog::default();
+        let mut s = session_on(FakePort::acking(log.clone()));
+        assert!(s.scroll(5000, &cancel_after(3)).is_err());
+        assert_eq!(log.snapshot().len(), 3);
+    }
+
+    /// `sleep_unless_cancelled` notices a cancellation inside a long sleep.
+    #[test]
+    fn a_long_sleep_is_taken_in_cancellable_slices() {
+        let start = std::time::Instant::now();
+        assert!(sleep_unless_cancelled(
+            Duration::from_secs(10),
+            &cancel_after(3)
+        ));
+        assert!(start.elapsed() < Duration::from_secs(1));
     }
 }

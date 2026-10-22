@@ -20,10 +20,12 @@
 //! KB2040 `hidrig` does. Command-file parsing (`parse_sequence`/[`Step`]) and
 //! the `moveabs` clamp are ported from `hidrig/src/proto.rs`.
 
+use std::time::Duration;
+
 use anyhow::{anyhow, bail, Result};
 
 use crate::keys::name_to_key;
-use crate::session::{MuxSide, Session};
+use crate::session::{never_cancelled, Cancel, MuxSide, Session, MAX_TYPE_CHARS};
 
 /// `version` reply data (the part after `OK`): protocol version, impl id, and
 /// the optional capabilities this injector advertises. The CH9329 has a true
@@ -33,6 +35,39 @@ use crate::session::{MuxSide, Session};
 /// flash-stored rate (the `baud` command below performs it, but a host should
 /// not auto-invoke it expecting transient behavior).
 pub const VERSION_REPLY: &str = "1 ch9329/0.1.0 moveabs";
+
+/// How long a command line may take, the one bound both ends of `POST /send`
+/// use so they agree (#328): the daemon waits this long for the owner thread's
+/// answer, and the CLI client waits this plus [`CLIENT_MARGIN`].
+///
+/// A `type` costs roughly 50-60 ms per character (hold, pacing and two serial
+/// round trips), so its bound grows with the text: [`TYPE_BASE`] plus
+/// [`TYPE_PER_CHAR`] per character (at most [`MAX_TYPE_CHARS`] count; the
+/// session refuses more). Everything else gets [`OTHER_BUDGET`], which covers
+/// the slowest of them (a full-range `move`, a lazy link open, a mux switch).
+/// Expiry is not just a report: the daemon drops the request, which cancels it
+/// if it is already running.
+pub fn budget(line: &str) -> Duration {
+    let line = line.trim_start();
+    let (head, rest) = line.split_once(' ').unwrap_or((line, ""));
+    if head.eq_ignore_ascii_case("type") {
+        let chars = rest.chars().count().min(MAX_TYPE_CHARS) as u32;
+        TYPE_BASE + TYPE_PER_CHAR * chars
+    } else {
+        OTHER_BUDGET
+    }
+}
+
+/// Fixed part of a `type` command's [`budget`].
+const TYPE_BASE: Duration = Duration::from_secs(10);
+/// Per-character part of a `type` command's [`budget`]; roughly twice the
+/// measured cost per character.
+const TYPE_PER_CHAR: Duration = Duration::from_millis(100);
+/// [`budget`] of every command except `type`.
+const OTHER_BUDGET: Duration = Duration::from_secs(30);
+/// How much longer than the daemon's [`budget`] the CLI client waits, so the
+/// daemon normally answers (with its own timeout error) first.
+pub const CLIENT_MARGIN: Duration = Duration::from_secs(5);
 
 /// The `moveabs` logical maximum (matches hidrig's ABS_MAX).
 pub const ABS_MAX: i32 = 32_767;
@@ -54,6 +89,15 @@ pub fn clamp_abs(v: i32) -> i32 {
 /// separator, verbatim (trailing spaces included); every other verb takes
 /// whitespace-separated tokens.
 pub fn execute_line(s: &mut Session, line: &str) -> Result<String> {
+    execute_line_cancellable(s, line, &never_cancelled)
+}
+
+/// [`execute_line`] for a requester that can go away: `cancel` is polled
+/// between HID reports and inside long sleeps (see `session.rs`), and a
+/// command it stops fails with [`crate::session::CANCELLED`] after releasing
+/// whatever it pressed (#328). `delay`/`sleep` are not commands here; they
+/// exist only in `run` files, where the client does the waiting.
+pub fn execute_line_cancellable(s: &mut Session, line: &str, cancel: Cancel<'_>) -> Result<String> {
     let line = line.trim_end_matches(['\r', '\n']);
     if line.contains(['\r', '\n']) {
         return Err(anyhow!("command contains a newline: {line:?}"));
@@ -69,11 +113,11 @@ pub fn execute_line(s: &mut Session, line: &str) -> Result<String> {
                 .unwrap_or("")
                 .strip_prefix(' ')
                 .unwrap_or("");
-            s.type_text(text)?;
+            s.type_text(text, cancel)?;
         }
         "key" => {
             let name = one_arg(rest, "key")?;
-            s.tap(name_to_key(name)?)?;
+            s.tap(name_to_key(name)?, cancel)?;
         }
         "combo" => {
             let mut chord = Vec::new();
@@ -83,27 +127,27 @@ pub fn execute_line(s: &mut Session, line: &str) -> Result<String> {
             if chord.is_empty() {
                 bail!("combo needs at least one key name");
             }
-            s.combo(&chord)?;
+            s.combo(&chord, cancel)?;
         }
         "down" => s.key_down(name_to_key(one_arg(rest, "down")?)?)?,
         "up" => s.key_up(name_to_key(one_arg(rest, "up")?)?)?,
         "releaseall" => s.release_all()?,
         "move" => {
             let (dx, dy) = two_ints(rest, "move")?;
-            s.move_rel(dx, dy)?;
+            s.move_rel(dx, dy, cancel)?;
         }
         "moveabs" => {
             let (x, y) = two_ints(rest, "moveabs")?;
             s.move_abs(clamp_abs(x), clamp_abs(y))?;
         }
-        "click" => s.click(button_or_default(rest))?,
+        "click" => s.click(button_or_default(rest), cancel)?,
         "mdown" => s.mouse_down(button_or_default(rest))?,
         "mup" => s.mouse_up(button_or_default(rest))?,
         "scroll" => {
             let amount: i32 = one_arg(rest, "scroll")?
                 .parse()
                 .map_err(|_| anyhow!("scroll amount must be an integer: {rest:?}"))?;
-            s.scroll(amount)?;
+            s.scroll(amount, cancel)?;
         }
         "ping" => {
             s.get_info()?;
@@ -316,5 +360,34 @@ mod tests {
         let steps = parse_sequence("  type hi  \n").unwrap();
         assert_eq!(steps, vec![Step::Cmd("type hi  ".into())]);
         assert!(parse_sequence("   \n\t\n").unwrap().is_empty());
+    }
+
+    /// The bound on a command grows with the text of a `type`, never shrinks,
+    /// and gives a long one far more than the old fixed 30 s.
+    #[test]
+    fn budget_grows_with_the_text_of_a_type() {
+        let mut prev = Duration::ZERO;
+        for n in (0..=MAX_TYPE_CHARS + 100).step_by(50) {
+            let b = budget(&format!("type {}", "x".repeat(n)));
+            assert!(b >= prev, "budget fell at {n} characters");
+            prev = b;
+        }
+        assert_eq!(budget("type "), Duration::from_secs(10));
+        assert!(budget(&format!("type {}", "x".repeat(500))) > Duration::from_secs(30));
+        assert!(
+            budget(&format!("type {}", "x".repeat(MAX_TYPE_CHARS))) > Duration::from_secs(300),
+            "a full-length type (about 4 minutes at 55 ms per character) must fit"
+        );
+        // Trailing spaces and multi-byte characters are characters, not bytes.
+        assert_eq!(budget("type \u{e9}\u{e9}"), budget("type ab"));
+        for other in [
+            "key A",
+            "click",
+            "move 32767 32767",
+            "releaseall",
+            "usb host",
+        ] {
+            assert_eq!(budget(other), Duration::from_secs(30), "{other}");
+        }
     }
 }

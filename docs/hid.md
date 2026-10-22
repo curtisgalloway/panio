@@ -308,13 +308,34 @@ shutdown is accepted. Stop a daemon too old for the endpoint with
 - One `type` command takes at most 4096 characters.
 - A `move` or `scroll` moves at most 32 767 units per axis per call (`ch9329`).
 - A `/send` body or WebSocket message holds one full `type` line.
-- A command the injector never answers fails after 30 s.
+- A command the injector never answers fails after 30 s. A `type` is given
+  longer, since it takes about 55 ms per character: 10 s plus 100 ms per
+  character (about 7 minutes for the 4096-character maximum). The `ch9329`
+  client waits 5 s longer than the daemon, so the daemon normally answers
+  first.
 
 **Reliability.**
 
-- Input commands are never retried, so a lost reply surfaces as the 30 s
-  timeout. Only `ping`, `info` and `version` are retried once.
+- Input commands are never retried, so a lost reply surfaces as the
+  command's timeout. Only `ping`, `info` and `version` are retried once.
 - A command whose client already timed out is dropped, not injected late.
+- **A `ch9329` command that is already running is cancelled when its client
+  goes away** (the CLI timed out or was killed, or a WebSocket client closed).
+  The daemon checks between HID reports and inside holds, so typing stops
+  within about one character. The cancelled command
+  releases the keys and buttons it pressed; keys held earlier with `down`
+  stay held. The command fails with `cancelled: client went away`, and a
+  `releaseall` sent afterwards runs only after the cancelled command has
+  stopped. (`hidrig` hands its frames to the board in one burst and cannot
+  recall them.)
+- **Exit status after a timeout (`ch9329`, through a daemon).** When a send
+  times out, `ch9329` queues a no-op `version` behind it and waits 5 s; the
+  `version` is answered only after the earlier command has stopped. It then
+  exits **40** (timed out; the daemon cancelled the command and confirmed it
+  stopped) or **41** (timed out; stopping could not be confirmed, so the
+  target may still be receiving keystrokes: do not assume otherwise). Through
+  `panio hid send` both appear as `helper_failed` (101) with `child_exit` 40
+  or 41. Other failures keep exit 1.
 - On shutdown the daemon releases every held key and button, reopening the
   link first if needed.
 

@@ -35,15 +35,16 @@ use std::time::Duration;
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tracing::{debug, info, warn};
 
-use crate::proto::execute_line;
-use crate::session::Session;
+use crate::proto::{budget, execute_line_cancellable};
+use crate::session::{is_cancelled, Cancel, Session};
 
 const REQ_CAP: usize = 256;
 const TRANSCRIPT_CAP: usize = 256;
-/// Ceiling on one client's wait for its reply. The owner thread services one
-/// request at a time, so a request it never answers would otherwise hang
-/// every later client queued behind it (and their WebSocket loops with them).
-const SEND_TIMEOUT: Duration = Duration::from_secs(30);
+/// Start of the error a client gets when the owner does not answer within the
+/// command's [`budget`]. The CLI client recognizes it (the daemon answered
+/// first, before the client's own timer) and then confirms the command
+/// stopped, exactly as for a timeout of its own (#328).
+pub const DAEMON_TIMEOUT_PREFIX: &str = "hid daemon did not answer within";
 
 /// One item on the owner's queue.
 enum Request {
@@ -84,6 +85,17 @@ impl HidHandle {
     /// is opened lazily on the first command (so the daemon starts even with
     /// the target — and therefore the CH9329 — currently powered off).
     pub fn spawn(device: String) -> HidHandle {
+        Self::spawn_inner(device, None)
+    }
+
+    /// [`spawn`](Self::spawn) with an already-open session, so a test can run
+    /// the real owner loop over a fake serial port.
+    #[cfg(test)]
+    pub(crate) fn spawn_with_session(device: String, session: Session) -> HidHandle {
+        Self::spawn_inner(device, Some(session))
+    }
+
+    fn spawn_inner(device: String, session: Option<Session>) -> HidHandle {
         let (req_tx, req_rx) = mpsc::channel(REQ_CAP);
         let (transcript, _) = broadcast::channel(TRANSCRIPT_CAP);
         let handle = HidHandle {
@@ -91,15 +103,23 @@ impl HidHandle {
             transcript: transcript.clone(),
             device: device.clone(),
         };
-        thread::spawn(move || run(device, req_rx, transcript));
+        thread::spawn(move || run(device, session, req_rx, transcript));
         handle
     }
 
     /// Submit one command line and await the reply (the `OK` data, or the
     /// `ERR`/transport message). The line must not contain a newline. The
-    /// wait is bounded by [`SEND_TIMEOUT`].
+    /// wait is bounded by the line's [`budget`] (it grows with the text of a
+    /// `type`), so a request the owner never answers cannot hang every later
+    /// client queued behind it.
+    ///
+    /// Dropping the returned future (a WebSocket client that closed, an HTTP
+    /// client that disconnected) or letting the bound expire closes the
+    /// request's reply channel, which cancels the command if it is already
+    /// running on the wire (#328).
     pub async fn send(&self, line: String) -> Result<String, String> {
-        self.send_within(line, SEND_TIMEOUT).await
+        let limit = budget(&line);
+        self.send_within(line, limit).await
     }
 
     /// [`send`](Self::send) with an explicit bound on the wait.
@@ -118,10 +138,7 @@ impl HidHandle {
         };
         match tokio::time::timeout(limit, round_trip).await {
             Ok(result) => result,
-            Err(_) => Err(format!(
-                "hid daemon did not answer within {} s",
-                limit.as_secs()
-            )),
+            Err(_) => Err(format!("{DAEMON_TIMEOUT_PREFIX} {} s", limit.as_secs())),
         }
     }
 
@@ -214,10 +231,14 @@ fn retry_once_on_timeout<F: FnMut() -> Result<String, String>>(
 /// is the policy the owner applies to every dequeued line; it is a free
 /// function so the retry decision can be exercised against a fake serial
 /// transport in tests.
-fn execute_line_with_retry(s: &mut Session, line: &str) -> Result<String, String> {
+fn execute_line_with_retry(
+    s: &mut Session,
+    line: &str,
+    cancel: Cancel<'_>,
+) -> Result<String, String> {
     let idempotent = is_idempotent_query(line);
     retry_once_on_timeout(idempotent, || {
-        execute_line(s, line).map_err(|e| e.to_string())
+        execute_line_cancellable(s, line, cancel).map_err(|e| e.to_string())
     })
 }
 
@@ -255,6 +276,12 @@ fn handle_release(session: &mut Option<Session>, reopen: impl FnOnce() -> Result
 /// target after the fact (issue #174). Otherwise it opens the session lazily,
 /// executes under the retry policy, drops the session on a transport error so
 /// the next request reopens it, broadcasts the outcome, and answers the caller.
+///
+/// A command already running is cancelled the same way a queued one is
+/// skipped: the session polls `reply.is_closed()` between HID reports (#328).
+/// A cancelled command has released what it pressed and its outcome is
+/// broadcast as an error event; it is not a transport error, so the link stays
+/// open.
 fn serve_line(
     session: &mut Option<Session>,
     last_baud: &mut Option<u32>,
@@ -284,12 +311,14 @@ fn serve_line(
     }
 
     let s = session.as_mut().unwrap();
-    let result = execute_line_with_retry(s, &line);
+    let result = execute_line_with_retry(s, &line, &|| reply.is_closed());
     // Recorded after every command: a `baud` command moves the chip, and the
     // next reopen must probe where it went.
     *last_baud = Some(s.baud());
     if let Err(ref msg) = result {
-        if is_transport_error(msg) {
+        if is_cancelled(msg) {
+            info!("ch9329 cancelled {line:?}: its client went away");
+        } else if is_transport_error(msg) {
             warn!("ch9329 UART transport error, will reopen: {msg}");
             *session = None;
         }
@@ -300,8 +329,12 @@ fn serve_line(
 
 /// The owner loop (blocking thread): drain requests, execute each against the
 /// one persistent [`Session`], broadcast the outcome.
-fn run(device: String, mut req_rx: mpsc::Receiver<Request>, transcript: broadcast::Sender<Event>) {
-    let mut session: Option<Session> = None;
+fn run(
+    device: String,
+    mut session: Option<Session>,
+    mut req_rx: mpsc::Receiver<Request>,
+    transcript: broadcast::Sender<Event>,
+) {
     // The rate the last session ran at. After a transport error (adapter
     // replug, target power cycle) the chip is almost always still there, so a
     // reopen probes it first instead of paying the default candidates' failed
@@ -520,7 +553,7 @@ mod tests {
         port.queue_reply(&ack(CMD_KB_GENERAL, &[0x00]));
         let mut s = session_on(port);
 
-        let result = execute_line_with_retry(&mut s, "key ENTER");
+        let result = execute_line_with_retry(&mut s, "key ENTER", &crate::session::never_cancelled);
         assert!(
             result.as_ref().unwrap_err().contains("timed out"),
             "the lost ACK is surfaced, not hidden by a retry: {result:?}"
@@ -612,5 +645,45 @@ mod tests {
             "a request the client abandoned must not reach the target: {:?}",
             log.snapshot()
         );
+    }
+
+    // -- #328: the wait scales with the command ------------------------------
+
+    /// A handle whose owner answers after `delay` (virtual time).
+    fn slow_owner(delay: Duration) -> HidHandle {
+        let (req_tx, mut req_rx) = mpsc::channel(REQ_CAP);
+        let (transcript, _) = broadcast::channel(TRANSCRIPT_CAP);
+        tokio::spawn(async move {
+            while let Some(Request::Line { reply, .. }) = req_rx.recv().await {
+                tokio::time::sleep(delay).await;
+                let _ = reply.send(Ok(String::new()));
+            }
+        });
+        HidHandle {
+            req_tx,
+            transcript,
+            device: "none".into(),
+        }
+    }
+
+    /// A long `type` whose budget exceeds the old fixed 30 s is not given up
+    /// on at 30 s; a short command still is.
+    #[tokio::test(start_paused = true)]
+    async fn the_daemon_wait_scales_with_a_type() {
+        let hid = slow_owner(Duration::from_secs(45));
+        let long = format!("type {}", "x".repeat(500));
+        assert!(budget(&long) > Duration::from_secs(45));
+        assert_eq!(hid.send(long).await, Ok(String::new()));
+        let err = hid.send("ping".into()).await.unwrap_err();
+        assert!(err.starts_with(DAEMON_TIMEOUT_PREFIX), "{err}");
+        assert!(err.ends_with("30 s"), "{err}");
+    }
+
+    /// A cancelled command is not a transport error: it must not make the
+    /// owner drop and reopen the link.
+    #[test]
+    fn a_cancellation_is_not_a_transport_error() {
+        assert!(!is_transport_error(crate::session::CANCELLED));
+        assert!(is_cancelled(crate::session::CANCELLED));
     }
 }
