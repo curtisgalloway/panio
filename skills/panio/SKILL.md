@@ -905,7 +905,13 @@ arguments to it and runs it on the channel's host:
 - **`ch9329`** — the client for CH9329-based KVM devices (Openterface
   Mini-KVM and KVM-Go, Sipeed NanoKVM-USB): `panio hid set -t <name> --cmd
   "ch9329 -d <uart>"`. Same commands; it autodetects the link baud (115200 /
-  57600 / 9600) and adds `info` (target USB enumeration + lock LEDs).
+  57600 / 9600) and adds `info` (target USB enumeration + lock LEDs). Through
+  its daemon, a long `type` gets a longer timeout (10 s + 100 ms per
+  character), and a client that times out or is killed cancels the running
+  command, which releases its keys. After a timeout `ch9329` exits 40
+  (cancelled and confirmed stopped) or 41 (could not confirm; it may still be
+  typing); `panio hid send` shows them as `helper_failed` with `child_exit`
+  40/41.
   On Linux, a `1a86:fe0c` port that does not answer at open gets a
   parser flush (261 zero bytes) and one retry automatically, so a cold
   Openterface needs no manual step; a failure after that carries a startup
@@ -1151,6 +1157,10 @@ the device is free just because a daemon is gone from the tracked list.
   panio-managed device by hand (`ifconfig`/`ip`/`ethtool` on the netboot
   interface, `screen`/`tio` on a serial port, `kill` on a daemon) — it desyncs
   the daemon. Use `netif mode …`, `serial log`/`send`, `daemons stop`.
+- `hid send` ending `helper_failed` with `child_exit` 41 (`ch9329`) means the
+  send timed out and the daemon could not be shown to have stopped typing:
+  check the target before sending more, and send `releaseall`. `child_exit`
+  40 means it did stop.
 - `doctor` flags a channel that still works? Believe the working channel and
   report the discrepancy — never rewrite the lab config to silence `doctor`.
 - Serial port is exclusive: one of `connect` / `watch` / external `tio`/`screen`.

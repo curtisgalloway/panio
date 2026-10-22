@@ -61,6 +61,8 @@ windows-sys = { version = "0.59", features = [
 [dev-dependencies]
 # tower::ServiceExt::oneshot drives the auth layer in src/auth.rs's tests.
 tower = { version = "0.5", features = ["util"] }
+# A paused clock lets a test cross the daemon's 30 s wait without waiting.
+tokio = { version = "1", features = ["test-util"] }
 
 [profile.release]
 opt-level = 3

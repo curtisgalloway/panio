@@ -127,6 +127,33 @@ async fn hid_ws(ws: WebSocketUpgrade, State(s): State<AppState>) -> Response {
         .on_upgrade(move |socket| handle_ws(socket, s.hid))
 }
 
+/// What one inbound WebSocket item means for [`handle_ws`].
+enum Inbound {
+    /// A command line to run.
+    Line(String),
+    /// Nothing to do (blank line, ping, binary).
+    Skip,
+    /// The client closed the socket or the connection failed.
+    Gone,
+}
+
+fn next_line(msg: Option<Result<Message, axum::Error>>) -> Inbound {
+    match msg {
+        Some(Ok(Message::Text(t))) => {
+            // Only a line terminator is stripped: a `type` line's trailing
+            // spaces are part of its text.
+            let line = t.trim_end_matches(['\r', '\n']).to_string();
+            if line.trim().is_empty() {
+                Inbound::Skip
+            } else {
+                Inbound::Line(line)
+            }
+        }
+        Some(Ok(Message::Close(_))) | Some(Err(_)) | None => Inbound::Gone,
+        Some(Ok(_)) => Inbound::Skip,
+    }
+}
+
 /// Per-client WebSocket loop. Inbound text frames are command lines executed
 /// against the shared UART owner; each gets a one-frame reply. Concurrently we
 /// push transcript events for commands injected by everyone else.
@@ -155,19 +182,34 @@ async fn handle_ws(socket: WebSocket, hid: HidHandle) {
     // single broadcast `evt ok/err …` frame, so the issuer sees its own result
     // there too — no separate per-issuer reply channel is needed, and all
     // clients observe one consistent intermixed transcript.
+    //
+    // While a command is in flight the socket is still read: a close (or a
+    // dead connection) drops the `send` future, which closes the request's
+    // reply channel and cancels the command on the wire (#328). Text frames
+    // that arrive meanwhile are queued and run in order afterwards.
     let mut recv_task = tokio::spawn(async move {
-        while let Some(Ok(msg)) = receiver.next().await {
-            let line = match msg {
-                // Only a line terminator is stripped: a `type` line's trailing
-                // spaces are part of its text.
-                Message::Text(t) => t.trim_end_matches(['\r', '\n']).to_string(),
-                Message::Close(_) => break,
-                _ => continue,
+        let mut pending: std::collections::VecDeque<String> = Default::default();
+        loop {
+            let line = match pending.pop_front() {
+                Some(line) => line,
+                None => match next_line(receiver.next().await) {
+                    Inbound::Line(line) => line,
+                    Inbound::Skip => continue,
+                    Inbound::Gone => return,
+                },
             };
-            if line.trim().is_empty() {
-                continue;
+            let send = hid.send(line); // result is broadcast as an `evt` frame
+            tokio::pin!(send);
+            loop {
+                tokio::select! {
+                    _ = &mut send => break,
+                    msg = receiver.next() => match next_line(msg) {
+                        Inbound::Line(line) => pending.push_back(line),
+                        Inbound::Skip => {}
+                        Inbound::Gone => return,
+                    },
+                }
             }
-            let _ = hid.send(line).await; // result is broadcast as an `evt` frame
         }
     });
 
@@ -254,5 +296,207 @@ mod tests {
             StatusCode::OK,
             "a blank /send body is a no-op, not a forwarded command"
         );
+    }
+
+    // -- #328: an in-flight command is cancelled when its requester goes away --
+
+    use crate::session::test_support::{session_on, FakePort, WriteLog};
+    use std::time::Duration;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpStream;
+
+    /// A 300-character `type` on a fake port: ~15 ms per character, so about
+    /// five seconds if nothing stops it.
+    fn long_type() -> String {
+        format!("type {}", "abcdefghij".repeat(30))
+    }
+
+    /// The real router on a loopback port, backed by the real owner thread
+    /// running over an auto-acknowledging fake serial port.
+    async fn serve() -> (u16, HidHandle, WriteLog) {
+        let log = WriteLog::default();
+        let hid =
+            HidHandle::spawn_with_session("fake".into(), session_on(FakePort::acking(log.clone())));
+        let app = router(
+            AppState { hid: hid.clone() },
+            crate::auth::Auth::new("test-token".into(), &[]),
+        )
+        .layer(Extension(Arc::new(tokio::sync::Notify::new())));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        (port, hid, log)
+    }
+
+    /// Open a connection and write a raw `POST /send` for `line`, without
+    /// reading the response.
+    async fn post_raw(port: u16, line: &str) -> TcpStream {
+        let mut sock = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        let req = format!(
+            "POST /send HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\
+             Authorization: Bearer test-token\r\nContent-Length: {}\r\n\r\n{line}",
+            line.len()
+        );
+        sock.write_all(req.as_bytes()).await.unwrap();
+        sock
+    }
+
+    /// Wait for the transcript event that reports the command cancelled.
+    async fn wait_cancelled(events: &mut tokio::sync::broadcast::Receiver<crate::uart::Event>) {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let ev = events.recv().await.unwrap();
+                if !ev.ok && crate::session::is_cancelled(&ev.reply) {
+                    return;
+                }
+            }
+        })
+        .await
+        .expect("no cancellation event: the in-flight command was not cancelled");
+    }
+
+    /// Keyboard reports (`CMD_KB_GENERAL`) in the wire log.
+    fn keyboard_frames(log: &WriteLog) -> Vec<Vec<u8>> {
+        log.snapshot()
+            .into_iter()
+            .filter(|w| w[3] == 0x02)
+            .collect()
+    }
+
+    /// Whether a keyboard frame holds no modifier and no key.
+    fn keyboard_is_clear(frame: &[u8]) -> bool {
+        frame[5..13].iter().all(|&b| b == 0)
+    }
+
+    /// The mechanism, and acceptance check 1: an HTTP client that drops its
+    /// connection mid-`type` (what a SIGKILLed CLI does) makes the daemon
+    /// stop writing keyboard reports and leave the keys released.
+    #[tokio::test]
+    async fn dropped_http_client_cancels_a_running_type() {
+        let (port, hid, log) = serve().await;
+        let mut events = hid.subscribe();
+        let line = long_type();
+        let sock = post_raw(port, &line).await;
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        let during = keyboard_frames(&log).len();
+        assert!(during > 4, "the type should be under way, saw {during}");
+        drop(sock);
+        wait_cancelled(&mut events).await;
+        let at_cancel = log.snapshot().len();
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert_eq!(
+            log.snapshot().len(),
+            at_cancel,
+            "reports kept flowing after the cancellation was acknowledged"
+        );
+        let frames = keyboard_frames(&log);
+        assert!(
+            frames.len() < 2 * 300,
+            "the whole 300 characters were typed ({} reports)",
+            frames.len()
+        );
+        assert!(
+            keyboard_is_clear(frames.last().unwrap()),
+            "the last keyboard report must release every key"
+        );
+    }
+
+    /// Acceptance check 2: a `releaseall` queued behind the cancelled command
+    /// reaches the wire only after the cancelled command stopped writing, and
+    /// is the last frame.
+    #[tokio::test]
+    async fn release_after_a_cancel_runs_after_the_command_stopped() {
+        let (port, hid, log) = serve().await;
+        let mut events = hid.subscribe();
+        let sock = post_raw(port, &long_type()).await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        drop(sock);
+        // Queued behind the in-flight type, as a harness's cleanup would be.
+        let release = tokio::time::timeout(Duration::from_secs(10), hid.send("releaseall".into()));
+        let ok = release.await.expect("releaseall answered").is_ok();
+        assert!(ok);
+        wait_cancelled(&mut events).await;
+        let writes = log.snapshot();
+        let last = writes.last().unwrap();
+        assert_eq!(last[3], 0x02);
+        assert!(keyboard_is_clear(last));
+        // Nothing but the cancelled type's frames precede the releaseall, and
+        // the type's own last frame was already a release: the releaseall is
+        // the single frame after the cancellation point.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(
+            log.snapshot().len(),
+            writes.len(),
+            "no frame after releaseall"
+        );
+        let typed = writes.len() - 1;
+        assert!(
+            typed < 2 * 300,
+            "the type ran to completion ({typed} frames)"
+        );
+    }
+
+    /// Keys held earlier with `down` stay held through a cancelled `type`.
+    #[tokio::test]
+    async fn a_cancel_keeps_keys_held_earlier() {
+        let (port, hid, log) = serve().await;
+        let mut events = hid.subscribe();
+        hid.send("down LEFT_SHIFT".into()).await.unwrap();
+        let sock = post_raw(port, &long_type()).await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        drop(sock);
+        wait_cancelled(&mut events).await;
+        let frames = keyboard_frames(&log);
+        let last = frames.last().unwrap();
+        assert_eq!(last[5], crate::keys::MOD_LEFT_SHIFT, "shift still held");
+        assert!(last[7..13].iter().all(|&b| b == 0), "no stray key");
+    }
+
+    const WS_KEY: &str = "dGhlIHNhbXBsZSBub25jZQ==";
+
+    /// A masked client text frame (the mask is all zero, which RFC 6455 allows).
+    fn ws_text_frame(payload: &str) -> Vec<u8> {
+        let mut f = vec![0x81];
+        let n = payload.len();
+        if n < 126 {
+            f.push(0x80 | n as u8);
+        } else {
+            f.push(0x80 | 126);
+            f.extend_from_slice(&(n as u16).to_be_bytes());
+        }
+        f.extend_from_slice(&[0, 0, 0, 0]);
+        f.extend_from_slice(payload.as_bytes());
+        f
+    }
+
+    /// Acceptance check 3: a WebSocket client that closes its socket while a
+    /// `type` is running cancels it.
+    #[tokio::test]
+    async fn closed_websocket_cancels_a_running_type() {
+        let (port, hid, log) = serve().await;
+        let mut events = hid.subscribe();
+        let mut sock = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        let req = format!(
+            "GET /hid HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\
+             Authorization: Bearer test-token\r\nConnection: Upgrade\r\n\
+             Upgrade: websocket\r\nSec-WebSocket-Version: 13\r\n\
+             Sec-WebSocket-Key: {WS_KEY}\r\n\r\n"
+        );
+        sock.write_all(req.as_bytes()).await.unwrap();
+        let mut head = [0u8; 12];
+        sock.read_exact(&mut head).await.unwrap();
+        assert!(head.starts_with(b"HTTP/1.1 101"), "{head:?}");
+        sock.write_all(&ws_text_frame(&long_type())).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        assert!(
+            keyboard_frames(&log).len() > 4,
+            "the type should be under way"
+        );
+        sock.write_all(&[0x88, 0x80, 0, 0, 0, 0]).await.unwrap(); // Close
+        wait_cancelled(&mut events).await;
+        let at_cancel = log.snapshot().len();
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert_eq!(log.snapshot().len(), at_cancel);
+        assert!(keyboard_is_clear(keyboard_frames(&log).last().unwrap()));
     }
 }

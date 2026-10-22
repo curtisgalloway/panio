@@ -88,6 +88,19 @@ it (`apt upgrade`, then deliberately restart the affected capture daemon by
 name, such as `panio daemons restart serialcap`). `--stale` selects only
 proven content differences and skips unknown binary identity.
 
+## Helper exit statuses
+
+`panio hid send` reports any non-zero exit of the `hid` helper as 101
+`helper_failed`, with the helper's own status in `child_exit`. `ch9329` uses
+two statuses beyond 1 so a caller can tell what a timed-out send left behind:
+
+| `child_exit` | Meaning |
+|---|---|
+| 40 | The send timed out; the daemon cancelled the command and confirmed it stopped. Held keys the command pressed are released. |
+| 41 | The send timed out and the daemon could not be shown to have stopped. The target may still be receiving input. |
+
+See [hid.md](hid.md).
+
 ## Passthrough commands
 
 These exit with **the program's** status, like `ssh host cmd`:
