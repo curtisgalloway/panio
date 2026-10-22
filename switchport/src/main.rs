@@ -78,8 +78,9 @@ does not.
   - Secrets come from the environment, a file, or a command, never a flag value: \
 SWITCHPORT_PASSWORD / --password-file / --password-command (easysmart) and \
 SWITCHPORT_COMMUNITY / --community-file / --community-command (snmp; needed for SET).
-  - Easy Smart is cleartext HTTP with sessions bound to the client IP: isolated bench \
-networks only. Logging in from here can end a browser session from the same host.
+  - Easy Smart (TL-SG108PE, TL-SG205E) is cleartext HTTP; the older web UI binds the session \
+to the client IP, the 2025 one uses a cookie (detected at login): isolated bench networks \
+only. Logging in from here can end a browser session from the same host.
 
 TYPICAL USE
   switchport -d 192.0.2.2 --mgmt-port 8 port 3 off

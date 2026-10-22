@@ -27,11 +27,30 @@ use crate::ops::{err, Backend, Kind, PortStatus};
 /// Hardware/firmware pairs the helper will drive. TP-Link changes these
 /// pages between hardware versions, so unknown pairs are refused.
 /// `(hardwareStr contains, firmwareStr starts with)`.
-const ALLOWED: &[(&str, &str)] = &[("TL-SG108PE 3.0", "1.0.0 Build 20200415")];
+const ALLOWED: &[(&str, &str)] = &[
+    ("TL-SG108PE 3.0", "1.0.0 Build 20200415"),
+    ("TL-SG205E 1.0", "1.0.1 Build 20250609"),
+];
 
 /// Logins one process may attempt: the first, plus one re-login after an
 /// expired session, plus a spare for a session lost between two pages.
 const MAX_LOGINS: u32 = 3;
+
+/// The 2025 firmware silently rejects a login POST that does not look like
+/// it came from a browser; which of Origin, Referer and User-Agent it checks
+/// is unknown, so all three are sent on every login.
+const USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 \
+                          (KHTML, like Gecko) Chrome/130.0 Safari/537.36";
+
+/// Which web UI the switch speaks, learned from the login reply.
+#[derive(Debug, Clone, PartialEq)]
+enum Ui {
+    /// 2020 firmware: `*Rpm.htm` pages, session bound to the client IP.
+    Old,
+    /// 2025 firmware: `sys_*.html` pages and `portCur.xml`, session is the
+    /// `Cookies=<token>` cookie (stored here as `Cookies=<token>`).
+    New(String),
+}
 
 pub struct EasySmart {
     base: String,
@@ -40,6 +59,9 @@ pub struct EasySmart {
     password: String,
     allow_unknown: bool,
     logins: u32,
+    ui: Option<Ui>,
+    /// True from a login until the next page that is not the login page.
+    fresh: bool,
     identity: Option<String>,
 }
 
@@ -55,6 +77,8 @@ impl EasySmart {
             password: password.to_string(),
             allow_unknown,
             logins: 0,
+            ui: None,
+            fresh: false,
             identity: None,
         }
     }
@@ -77,17 +101,20 @@ impl EasySmart {
     }
 
     fn http_get(&self, path: &str) -> Result<String> {
-        let resp = self
-            .agent
-            .get(&self.url(path))
-            .call()
-            .map_err(|e| self.map_transport(e))?;
+        let mut req = self.agent.get(&self.url(path));
+        if let Some(Ui::New(cookie)) = &self.ui {
+            req = req
+                .set("Cookie", cookie)
+                .set("Referer", &format!("{}/homepage.html", self.base))
+                .set("User-Agent", USER_AGENT);
+        }
+        let resp = req.call().map_err(|e| self.map_transport(e))?;
         resp.into_string()
             .map_err(|e| err(Kind::Unreachable, format!("reading {path}: {e}")))
     }
 
-    /// Log in. A bad password is reported once and never retried: the switch
-    /// counts failures.
+    /// Log in and learn which UI the switch speaks. A bad password is
+    /// reported once and never retried: the switch counts failures.
     fn login(&mut self) -> Result<()> {
         if self.logins >= MAX_LOGINS {
             return Err(err(
@@ -99,6 +126,9 @@ impl EasySmart {
         let resp = self
             .agent
             .post(&self.url("/logon.cgi"))
+            .set("Origin", &self.base)
+            .set("Referer", &format!("{}/index.html", self.base))
+            .set("User-Agent", USER_AGENT)
             .send_form(&[
                 ("username", self.user.as_str()),
                 ("password", self.password.as_str()),
@@ -106,36 +136,80 @@ impl EasySmart {
                 ("logon", "Login"),
             ])
             .map_err(|e| self.map_transport(e))?;
+        let set_cookie = resp.header("Set-Cookie").map(str::to_string);
         let body = resp
             .into_string()
             .map_err(|e| err(Kind::Unreachable, format!("reading login reply: {e}")))?;
-        match logon_code(&body) {
-            Some(0) => Ok(()),
-            Some(1) => Err(err(
+        if body.contains("logonInfo") {
+            return match logon_code(&body) {
+                Some(0) => {
+                    self.ui = Some(Ui::Old);
+                    self.fresh = true;
+                    Ok(())
+                }
+                Some(1) => Err(rejected(&self.user)),
+                Some(n) => Err(err(
+                    Kind::Failed,
+                    format!("the switch refused the login with error code {n} (not retrying)"),
+                )),
+                None => Err(no_login_info()),
+            };
+        }
+        match allow_code(&body) {
+            Some(1) => {
+                let cookie = set_cookie
+                    .as_deref()
+                    .and_then(|c| c.split(';').next())
+                    .map(str::trim)
+                    .filter(|c| c.starts_with("Cookies="));
+                let Some(cookie) = cookie else {
+                    return Err(err(
+                        Kind::Failed,
+                        "the switch accepted the login but set no Cookies= session cookie",
+                    ));
+                };
+                self.ui = Some(Ui::New(cookie.to_string()));
+                self.fresh = true;
+                Ok(())
+            }
+            Some(0) => Err(rejected(&self.user)),
+            Some(2) => Err(err(
                 Kind::Failed,
-                format!(
-                    "the switch rejected the username or password for {:?} (not retrying: \
-                     repeated failed logins can lock the web UI out)",
-                    self.user
-                ),
+                "the switch demands a first-login password change before it can be driven; \
+                 finish the setup in a web browser, then retry (not retrying)",
             )),
             Some(n) => Err(err(
                 Kind::Failed,
-                format!("the switch refused the login with error code {n} (not retrying)"),
+                format!("the switch refused the login with code {n} (not retrying)"),
             )),
-            None => Err(err(
-                Kind::Failed,
-                "the switch's login reply had no logonInfo; is this an Easy Smart switch?",
-            )),
+            None => Err(no_login_info()),
         }
     }
 
-    /// GET a protected page. The login page coming back means the session is
-    /// missing or expired: log in and ask again, once.
-    fn fetch(&mut self, path: &str, marker: Option<&str>) -> Result<String> {
-        let mut body = self.http_get(path)?;
-        if is_login_page(&body) {
+    fn is_new(&self) -> bool {
+        matches!(self.ui, Some(Ui::New(_)))
+    }
+
+    /// GET a protected page; `old` and `new` are its path on each UI. The UI
+    /// is unknown until a login, and the old pages answer the new UI with an
+    /// empty reply, so the first fetch logs in. The login page (or the new
+    /// UI's logged-out stub) coming back later means the session expired: log
+    /// in and ask again, once.
+    fn fetch(&mut self, old: &str, new: &str, marker: Option<&str>) -> Result<String> {
+        if self.ui.is_none() {
             self.login()?;
+        }
+        let path = if self.is_new() { new } else { old }.to_string();
+        let mut body = self.http_get(&path)?;
+        if is_login_page(&body) {
+            if self.fresh {
+                return Err(err(
+                    Kind::Failed,
+                    format!("the switch returned its login page for {path} right after a successful login"),
+                ));
+            }
+            self.login()?;
+            let path = if self.is_new() { new } else { old };
             body = self.http_get(path)?;
             if is_login_page(&body) {
                 return Err(err(
@@ -144,6 +218,7 @@ impl EasySmart {
                 ));
             }
         }
+        self.fresh = false;
         if let Some(m) = marker {
             if !body.contains(m) {
                 return Err(err(
@@ -156,8 +231,17 @@ impl EasySmart {
     }
 
     fn ports(&mut self) -> Result<PortTable> {
-        let body = self.fetch("/PortSettingRpm.htm", Some("all_info"))?;
-        parse_ports(&body)
+        let body = self.fetch(
+            "/PortSettingRpm.htm",
+            "/sys_portsetting.html",
+            Some("all_info"),
+        )?;
+        let mut t = parse_ports(&body)?;
+        if self.is_new() {
+            let cur = self.fetch("/portCur.xml", "/portCur.xml", None)?;
+            t.spd_act = parse_port_cur(&cur, t.count)?;
+        }
+        Ok(t)
     }
 
     fn index(&mut self, port: u32) -> Result<(PortTable, usize)> {
@@ -175,12 +259,29 @@ impl EasySmart {
     }
 }
 
+fn rejected(user: &str) -> anyhow::Error {
+    err(
+        Kind::Failed,
+        format!(
+            "the switch rejected the username or password for {user:?} (not retrying: \
+             repeated failed logins can lock the web UI out)"
+        ),
+    )
+}
+
+fn no_login_info() -> anyhow::Error {
+    err(
+        Kind::Failed,
+        "the switch's login reply had neither logonInfo nor allow; is this an Easy Smart switch?",
+    )
+}
+
 impl Backend for EasySmart {
     fn check_identity(&mut self) -> Result<String> {
         if let Some(i) = &self.identity {
             return Ok(i.clone());
         }
-        let body = self.fetch("/SystemInfoRpm.htm", Some("info_ds"))?;
+        let body = self.fetch("/SystemInfoRpm.htm", "/sys_SystemInfoRpm.html", None)?;
         let info = parse_system_info(&body)?;
         let desc = format!(
             "{} (hardware {}, firmware {})",
@@ -219,11 +320,16 @@ impl Backend for EasySmart {
 
     fn set_admin(&mut self, port: u32, up: bool) -> Result<()> {
         self.index(port)?;
-        let path = format!(
+        let old = format!(
             "/port_setting.cgi?portid={port}&state={}&speed=7&flowcontrol=7&apply=Apply",
             u8::from(up)
         );
-        self.fetch(&path, None)?;
+        let new = format!(
+            "/port_setting.cgi?port_bit={}&state={}",
+            1u32 << (port - 1),
+            u8::from(up)
+        );
+        self.fetch(&old, &new, None)?;
         Ok(())
     }
 
@@ -268,8 +374,19 @@ fn logon_code(body: &str) -> Option<i64> {
     digits.parse().ok()
 }
 
+/// The new UI's login reply and logged-out stub embed `var allow = N;`
+/// (1 logged in, 0 rejected or logged out, 2 password change required).
+fn allow_code(body: &str) -> Option<i64> {
+    let rest = &body[body.find("var allow")? + "var allow".len()..];
+    let rest = rest.trim_start().strip_prefix('=')?.trim_start();
+    let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+    digits.parse().ok()
+}
+
+/// The old UI answers a missing session with its login form (`logon.cgi`);
+/// the new one with a stub that has `var allow = 0` and no form.
 fn is_login_page(body: &str) -> bool {
-    body.to_ascii_lowercase().contains("logon.cgi")
+    body.to_ascii_lowercase().contains("logon.cgi") || allow_code(body) == Some(0)
 }
 
 fn identity_allowed(hardware: &str, firmware: &str) -> bool {
@@ -305,7 +422,10 @@ struct SystemInfo {
 }
 
 fn parse_system_info(body: &str) -> Result<SystemInfo> {
-    let obj = extract(body, "info_ds")?;
+    let (obj, desc_key) = match extract(body, "info_ds") {
+        Ok(o) => (o, "descriStr"),
+        Err(_) => (extract(body, "data_info")?, "sysnameStr"),
+    };
     let s = |k: &str| {
         obj.get(k)
             .and_then(Js::first_str)
@@ -313,7 +433,7 @@ fn parse_system_info(body: &str) -> Result<SystemInfo> {
             .to_string()
     };
     Ok(SystemInfo {
-        description: s("descriStr"),
+        description: s(desc_key),
         hardware: s("hardwareStr"),
         firmware: s("firmwareStr"),
     })
@@ -333,12 +453,16 @@ fn parse_ports(body: &str) -> Result<PortTable> {
     let mut spd_act = ints("spd_act");
     let count = match extract(body, "max_port_num") {
         Ok(Js::Num(n)) if n > 0 => n as usize,
+        Ok(Js::Arr(a)) => match a.first() {
+            Some(Js::Num(n)) if *n > 0 => *n as usize,
+            _ => state.len(),
+        },
         _ => state.len(),
     };
     if count == 0 || state.len() < count {
         return Err(err(
             Kind::Failed,
-            "PortSettingRpm.htm: could not read the per-port state; unexpected page",
+            "port settings page: could not read the per-port state; unexpected page",
         ));
     }
     spd_act.resize(count.max(spd_act.len()), 0);
@@ -347,6 +471,45 @@ fn parse_ports(body: &str) -> Result<PortTable> {
         state,
         spd_act,
     })
+}
+
+/// `portCur.xml` (new UI): four `&`-separated groups of comma-separated
+/// per-port values, link, speed (1 = 10M, 2 = 100M, 3 = 1000M), duplex
+/// (0 half, 1 full) and flow control. Returned in the old UI's `spd_act`
+/// numbering so one `speed_name` serves both: 0 link down, 2/3 = 10M
+/// half/full, 4/5 = 100M, 6 = 1000M; an unknown speed becomes 100 + code.
+fn parse_port_cur(body: &str, count: usize) -> Result<Vec<i64>> {
+    let groups: Vec<Vec<i64>> = body
+        .trim()
+        .split('&')
+        .map(|g| {
+            g.split(',')
+                .filter(|v| !v.trim().is_empty())
+                .map(|v| v.trim().parse().unwrap_or(-1))
+                .collect()
+        })
+        .collect();
+    if groups.len() < 3 || groups[0].len() < count || groups[1].len() < count {
+        return Err(err(
+            Kind::Failed,
+            "portCur.xml: could not read per-port link and speed; unexpected page",
+        ));
+    }
+    let duplex = |i: usize| groups[2].get(i).copied().unwrap_or(1);
+    Ok((0..count)
+        .map(|i| {
+            if groups[0][i] != 1 {
+                return 0;
+            }
+            let half = duplex(i) == 0;
+            match groups[1][i] {
+                1 => 3 - i64::from(half),
+                2 => 5 - i64::from(half),
+                3 => 6,
+                n => 100 + n,
+            }
+        })
+        .collect())
 }
 
 /// A parsed JavaScript literal; only what the switch's pages use.
@@ -573,6 +736,14 @@ mod tests {
         hardware: String,
         firmware: String,
         requests: Vec<String>,
+        /// Speak the 2025 web UI.
+        new_ui: bool,
+        /// The new UI's valid session cookie, if any.
+        cookie: Option<String>,
+        /// Make the new UI answer a good login with this `allow` code.
+        force_allow: Option<i64>,
+        /// Cookie and Referer headers seen on protected new-UI requests.
+        bad_headers: usize,
     }
 
     impl Fake {
@@ -606,6 +777,52 @@ mod tests {
             )
         }
 
+        fn info_page_new(&self) -> String {
+            format!(
+                "<!DOCTYPE html><html> <script>var data_info = {{sysnameStr:[\"TL-SG205E\"],\
+                 macStr:[\"00:11:22:33:44:55\"],ipStr:[\"192.0.2.10\"],firmwareStr:[\"{}\"], \
+                 hardwareStr:[\"{}\"],serialNum:[\"AA00BB11CC22\"]}};\nvar tip = \"\";\n</script>",
+                self.firmware, self.hardware
+            )
+        }
+
+        fn ports_page_new(&self) -> String {
+            let arr = |v: &[i64]| v.iter().map(|n| format!("{n},")).collect::<String>();
+            format!(
+                "<!DOCTYPE html><html> <script>\nvar max_port_num = [{}];\n\
+                 var all_info = {{\nstate:[{}],\nspd_cfg:[0,0,0,0,0,],\n}};\nvar tip = \"\";\n</script>",
+                self.state.len(),
+                arr(&self.state)
+            )
+        }
+
+        fn port_cur(&self) -> String {
+            let up = |v: &[i64]| {
+                v.iter()
+                    .map(|n| format!("{},", i64::from(*n != 0)))
+                    .collect::<String>()
+            };
+            let each = |x: i64| {
+                self.link
+                    .iter()
+                    .map(|n| {
+                        if *n != 0 {
+                            format!("{x},")
+                        } else {
+                            "0,".into()
+                        }
+                    })
+                    .collect::<String>()
+            };
+            format!(
+                "{}&{}&{}&{}&",
+                up(&self.link),
+                each(3),
+                each(1),
+                "0,".repeat(self.link.len())
+            )
+        }
+
         fn info_page(&self) -> String {
             format!(
                 "<script>var info_ds = {{\ndescriStr:[\"TL-SG108PE\"],\nmacStr:[\"00-11-22-33-44-55\"],\n\
@@ -624,28 +841,109 @@ mod tests {
             .find_map(|kv| kv.strip_prefix(&format!("{key}=")).map(str::to_string))
     }
 
-    fn handle(fake: &Arc<Mutex<Fake>>, head: &str, body: &str) -> String {
+    const LOGGED_OUT: &str = "<!DOCTYPE html><html> <script>var allow = 0;</script> <script>function redirect(){top.location.href=\"index.html\"}</script><body onload=\"redirect()\"></body></html>";
+
+    fn header(head: &str, name: &str) -> Option<String> {
+        head.lines().skip(1).find_map(|l| {
+            let (k, v) = l.split_once(':')?;
+            k.eq_ignore_ascii_case(name).then(|| v.trim().to_string())
+        })
+    }
+
+    /// The 2025 UI: browser headers on login, cookie session, new page
+    /// names; the old `*Rpm.htm` pages get no reply at all (`None`).
+    fn handle_new(f: &mut Fake, head: &str, body: &str, method: &str, target: &str) -> Reply {
+        if method == "POST" && target == "/logon.cgi" {
+            let browserish = header(head, "origin")
+                .is_some_and(|o| o.starts_with("http://127.0.0.1:"))
+                && header(head, "referer").is_some_and(|r| r.ends_with("/index.html"))
+                && header(head, "user-agent").is_some_and(|u| u.starts_with("Mozilla/5.0"));
+            let ok = browserish
+                && body.contains("username=admin")
+                && body.contains("password=secret")
+                && body.contains("logon=Login");
+            let page =
+                |n: i64| format!("<!DOCTYPE html><html> <script>var allow = {n};</script></html>");
+            if !ok {
+                return Some((page(0), vec![]));
+            }
+            if let Some(n) = f.force_allow {
+                return Some((page(n), vec![]));
+            }
+            let tok = format!("tok{}", f.logon_count());
+            f.cookie = Some(tok.clone());
+            return Some((
+                page(1),
+                vec![("Set-cookie".into(), format!("Cookies={tok}; path=/"))],
+            ));
+        }
+        let (path, query) = target.split_once('?').unwrap_or((target, ""));
+        if !matches!(
+            path,
+            "/sys_SystemInfoRpm.html"
+                | "/sys_portsetting.html"
+                | "/portCur.xml"
+                | "/port_setting.cgi"
+        ) {
+            return None;
+        }
+        let authed = f
+            .cookie
+            .as_ref()
+            .is_some_and(|c| header(head, "cookie").as_deref() == Some(&format!("Cookies={c}")));
+        if !authed {
+            return Some((LOGGED_OUT.into(), vec![]));
+        }
+        if !header(head, "referer").is_some_and(|r| r.ends_with("/homepage.html")) {
+            f.bad_headers += 1;
+        }
+        let page = match path {
+            "/sys_SystemInfoRpm.html" => f.info_page_new(),
+            "/sys_portsetting.html" => f.ports_page_new(),
+            "/portCur.xml" => f.port_cur(),
+            _ => {
+                let bit: usize = query_get(query, "port_bit").unwrap().parse().unwrap();
+                let st: i64 = query_get(query, "state").unwrap().parse().unwrap();
+                let id = bit.trailing_zeros() as usize + 1;
+                if !f.ignore_writes {
+                    f.state[id - 1] = st;
+                    if !f.link_stuck {
+                        f.link[id - 1] = if st == 1 && f.plugged[id - 1] { 6 } else { 0 };
+                    }
+                }
+                f.ports_page_new()
+            }
+        };
+        Some((page, vec![]))
+    }
+
+    type Reply = Option<(String, Vec<(String, String)>)>;
+
+    fn handle(fake: &Arc<Mutex<Fake>>, head: &str, body: &str) -> Reply {
         let mut f = fake.lock().unwrap();
         let line = head.lines().next().unwrap().to_string();
         let mut parts = line.split(' ');
         let method = parts.next().unwrap();
         let target = parts.next().unwrap();
         f.requests.push(format!("{method} {target}"));
+        if f.new_ui {
+            return handle_new(&mut f, head, body, method, target);
+        }
         if method == "POST" && target == "/logon.cgi" {
             let ok = body.contains("username=admin")
                 && body.contains("password=secret")
                 && body.contains("logon=Login");
             if ok {
                 f.logged_in = true;
-                return "logonInfo = new Array(0,0,0);".into();
+                return Some(("logonInfo = new Array(0,0,0);".into(), vec![]));
             }
-            return "logonInfo = new Array(1,0,0);".into();
+            return Some(("logonInfo = new Array(1,0,0);".into(), vec![]));
         }
         if !f.logged_in || f.always_login_page {
-            return LOGIN_PAGE.into();
+            return Some((LOGIN_PAGE.into(), vec![]));
         }
         let (path, query) = target.split_once('?').unwrap_or((target, ""));
-        match path {
+        let page = match path {
             "/SystemInfoRpm.htm" => f.info_page(),
             "/PortSettingRpm.htm" => f.ports_page(),
             "/port_setting.cgi" => {
@@ -660,7 +958,8 @@ mod tests {
                 f.ports_page()
             }
             _ => "404".into(),
-        }
+        };
+        Some((page, vec![]))
     }
 
     fn start() -> (Arc<Mutex<Fake>>, String) {
@@ -678,6 +977,10 @@ mod tests {
             hardware: "TL-SG108PE 3.0".into(),
             firmware: "1.0.0 Build 20200415 Rel.34571".into(),
             requests: Vec::new(),
+            new_ui: false,
+            cookie: None,
+            force_allow: None,
+            bad_headers: 0,
         }));
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap().to_string();
@@ -715,15 +1018,34 @@ mod tests {
                     }
                     body.extend_from_slice(&chunk[..n]);
                 }
-                let reply = handle(&shared, &head, &String::from_utf8_lossy(&body));
+                let Some((reply, extra)) = handle(&shared, &head, &String::from_utf8_lossy(&body))
+                else {
+                    continue;
+                };
+                let extra: String = extra.iter().map(|(k, v)| format!("{k}: {v}\r\n")).collect();
                 let _ = write!(
                     s,
-                    "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n{extra}Content-Length: {}\r\nConnection: close\r\n\r\n{}",
                     reply.len(),
                     reply
                 );
             }
         });
+        (fake, addr)
+    }
+
+    /// A fake TL-SG205E speaking the 2025 UI (ports 1 and 3 plugged in).
+    fn start_new() -> (Arc<Mutex<Fake>>, String) {
+        let (fake, addr) = start();
+        {
+            let mut f = fake.lock().unwrap();
+            f.new_ui = true;
+            f.hardware = "TL-SG205E 1.0".into();
+            f.firmware = "1.0.1 Build 20250609 Rel.75246".into();
+            f.state.truncate(5);
+            f.link.truncate(5);
+            f.plugged.truncate(5);
+        }
         (fake, addr)
     }
 
@@ -949,5 +1271,155 @@ mod tests {
             "../tests/fixtures/raw/PortSettingRpm.htm"
         )));
         assert!(is_login_page(logon));
+    }
+
+    #[test]
+    fn new_ui_login_and_status() {
+        let (fake, addr) = start_new();
+        let mut be = client(&addr);
+        let st = ops::port_state(&mut be, 3).unwrap();
+        assert!(st.admin_up && st.link_up);
+        assert_eq!(st.speed.as_deref(), Some("1000M full"));
+        let st = ops::port_state(&mut be, 4).unwrap();
+        assert!(st.admin_up && !st.link_up && st.speed.is_none());
+        let f = fake.lock().unwrap();
+        assert_eq!(f.logon_count(), 1);
+        assert_eq!(f.bad_headers, 0);
+        assert!(
+            !f.requests.iter().any(|r| r.ends_with("Rpm.htm")),
+            "{:?}",
+            f.requests
+        );
+    }
+
+    #[test]
+    fn new_ui_off_and_on_are_verified() {
+        let (fake, addr) = start_new();
+        let mut be = client(&addr);
+        let st = ops::port_set(&mut be, &opts(Some(1), 0), 5, false).unwrap();
+        assert!(!st.admin_up);
+        {
+            let f = fake.lock().unwrap();
+            assert_eq!(f.state[4], 0);
+            assert!(f
+                .requests
+                .iter()
+                .any(|r| r == "GET /port_setting.cgi?port_bit=16&state=0"));
+        }
+        let st = ops::port_set(&mut be, &opts(Some(1), 0), 5, true).unwrap();
+        assert!(st.admin_up);
+        assert_eq!(fake.lock().unwrap().state[4], 1);
+        let st = ops::port_set(&mut be, &opts(Some(1), 1000), 3, false).unwrap();
+        assert!(!st.link_up);
+    }
+
+    #[test]
+    fn new_ui_read_back_mismatch_is_an_error() {
+        let (fake, addr) = start_new();
+        fake.lock().unwrap().ignore_writes = true;
+        let mut be = client(&addr);
+        let e = ops::port_set(&mut be, &opts(Some(1), 0), 3, false).unwrap_err();
+        assert!(format!("{e}").contains("read-back"), "{e}");
+    }
+
+    #[test]
+    fn new_ui_mgmt_port_off_is_refused_without_any_request() {
+        let (fake, addr) = start_new();
+        let mut be = client(&addr);
+        let e = ops::port_set(&mut be, &opts(Some(1), 0), 1, false).unwrap_err();
+        assert_eq!(kind_of(&e), Kind::Usage);
+        assert!(fake.lock().unwrap().requests.is_empty());
+    }
+
+    #[test]
+    fn new_ui_expired_cookie_relogs_in_once() {
+        let (fake, addr) = start_new();
+        let mut be = client(&addr);
+        ops::port_state(&mut be, 3).unwrap();
+        fake.lock().unwrap().cookie = None;
+        ops::port_state(&mut be, 3).unwrap();
+        assert_eq!(fake.lock().unwrap().logon_count(), 2);
+    }
+
+    #[test]
+    fn new_ui_rejected_login_is_not_retried() {
+        let (fake, addr) = start_new();
+        let mut be = EasySmart::new(&addr, "admin", "wrong", false);
+        let e = ops::port_state(&mut be, 3).unwrap_err();
+        assert_eq!(kind_of(&e), Kind::Failed);
+        assert!(format!("{e}").contains("rejected"), "{e}");
+        assert_eq!(fake.lock().unwrap().logon_count(), 1);
+    }
+
+    #[test]
+    fn new_ui_password_change_demand_tells_the_user() {
+        let (fake, addr) = start_new();
+        fake.lock().unwrap().force_allow = Some(2);
+        let mut be = client(&addr);
+        let e = ops::port_state(&mut be, 3).unwrap_err();
+        assert!(format!("{e}").contains("web browser"), "{e}");
+        assert_eq!(fake.lock().unwrap().logon_count(), 1);
+    }
+
+    #[test]
+    fn new_ui_unknown_model_is_refused_before_any_write() {
+        let (fake, addr) = start_new();
+        fake.lock().unwrap().hardware = "TL-SG205E 2.0".into();
+        let mut be = client(&addr);
+        let e = ops::port_set(&mut be, &opts(Some(1), 0), 3, false).unwrap_err();
+        assert!(format!("{e}").contains("unrecognized"), "{e}");
+        assert_eq!(fake.lock().unwrap().writes(), 0);
+        let mut be = EasySmart::new(&addr, "admin", "secret", true);
+        ops::port_set(&mut be, &opts(Some(1), 0), 3, false).unwrap();
+        assert_eq!(fake.lock().unwrap().writes(), 1);
+    }
+
+    #[test]
+    fn port_cur_decoding() {
+        assert_eq!(
+            parse_port_cur("1,0,0,0,1,&3,1,1,1,3,&1,0,0,0,1,&0,0,0,0,0,&", 5).unwrap(),
+            vec![6, 0, 0, 0, 6]
+        );
+        assert_eq!(
+            parse_port_cur("1,1,1,&1,2,2,&0,0,1,&0,0,0,&", 3).unwrap(),
+            vec![2, 4, 5]
+        );
+        assert!(parse_port_cur("1,&", 3).is_err());
+    }
+
+    #[test]
+    fn recorded_sg205e_pages_parse() {
+        let info = parse_system_info(include_str!(
+            "../tests/fixtures/raw/sg205e/sys_SystemInfoRpm.html"
+        ))
+        .unwrap();
+        assert_eq!(info.description, "TL-SG205E");
+        assert!(identity_allowed(&info.hardware, &info.firmware), "{info:?}");
+        let t = parse_ports(include_str!(
+            "../tests/fixtures/raw/sg205e/sys_portsetting.html"
+        ))
+        .unwrap();
+        assert_eq!(t.count, 5);
+        assert_eq!(&t.state[..5], &[1; 5]);
+        let cur = include_str!("../tests/fixtures/raw/sg205e/portCur.xml");
+        assert_eq!(parse_port_cur(cur, 5).unwrap(), vec![6, 0, 0, 0, 6]);
+        let t = parse_ports(include_str!(
+            "../tests/fixtures/raw/sg205e/port_setting-reply.html"
+        ))
+        .unwrap();
+        assert_eq!(&t.state[..5], &[1, 1, 1, 1, 0]);
+        assert_eq!(
+            allow_code(include_str!(
+                "../tests/fixtures/raw/sg205e/logon-success.html"
+            )),
+            Some(1)
+        );
+        let out = include_str!("../tests/fixtures/raw/sg205e/logged-out.html");
+        assert_eq!(allow_code(out), Some(0));
+        assert!(is_login_page(out));
+        assert!(is_login_page(include_str!(
+            "../tests/fixtures/raw/sg205e/login-page.html"
+        )));
+        assert!(!is_login_page(cur));
     }
 }

@@ -46,19 +46,24 @@ or unsupported, 3 not configured (missing secret, or `--mgmt-port` for an
    exit 22 with the admin state already applied and stated in the message.
 4. **Identity pinning (Easy Smart).** `SystemInfoRpm.htm` `info_ds`
    `hardwareStr` must contain and `firmwareStr` start with an `ALLOWED` pair
-   (seed: `TL-SG108PE 3.0` / `1.0.0 Build 20200415`). Anything else is refused
+   (`TL-SG108PE 3.0` / `1.0.0 Build 20200415`; `TL-SG205E 1.0` / `1.0.1 Build
+   20250609`). Anything else is refused
    before any write; `--allow-unknown-model` overrides with a warning.
 5. **Login discipline.** The login page coming back on a GET means no/expired
-   session: log in and ask again once. A failed login (`logonInfo` code 1) is
+   session (old UI) or the logged-out stub `var allow = 0` (new UI): log in
+   and ask again once. A failed login (`logonInfo` code 1, or `allow` 0) is
    never retried. At most 3 logins per process.
 
 ## Easy Smart facts and caveats
 
-- Cleartext HTTP, credentials in a POST body, sessions **bound to the client IP
-  with no cookie**: use isolated bench networks only. Logging in from the helper
-  may end a browser session from the same host (and vice versa).
-- Login is lazy: the helper GETs first and logs in only when handed the login
-  page (detected by `logon.cgi` in the body).
+- Cleartext HTTP, credentials in a POST body: use isolated bench networks only.
+  The 2020 UI (TL-SG108PE) binds the session to the **client IP with no
+  cookie**; the 2025 UI (TL-SG205E) uses a **cookie**. Logging in from the
+  helper may end a browser session from the same host (and vice versa).
+- Both UIs share one backend (`--backend easysmart`). The first page fetch is
+  preceded by a login, whose reply says which UI it is: `logonInfo = new
+  Array(` is the old one, `var allow = N;` the new one. Page paths are then
+  chosen per UI. After that a later login page means an expired session.
 - Write: `GET /port_setting.cgi?portid=N&state=0|1&speed=7&flowcontrol=7&apply=Apply`
   (`7` = unchanged). It returns 200 whether or not anything changed, hence the
   read-back.
@@ -75,9 +80,53 @@ or unsupported, 3 not configured (missing secret, or `--mgmt-port` for an
   The recorded firmware string carries a `Rel.` suffix, hence the prefix match.
   The login-failure reply text (code 1) and the expired-session page were not
   recorded; the helper detects the latter by `logon.cgi` in the body.
+- **Fixtures** for the new UI are in `tests/fixtures/raw/sg205e/` (scrubbed).
 - **PoE is not supported by the easysmart backend yet**: the reference client
   has no PoE page/CGI, so `poe` exits 2 with a "not supported" message. Use
   `--backend snmp` on a switch with POWER-ETHERNET-MIB.
+
+## TP-Link TL-SG205E (2025 web UI) facts
+
+Hardware `TL-SG205E 1.0`, firmware `1.0.1 Build 20250609 Rel.75246`. Recorded
+pages: `tests/fixtures/raw/sg205e/`. The management address at factory state is
+the TP-Link factory default (printed on the label). The firmware forces a
+password change at first login: do it in a browser; the helper reports it
+(login reply `allow` 2) and does not retry.
+
+- **Login.** `POST /logon.cgi`, form `username`, `password`, `logon=Login`. The
+  switch silently rejects the POST (reply `var allow = 0;`) unless it carries
+  browser headers; which of `Origin: <base>`, `Referer: <base>/index.html` and
+  a browser-like `User-Agent` it checks is unknown, so all three are sent on
+  every login (both UIs). The reply header is `Set-cookie: Cookies=<token>`
+  (lowercase `c`; read case-insensitively); the body has `var allow = N;`: 1
+  logged in, 0 rejected, 2 password change required.
+- **Session** is the cookie, not the client IP. Later requests send `Cookie:
+  Cookies=<token>`, `Referer: <base>/homepage.html` and the User-Agent.
+  Sessions expire after a few minutes. Without a valid session a protected
+  page returns a stub with `var allow = 0` and no `logon.cgi`.
+- **Old pages** (`/SystemInfoRpm.htm`, `/PortSettingRpm.htm`) get an empty
+  reply (connection closed, no status), hence the login before the first fetch.
+- **Identity**: `GET /sys_SystemInfoRpm.html`, `var data_info = {sysnameStr,
+  hardwareStr, firmwareStr, ...}`.
+- **Admin state, port count**: `GET /sys_portsetting.html`, `var max_port_num =
+  [5];` and `var all_info = {state:[1,1,1,1,1,], ...}` (trailing commas; 1 =
+  enabled).
+- **Link and speed**: `GET /portCur.xml`, e.g. `1,0,0,0,1,&3,1,1,1,3,&...`:
+  four `&`-separated groups of per-port values: link (1 up), speed (1 = 10M, 2
+  = 100M, 3 = 1000M; meaningless when down), duplex (0 half, 1 full, 2 auto),
+  flow control. Mapped onto the old `spd_act` numbering so `speed_name` serves
+  both UIs.
+- **Write**: `GET /port_setting.cgi?port_bit=<mask>&state=0|1`, mask = `1 <<
+  (port-1)` (port 5 = 16); only the changed field is sent. The reply carries a
+  `tip` but the helper reads back `sys_portsetting.html` as usual.
+- **Timing** (measured): port off, the peer adapter lost carrier 1.1 s later;
+  port on, carrier back 2.7 s later.
+- **Helper verified on hardware** (2026-10-21, this branch's build):
+  `doctor --json` all ok (identity, "5 reported", mgmt-port); `port <M> off`
+  refused (exit 2); `port N off --wait-link 10` returned "admin off, link
+  down" and the host adapter lost carrier about 0.1 s after the helper exited
+  (the switch sees the link drop before the host does); `port N on --wait-link
+  10` returned "admin on, link up (1000M full)".
 
 ## SNMP facts
 

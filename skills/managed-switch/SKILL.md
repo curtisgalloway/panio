@@ -6,11 +6,13 @@ description: >
   netif down-hard`). Use when asked to set up, configure, or enroll a managed
   switch for panio link control, to get a D-Link DGS-1100 (DGS-1100-05V2)
   from factory defaults to a working `switchport --backend snmp` link hook,
-  to enable SNMP on a switch, or when `switchport` or its link hooks come up.
-  Covers reaching a factory switch, enabling and saving SNMP, finding the
-  management port, verifying, and wiring the hooks. Other switches: the
-  TP-Link Easy Smart backend already exists; the last section says what to
-  measure for a new model.
+  to enable SNMP on a switch, to drive a switch that is already set up
+  (where its community or password lives, getting the helper without a
+  release), or when `switchport` or its link hooks come up. Covers reaching a
+  factory switch, enabling and saving SNMP, finding the management port,
+  verifying, and wiring the hooks. Other switches: the TP-Link Easy Smart
+  backend (TL-SG108PE, TL-SG205E) already exists; the last section says what
+  to measure for a new model.
 ---
 
 <!--
@@ -47,6 +49,27 @@ switch), unless it says otherwise.
   panio runs to drop or restore the link.
 
 More: `docs/glossary.md`.
+
+## Already set up? Start here
+
+To drive a switch someone has already set up, skip the steps below and:
+
+1. **Get the helper.** Try `panio helper switchport --help`. If panio or the
+   helper is missing (a release that predates `switchport`), build only this
+   crate, not all of panio: `cargo build --release` in `switchport/` takes
+   about a minute and leaves `switchport/target/release/switchport`.
+2. **Find the secret.**
+   - D-Link (`--backend snmp`): the read-write community, factory `private`,
+     kept in `~/.config/panio/switch-community` by step 8. If that file is
+     missing on this host, the switch still has the factory communities
+     unless someone changed them: write `private` to it as step 8 shows.
+   - TP-Link (`--backend easysmart`, user `admin`): the web password from
+     `SWITCHPORT_PASSWORD`, `--password-file` or `--password-command`. Ask
+     the user where it is kept; never pass it as a flag value.
+3. **Find the management port.** If the target's link hooks are already
+   wired, they carry `--mgmt-port` (the target's `link_down_cmd` in the lab
+   file). Otherwise use step 5.
+4. **Run `doctor --json` first**, then `port <N> status`, `off`, `on`.
 
 ## Before you start
 
@@ -324,7 +347,12 @@ rm -r switch-setup
 ## TP-Link Easy Smart
 
 The `easysmart` backend (the default) drives a TP-Link TL-SG108PE (hardware
-3.0). It needs the switch's web password, not SNMP. Its protocol facts and
+3.0) and a TL-SG205E (hardware 1.0, firmware 1.0.1 Build 20250609). It
+detects at login which of the two web UIs the switch speaks. The TL-SG205E's
+2025 firmware forces a password change at first login: set it in a browser
+(at the TP-Link factory default address printed on the label), then give the
+helper the new password; if it is not done, the helper says so and stops. It
+needs the switch's web password, not SNMP. Its protocol facts and
 safety rules are in `switchport/AGENTS.md`; the hook wiring is step 10 with
 `--backend easysmart` and `SWITCHPORT_PASSWORD`, `--password-file` or
 `--password-command` in place of the community. This skill has no TP-Link
