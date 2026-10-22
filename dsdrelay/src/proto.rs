@@ -15,8 +15,11 @@
 //! The relay board's AT dialect, as pure functions over a [`Transport`], plus
 //! the NC (normally closed) wiring map and serial-port selection.
 //!
-//! The board speaks 9600 8N1. A command is plain ASCII with no terminator
-//! required; every reply ends in `\n`:
+//! The board speaks 9600 8N1. A command is plain ASCII and **must** end in
+//! `\r\n` (callers pass commands without it; [`exchange`] appends it). Every
+//! reply ends in `\n`, and the 4-channel SH-UR04A (older CP2102) follows that
+//! with a NUL byte (`\n\x00`); the 1-channel SH-UR01A does not. Readers skip
+//! NULs wherever they appear.
 //!
 //! ```text
 //! AT          -> OK
@@ -25,6 +28,15 @@
 //! AT+CH1=0    -> OK+CH1=0   (release the coil)
 //! anything else, or a channel the board lacks -> Error
 //! ```
+//!
+//! # Resync: why every command is preceded by a bare `\r\n`
+//!
+//! An unterminated command gets no reply, and its bytes stay in the board's
+//! input buffer **across port close and reopen**, so the next command is
+//! glued onto them and answers `Error`. [`exchange`] therefore first writes a
+//! bare `\r\n` (which finishes any leftover garbage as one bad line; a clean
+//! buffer answers nothing), waits [`RESYNC_SETTLE`], discards whatever came
+//! back (the `Error` the garbage produced), and only then sends the command.
 //!
 //! # Wiring: the target is on the NC contact
 //!
@@ -38,13 +50,17 @@ use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Result};
 
-/// USB vendor ID of the Silicon Labs CP2102N the board uses.
+/// USB vendor ID of the Silicon Labs CP2102/CP2102N the boards use.
 pub const USB_VID: u16 = 0x10c4;
-/// USB product ID of the Silicon Labs CP2102N the board uses.
+/// USB product ID of the Silicon Labs CP2102/CP2102N the boards use.
 pub const USB_PID: u16 = 0xea60;
 
 /// Wall-clock bound on one reply (the board answers in about 55 ms).
 pub const REPLY_DEADLINE: Duration = Duration::from_secs(1);
+
+/// How long to wait after the resync `\r\n` for the board to finish
+/// answering it, before the input is cleared and the real command is sent.
+pub const RESYNC_SETTLE: Duration = Duration::from_millis(150);
 
 /// Byte cap on one reply, so a `-d` that points at some other chatty UART
 /// cannot hold a power hook open or grow without bound.
@@ -55,11 +71,20 @@ pub trait Transport: Read + Write {
     /// Discard anything already received, so a late reply to an earlier
     /// command cannot be mistaken for the answer to the next one.
     fn clear_input(&mut self) -> io::Result<()>;
+
+    /// Wait `d`. Real transports sleep; test doubles override this so the
+    /// resync settle period costs nothing.
+    fn settle(&mut self, d: Duration) {
+        std::thread::sleep(d);
+    }
 }
 
 impl<T: Transport + ?Sized> Transport for &mut T {
     fn clear_input(&mut self) -> io::Result<()> {
         (**self).clear_input()
+    }
+    fn settle(&mut self, d: Duration) {
+        (**self).settle(d)
     }
 }
 
@@ -125,19 +150,26 @@ pub fn onoff(on: bool) -> &'static str {
     }
 }
 
-/// Send one command and return the reply line, trimmed, without its newline.
+/// Send one command (no terminator; `\r\n` is added) and return the reply
+/// line, trimmed, without its newline.
 ///
-/// Input is flushed first. The reply is read byte by byte until `\n`, within
-/// `deadline` and `cap` bytes; silence and a stream that ends are errors.
+/// The board is resynchronized first: a bare `\r\n`, a [`RESYNC_SETTLE`]
+/// wait, then the input is cleared (see the module docs). The reply is read
+/// byte by byte until `\n`, within `deadline` and `cap` bytes; NUL bytes are
+/// skipped and not counted. Silence and a stream that ends are errors.
 pub fn exchange<T: Transport>(
     t: &mut T,
     cmd: &str,
     deadline: Duration,
     cap: usize,
 ) -> Result<String> {
+    t.write_all(b"\r\n")
+        .and_then(|()| t.flush())
+        .map_err(|e| anyhow!("write error: {e}"))?;
+    t.settle(RESYNC_SETTLE);
     t.clear_input()
         .map_err(|e| anyhow!("cannot flush input: {e}"))?;
-    t.write_all(cmd.as_bytes())
+    t.write_all(format!("{cmd}\r\n").as_bytes())
         .and_then(|()| t.flush())
         .map_err(|e| anyhow!("write error: {e}"))?;
 
@@ -151,6 +183,9 @@ pub fn exchange<T: Transport>(
         match t.read(&mut byte) {
             Ok(0) => bail!("device closed the connection while waiting for a reply to {cmd}"),
             Ok(_) => {
+                if byte[0] == 0 {
+                    continue;
+                }
                 if byte[0] == b'\n' {
                     return Ok(String::from_utf8_lossy(&line).trim().to_string());
                 }
@@ -250,7 +285,7 @@ pub struct Candidate {
 }
 
 impl Candidate {
-    /// Whether this is the CP2102N the relay board uses.
+    /// Whether this is the CP2102/CP2102N the relay boards use.
     pub fn is_relay_chip(&self) -> bool {
         self.vid == USB_VID && self.pid == USB_PID
     }
@@ -258,7 +293,7 @@ impl Candidate {
 
 /// Drop each macOS `/dev/tty.<x>` node whose `/dev/cu.<x>` twin is present:
 /// `cu` is the one to open (it does not wait for carrier detect).
-fn prefer_cu(mut found: Vec<&Candidate>) -> Vec<&Candidate> {
+pub fn prefer_cu(mut found: Vec<&Candidate>) -> Vec<&Candidate> {
     let cu: Vec<String> = found
         .iter()
         .filter_map(|c| c.path.strip_prefix("/dev/cu.").map(str::to_string))
@@ -313,6 +348,35 @@ pub fn select_port(
             }
         }
     }
+}
+
+/// The USB serial number the 4-channel board's older CP2102 ships with.
+pub const DEFAULT_USB_SERIAL: &str = "0001";
+
+/// A warning for `dsdrelay list` when the USB serial number cannot tell the
+/// listed relays apart: two or more share one, or one is the factory default.
+/// `ports` should already be reduced to one entry per device ([`prefer_cu`]).
+pub fn serial_warning(ports: &[&Candidate]) -> Option<String> {
+    let default = ports
+        .iter()
+        .any(|c| c.serial.as_deref() == Some(DEFAULT_USB_SERIAL));
+    let shared = ports
+        .iter()
+        .any(|a| a.serial.is_some() && ports.iter().filter(|b| b.serial == a.serial).count() > 1);
+    if !default && !shared {
+        return None;
+    }
+    Some(format!(
+        "warning: the USB serial number is not unique here ({}); --serial \
+         (-s) cannot reliably pick a board, use --device (-d). On Linux, \
+         /dev/serial/by-path/... names the physical USB port and survives \
+         re-plugging into the same port.",
+        if shared {
+            "two or more listed relays share one"
+        } else {
+            "0001 is the factory default of the 4-channel board"
+        }
+    ))
 }
 
 /// The relay-chip ports, as `dsdrelay list` shows them. Enumerates only; it
@@ -383,6 +447,11 @@ pub fn open(path: &str) -> Result<SerialTransport> {
 #[cfg(test)]
 pub mod fake {
     //! An in-memory relay board that speaks the AT dialect, for tests.
+    //!
+    //! It models the SH-UR04A's framing: it acts only on `\r\n`-terminated
+    //! lines and keeps a partial line in `inbuf` (as the real board does,
+    //! across port close and reopen); a bare empty line gets no reply, while
+    //! a garbage line gets `Error`.
 
     use super::*;
     use std::collections::VecDeque;
@@ -397,17 +466,27 @@ pub mod fake {
         pub ignore_all_sets: bool,
         /// When set, every command gets exactly these bytes back instead.
         pub canned: Option<Vec<u8>>,
+        /// End every reply with a NUL after the newline (SH-UR04A: true;
+        /// SH-UR01A: false).
+        pub nul: bool,
+        /// Bytes received but not yet terminated by `\n`; seed it to model
+        /// garbage left by an earlier session.
+        pub inbuf: Vec<u8>,
         pub out: VecDeque<u8>,
+        /// Every non-empty line the board acted on, terminator removed.
         pub log: Vec<String>,
     }
 
     impl FakeRelay {
+        /// A board with `channels` channels, replying like the SH-UR04A.
         pub fn new(channels: usize) -> Self {
             FakeRelay {
                 coils: vec![false; channels],
                 ignore_energize: false,
                 ignore_all_sets: false,
                 canned: None,
+                nul: true,
+                inbuf: Vec::new(),
                 out: VecDeque::new(),
                 log: Vec::new(),
             }
@@ -415,29 +494,50 @@ pub mod fake {
 
         fn reply(&mut self, cmd: &str) -> String {
             if cmd == "AT" {
-                return "OK\n".into();
+                return "OK".into();
             }
             let Some(rest) = cmd.strip_prefix("AT+CH") else {
-                return "Error\n".into();
+                return "Error".into();
             };
             let Some((ch, arg)) = rest.split_once('=') else {
-                return "Error\n".into();
+                return "Error".into();
             };
             let idx = match ch.parse::<usize>() {
                 Ok(n) if n >= 1 && n <= self.coils.len() => n - 1,
-                _ => return "Error\n".into(),
+                _ => return "Error".into(),
             };
             match arg {
-                "?" => format!("OK+CH{ch}={}\n", u8::from(self.coils[idx])),
+                "?" => format!("OK+CH{ch}={}", u8::from(self.coils[idx])),
                 "0" | "1" => {
                     let want = arg == "1";
                     let acts = !(self.ignore_all_sets || want && self.ignore_energize);
                     if acts {
                         self.coils[idx] = want;
                     }
-                    format!("OK+CH{ch}={arg}\n")
+                    format!("OK+CH{ch}={arg}")
                 }
-                _ => "Error\n".into(),
+                _ => "Error".into(),
+            }
+        }
+
+        fn line(&mut self, raw: &[u8]) {
+            let cmd = String::from_utf8_lossy(raw)
+                .trim_end_matches('\r')
+                .to_string();
+            if cmd.is_empty() {
+                return;
+            }
+            self.log.push(cmd.clone());
+            match self.canned.clone() {
+                Some(bytes) => self.out.extend(bytes),
+                None => {
+                    let r = self.reply(&cmd);
+                    self.out.extend(r.bytes());
+                    self.out.push_back(b'\n');
+                    if self.nul {
+                        self.out.push_back(0);
+                    }
+                }
             }
         }
     }
@@ -456,14 +556,10 @@ pub mod fake {
 
     impl Write for FakeRelay {
         fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-            let cmd = String::from_utf8_lossy(buf).trim_end().to_string();
-            self.log.push(cmd.clone());
-            match self.canned.clone() {
-                Some(bytes) => self.out.extend(bytes),
-                None => {
-                    let r = self.reply(&cmd);
-                    self.out.extend(r.bytes());
-                }
+            self.inbuf.extend_from_slice(buf);
+            while let Some(pos) = self.inbuf.iter().position(|&b| b == b'\n') {
+                let raw: Vec<u8> = self.inbuf.drain(..=pos).collect();
+                self.line(&raw[..raw.len() - 1]);
             }
             Ok(buf.len())
         }
@@ -477,6 +573,7 @@ pub mod fake {
             self.out.clear();
             Ok(())
         }
+        fn settle(&mut self, _d: Duration) {}
     }
 }
 
@@ -705,5 +802,136 @@ mod tests {
             select_port(&lone, None, Some("AA")).unwrap(),
             "/dev/tty.usbserial-0001"
         );
+    }
+
+    #[test]
+    fn four_channel_board_channels_are_independent() {
+        let mut d = FakeRelay::new(4);
+        set_target(&mut d, 2, false).unwrap();
+        set_target(&mut d, 4, false).unwrap();
+        let on: Vec<bool> = (1..=4).map(|c| query_target(&mut d, c).unwrap()).collect();
+        assert_eq!(on, [true, false, true, false]);
+        assert_eq!(d.coils, [false, true, false, true]);
+        set_target(&mut d, 2, true).unwrap();
+        assert_eq!(d.coils, [false, false, false, true]);
+        let e = query_target(&mut d, 5).unwrap_err().to_string();
+        assert!(e.contains("channel 5 not present"), "{e}");
+    }
+
+    #[test]
+    fn garbage_left_in_the_board_buffer_does_not_corrupt_the_next_command() {
+        for junk in [&b"AT+CH1="[..], b"xyz", b"AT+CH", b"AT+CH1=?"] {
+            let mut d = FakeRelay::new(4);
+            d.coils[2] = true;
+            d.inbuf.extend_from_slice(junk);
+            assert!(!query_target(&mut d, 3).unwrap(), "after {junk:?}");
+            assert!(query_target(&mut d, 1).unwrap());
+            assert!(d.inbuf.is_empty());
+        }
+        let mut d = FakeRelay::new(4);
+        d.inbuf.extend_from_slice(b"AT+CH1=");
+        set_target(&mut d, 1, false).unwrap();
+        assert!(d.coils[0]);
+    }
+
+    #[test]
+    fn every_command_is_crlf_terminated_after_a_bare_resync() {
+        struct Spy(FakeRelay, Vec<Vec<u8>>);
+        impl Read for Spy {
+            fn read(&mut self, b: &mut [u8]) -> io::Result<usize> {
+                self.0.read(b)
+            }
+        }
+        impl Write for Spy {
+            fn write(&mut self, b: &[u8]) -> io::Result<usize> {
+                self.1.push(b.to_vec());
+                self.0.write(b)
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        impl Transport for Spy {
+            fn clear_input(&mut self) -> io::Result<()> {
+                self.0.clear_input()
+            }
+            fn settle(&mut self, _d: Duration) {}
+        }
+        let mut s = Spy(FakeRelay::new(1), Vec::new());
+        ping(&mut s).unwrap();
+        assert_eq!(s.1, [b"\r\n".to_vec(), b"AT\r\n".to_vec()]);
+    }
+
+    #[test]
+    fn nul_bytes_in_replies_are_skipped() {
+        let mut d = FakeRelay::new(1);
+        d.canned = Some(b"\0OK+CH1=0\n\0".to_vec());
+        assert!(query_target(&mut d, 1).unwrap());
+        d.canned = Some(b"O\0K\0\n\0".to_vec());
+        ping(&mut d).unwrap();
+        let mut d = FakeRelay::new(4);
+        assert!(d.nul);
+        ping(&mut d).unwrap();
+        assert_eq!(
+            d.out.iter().copied().collect::<Vec<_>>(),
+            [0],
+            "the reply's trailing NUL is left behind, as on the real board"
+        );
+        let mut d = FakeRelay::new(1);
+        d.canned = Some(vec![0u8; REPLY_CAP + 10]);
+        let e = ping(&mut d).unwrap_err().to_string();
+        assert!(
+            e.contains("no reply"),
+            "NULs must not count toward the cap: {e}"
+        );
+    }
+
+    #[test]
+    fn one_channel_board_without_nul_still_works() {
+        let mut d = FakeRelay::new(1);
+        d.nul = false;
+        ping(&mut d).unwrap();
+        set_target(&mut d, 1, false).unwrap();
+        assert!(!query_target(&mut d, 1).unwrap());
+        set_target(&mut d, 1, true).unwrap();
+        assert!(query_target(&mut d, 1).unwrap());
+    }
+
+    #[test]
+    fn fake_board_ignores_unterminated_input_and_bare_lines() {
+        let mut d = FakeRelay::new(1);
+        d.write_all(b"AT").unwrap();
+        assert!(d.out.is_empty(), "no reply without a terminator");
+        d.write_all(b"\r\n").unwrap();
+        assert_eq!(d.out.iter().copied().collect::<Vec<_>>(), b"OK\n\0");
+        d.out.clear();
+        d.write_all(b"\r\n").unwrap();
+        assert!(d.out.is_empty(), "bare line on a clean buffer is silent");
+        d.write_all(b"junk").unwrap();
+        d.write_all(b"\r\n").unwrap();
+        assert_eq!(d.out.iter().copied().collect::<Vec<_>>(), b"Error\n\0");
+    }
+
+    #[test]
+    fn serial_warning_fires_on_default_or_shared_serials_only() {
+        let uniq = [cand("/dev/ttyUSB0", Some("AA00BB11CC22DD33"))];
+        let refs: Vec<&Candidate> = uniq.iter().collect();
+        assert!(serial_warning(&refs).is_none());
+        let two = [
+            cand("/dev/ttyUSB0", Some("AA00BB11CC22DD33")),
+            cand("/dev/ttyUSB1", Some("0123456789ABCDEF")),
+        ];
+        let refs: Vec<&Candidate> = two.iter().collect();
+        assert!(serial_warning(&refs).is_none());
+        let def = [cand("/dev/ttyUSB0", Some("0001"))];
+        let refs: Vec<&Candidate> = def.iter().collect();
+        let w = serial_warning(&refs).unwrap();
+        assert!(w.contains("--device") && w.contains("by-path"), "{w}");
+        let shared = [
+            cand("/dev/ttyUSB0", Some("AA00BB11CC22DD33")),
+            cand("/dev/ttyUSB1", Some("AA00BB11CC22DD33")),
+        ];
+        let refs: Vec<&Candidate> = shared.iter().collect();
+        assert!(serial_warning(&refs).unwrap().contains("share one"));
     }
 }

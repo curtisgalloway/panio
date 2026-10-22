@@ -757,11 +757,14 @@ See `docs/power.md` for the full `cambrionix` command surface.
 
 ### DSD TECH USB serial relay board (dsdrelay)
 
-The `dsdrelay` helper switches a channel of a DSD TECH SH-UR01A-style USB
-serial relay board. Targets are wired through the relay's **NC (normally
+The `dsdrelay` helper switches a channel of a DSD TECH SH-UR01A (1-channel,
+CP2102N) or SH-UR04A (4-channel, older CP2102; all four channels
+hardware-verified) USB serial relay board. Targets are wired through the relay's **NC (normally
 closed)** contact: `on` releases the coil, `off` energizes it, and an
 unpowered board leaves the target powered. Select the port with `-d <path>` or
-by the CP2102N's USB serial number with `-s <usb-serial>` (survives re-plugs).
+by USB serial number with `-s <usb-serial>` (survives re-plugs). Use `-s` for
+the SH-UR01A (unique serial); use `-d` for the SH-UR04A, whose serial is the
+shared factory default `0001` (Linux: `/dev/serial/by-path/...`).
 
 ```
 panio power set -t pi5 \
@@ -776,7 +779,10 @@ Gotchas: `dsdrelay list` enumerates the CP2102N ports without opening them;
 never open one by hand to identify it, because a Sonoff ZBDongle-P Zigbee
 coordinator shares the VID:PID and opening its port can reset it into the
 bootloader. A channel the board lacks is an error ("channel N not present on
-this relay"). See `docs/power.md` for the full `dsdrelay` command surface.
+this relay"). Commands must end in `\r\n` (the helper handles this and resyncs
+before each command, so never write to the port by hand; leftover bytes survive
+a close/reopen and corrupt the next command), and SH-UR04A replies end in a NUL.
+`list` warns when serials are not unique. See `docs/power.md` for the full `dsdrelay` command surface.
 
 ### Intel AMT / vPro (example)
 

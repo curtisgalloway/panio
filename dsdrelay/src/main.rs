@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! dsdrelay — drive a DSD TECH SH-UR01A-style USB serial relay board.
+//! dsdrelay — drive a DSD TECH SH-UR01A/SH-UR04A-style USB serial relay board.
 //!
 //! Subcommands:
 //!   on <channel>      Power the target on and confirm by read-back.
@@ -31,8 +31,8 @@ use anyhow::{anyhow, bail, Result};
 use clap::{Parser, Subcommand};
 
 use proto::{
-    onoff, open, ping, query_coil, query_target, relay_ports, select_port, set_target, Candidate,
-    Transport,
+    onoff, open, ping, prefer_cu, query_coil, query_target, relay_ports, select_port,
+    serial_warning, set_target, Candidate, Transport,
 };
 
 #[derive(Parser)]
@@ -40,8 +40,9 @@ use proto::{
     name = "dsdrelay",
     version,
     about = "Power control for DSD TECH USB serial AT relay boards (targets on the NC contact)",
-    long_about = "Power control for DSD TECH SH-UR01A-style USB serial relay boards \
-(Silicon Labs CP2102N, 9600 8N1, AT+CHn commands).
+    long_about = "Power control for DSD TECH SH-UR01A (1-channel, CP2102N) and \
+SH-UR04A (4-channel, older CP2102) USB serial relay boards (9600 8N1, \
+AT+CHn commands, each terminated by CR LF).
 
 WIRING (hardcoded)
   Targets are wired through the relay's NC (normally closed) contact, so the
@@ -55,12 +56,16 @@ DEVICE
   Exactly one of --device (-d) or --serial (-s) is required, before the verb:
     dsdrelay -d /dev/cu.usbserial-0001 cycle 1
     dsdrelay -s AA00BB11CC22DD33 state 1
-  --serial matches the CP2102N's USB serial number, which survives re-plugging
-  into another port (the /dev node name does not). Find it with `list`.
+  --serial matches the chip's USB serial number, which survives re-plugging
+  into another port (the /dev node name does not). Find it with `list`. Use it
+  for the SH-UR01A, whose CP2102N has a unique serial. The SH-UR04A ships with
+  the same factory serial (0001) as every other one, so use --device for it:
+  on Linux a /dev/serial/by-path/... name is tied to the physical USB port; on
+  macOS the /dev/cu.usbserial-* node depends on the serial and USB topology.
 
 CHANNELS
   Channels are numbered from 1; a channel the board lacks is an error. A
-  1-channel board has only channel 1.
+  1-channel board has only channel 1; the SH-UR04A has channels 1 to 4.
 
 on/off/cycle confirm by reading the state back, so a hook that silently
 failed surfaces as a non-zero exit."
@@ -71,8 +76,10 @@ struct Cli {
     #[arg(short = 'd', long = "device", value_name = "PATH", global = true)]
     device: Option<String>,
 
-    /// USB serial number of the board's CP2102N (see `list`); selects the
-    /// port by identity instead of by path. Give this or --device.
+    /// USB serial number of the board's CP2102/CP2102N (see `list`); selects
+    /// the port by identity instead of by path. Only for boards with a
+    /// unique serial (SH-UR01A); the SH-UR04A reports 0001, so use --device.
+    /// Give this or --device.
     #[arg(short = 's', long = "serial", value_name = "USB-SERIAL", global = true)]
     serial: Option<String>,
 
@@ -130,8 +137,10 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
-    /// List USB serial ports that use the board's CP2102N chip (VID 10c4,
-    /// PID ea60): path, USB serial number, product, manufacturer.
+    /// List USB serial ports that use the boards' CP2102/CP2102N chip (VID
+    /// 10c4, PID ea60): path, USB serial number, product, manufacturer. One
+    /// line per device (the macOS /dev/tty.* twin of a /dev/cu.* node is
+    /// dropped); warns on stderr when serial numbers are not unique.
     ///
     /// Enumeration only: `list` never opens a port. That matters because a
     /// Sonoff ZBDongle-P Zigbee coordinator has the same VID:PID, and
@@ -221,11 +230,15 @@ fn cmd_list() -> Result<()> {
     if ports.is_empty() {
         bail!("no CP2102N USB serial ports (VID 10c4, PID ea60) found");
     }
-    print!("{}", format_list(&ports));
+    let shown = prefer_cu(ports.iter().collect());
+    print!("{}", format_list(&shown));
+    if let Some(w) = serial_warning(&shown) {
+        eprintln!("{w}");
+    }
     Ok(())
 }
 
-fn format_list(ports: &[Candidate]) -> String {
+fn format_list(ports: &[&Candidate]) -> String {
     let dash = |o: &Option<String>| o.clone().unwrap_or_else(|| "-".to_string());
     let mut out = String::new();
     for p in ports {
@@ -492,7 +505,7 @@ mod tests {
 
     #[test]
     fn list_formats_one_line_per_port_with_dashes_for_gaps() {
-        let ports = [Candidate {
+        let ports = [&Candidate {
             path: "/dev/cu.usbserial-0001".into(),
             vid: proto::USB_VID,
             pid: proto::USB_PID,
@@ -504,5 +517,26 @@ mod tests {
             format_list(&ports),
             "/dev/cu.usbserial-0001\tAA00BB11CC22DD33\t-\tSilicon Labs\n"
         );
+    }
+
+    #[test]
+    fn list_drops_the_tty_twin_of_a_cu_node() {
+        let mk = |path: &str| Candidate {
+            path: path.into(),
+            vid: proto::USB_VID,
+            pid: proto::USB_PID,
+            serial: Some("0001".into()),
+            product: None,
+            manufacturer: None,
+        };
+        let all = [
+            mk("/dev/tty.usbserial-0001"),
+            mk("/dev/cu.usbserial-0001"),
+            mk("/dev/tty.usbserial-1"),
+        ];
+        let shown = prefer_cu(all.iter().collect());
+        let text = format_list(&shown);
+        assert_eq!(text.lines().count(), 2, "{text}");
+        assert!(!text.contains("/dev/tty.usbserial-0001"), "{text}");
     }
 }
