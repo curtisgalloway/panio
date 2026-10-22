@@ -181,6 +181,7 @@ crate_job "serialcap"  "serialcap"  "cargo test"
 crate_job "netbootd"   "netbootd"   "cargo test"
 crate_job "hdmicap"    "hdmicap"    "cargo build"
 crate_job "cambrionix" "cambrionix" "cargo test"
+crate_job "dsdrelay"   "dsdrelay"   "cargo test"
 crate_job "ch9329"     "ch9329"     "cargo test"
 crate_job "hidrig"     "hidrig"     "cargo test"
 crate_job "shellyplug" "shellyplug" "cargo test"
@@ -192,7 +193,7 @@ go_job    "jetkvm"     "jetkvm"
 echo
 echo "########## LOCAL CI SUMMARY ##########"
 fail=0
-for k in "cli" "serialcap" "netbootd" "hdmicap" "cambrionix" "ch9329" \
+for k in "cli" "serialcap" "netbootd" "hdmicap" "cambrionix" "dsdrelay" "ch9329" \
          "hidrig" "shellyplug" "switchport" "amt" "secret" "jetkvm"; do
   c="${RES[$k]:-NA}"
   if [ "$c" = "0" ]; then printf 'PASS       %s\n' "$k"; else printf 'FAIL(%s)  %s\n' "$c" "$k"; fail=1; fi

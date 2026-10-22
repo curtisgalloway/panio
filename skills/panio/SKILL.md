@@ -86,7 +86,7 @@ rejects `--json-errors`.
 cd ~/src/panio
 make install               # cargo-installs the `panio` CLI, then `panio setup`
                            # builds/installs the helper binaries (hdmicap, serialcap,
-                           # netbootd, cambrionix, hidrig, ch9329, shellyplug,
+                           # netbootd, cambrionix, dsdrelay, hidrig, ch9329, shellyplug,
                            # amt), the OCR helper, zigplug, and the bundled skills;
                            # on macOS also installs netbootd-bpf-helper
                            # setuid-root (one sudo)
@@ -94,7 +94,7 @@ make install               # cargo-installs the `panio` CLI, then `panio setup`
 
 Run once per machine; re-run after pulling or editing (it's a full rebuild).
 Only the `panio` CLI lands in `~/.cargo/bin` — make sure that's on `PATH`.
-The helpers (hdmicap, serialcap, netbootd, cambrionix, hidrig, ch9329,
+The helpers (hdmicap, serialcap, netbootd, cambrionix, dsdrelay, hidrig, ch9329,
 shellyplug, amt, jetkvm (needs Go), zigplug, the
 OCR tool) live in the private libexec dir `~/.local/libexec/panio/bin`,
 off PATH; panio resolves them itself, and `panio helper [NAME] [ARGS…]`
@@ -754,6 +754,29 @@ device that does not sense VBUS stays enumerated through the cycle, so do not
 treat a cambrionix cycle as a USB unplug when a test needs re-enumeration.
 
 See `docs/power.md` for the full `cambrionix` command surface.
+
+### DSD TECH USB serial relay board (dsdrelay)
+
+The `dsdrelay` helper switches a channel of a DSD TECH SH-UR01A-style USB
+serial relay board. Targets are wired through the relay's **NC (normally
+closed)** contact: `on` releases the coil, `off` energizes it, and an
+unpowered board leaves the target powered. Select the port with `-d <path>` or
+by the CP2102N's USB serial number with `-s <usb-serial>` (survives re-plugs).
+
+```
+panio power set -t pi5 \
+    --cycle-cmd "dsdrelay -s AA00BB11CC22DD33 cycle 1" \
+    --on-cmd    "dsdrelay -s AA00BB11CC22DD33 on 1" \
+    --off-cmd   "dsdrelay -s AA00BB11CC22DD33 off 1" \
+    --state-cmd "dsdrelay -s AA00BB11CC22DD33 state 1" \
+    --doctor
+```
+
+Gotchas: `dsdrelay list` enumerates the CP2102N ports without opening them;
+never open one by hand to identify it, because a Sonoff ZBDongle-P Zigbee
+coordinator shares the VID:PID and opening its port can reset it into the
+bootloader. A channel the board lacks is an error ("channel N not present on
+this relay"). See `docs/power.md` for the full `dsdrelay` command surface.
 
 ### Intel AMT / vPro (example)
 
