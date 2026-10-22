@@ -36,6 +36,9 @@ each term briefly on first use; this page is the longer reference.
 | **stale / untracked daemon** | *Stale*: running executable content proven different from the installed helper; a metadata or inode replacement alone does not establish this. *Untracked*: still running after its discovery file was deleted. |
 | **passthrough command** | A command that hands back another program's exit status unchanged, such as `panio helper <name>` or `panio adb run`. See [Exit status and errors](errors.md#passthrough-commands). |
 | **credential source** | Where a helper reads a secret such as the AMT password: an environment variable, a file (`--password-file`) or a command whose output is the secret (`--password-command`). The first one set wins. |
+| **management port** | The managed-switch port the control host reaches the switch through. `switchport` refuses to turn it off. See [Guaranteed link drop](netif.md#guaranteed-link-drop-with-a-managed-switch). |
+| **SNMP / community string** | A network management protocol, and its shared password (sent in clear text). `switchport --backend snmp` uses it to set a switch port's state. |
+| **ifIndex / ifAdminStatus** | SNMP's number for an interface, and the setting that turns it on (1) or off (2). |
 | **link mode** | The host side of the direct USB-Ethernet link to a target. `panio netif` puts it in one of four modes: netboot, link, ffx or off. |
 | **ownership reservation** | An external lab coordinator's exclusive assignment of a target and its shared controls to one operator or runner for an entire operation. Panio's shorter transaction and hook locks do not provide this reservation. |
 | **guarded staging runner** | A board-specific program that checks fresh firmware and USB readiness before each artifact's single RAM transfer, enforces deadlines and ownership, and saves evidence. This is an integration contract, not a bundled panio helper. See [USB fastboot staging](fastboot.md). |

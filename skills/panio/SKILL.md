@@ -399,7 +399,8 @@ target side (its link state, serial log, or link LED). When the target *must*
 detect link loss, unplug the cable or disable its port on a managed switch
 (measured: link lost within 0.8 s, back ~1.7 s after re-enable). The `switchport`
 helper drives the port (#334); never disable the port the host manages the switch
-through. Configure the channel's link hooks to get that guaranteed drop through
+through. Setting up a switch for it (D-Link DGS-1100-05V2 over SNMP, from
+factory defaults): `panio skill managed-switch`. Configure the channel's link hooks to get that guaranteed drop through
 panio: `panio netboot set -t <name> --link-down-cmd 'switchport -d sw1
 --mgmt-port 8 port 3 off' --link-up-cmd 'switchport -d sw1 --mgmt-port 8 port 3 on'`.
 `down-hard` then runs the down hook first, before its host-side steps (a failing
