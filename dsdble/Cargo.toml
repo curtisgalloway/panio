@@ -27,7 +27,7 @@ path = "src/main.rs"
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"
 btleplug = "0.13"
-tokio = { version = "1", features = ["rt", "rt-multi-thread", "time"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "time", "net"] }
 
 [profile.release]
 opt-level = 3

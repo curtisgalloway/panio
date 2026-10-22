@@ -75,8 +75,10 @@ local name `DSD TECH`.
   CoreBluetooth on macOS, WinRT on Windows). Building on Linux needs `pkg-config` and
   `libdbus-1-dev` (via `dbus` -> `libdbus-sys`); the binary needs `libdbus-1-3` at
   runtime, which `packaging/nfpm.yaml` declares.
-- `tokio` 1 with `rt`, `rt-multi-thread` and `time`: btleplug is async and needs a tokio
-  runtime. `rt-multi-thread` keeps the D-Bus connection's driver task running while the
+- `tokio` 1 with `rt`, `rt-multi-thread`, `time` and `net`: btleplug is async and needs a
+  tokio runtime. `net` provides `Builder::enable_io`: on Linux btleplug talks to BlueZ
+  through `dbus-tokio`, which panics on a runtime without the I/O driver ("IO is
+  disabled"; measured 2026-10-22, macOS never takes that path). `rt-multi-thread` keeps the D-Bus connection's driver task running while the
   main thread sleeps between a cycle's two writes; `time` is for scan polling and the
   connect/write timeouts. No `macros` feature: nothing uses `#[tokio::main]`.
 - `clap` and `anyhow`: as in every helper.

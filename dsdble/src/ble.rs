@@ -50,6 +50,7 @@ const POLL: Duration = Duration::from_millis(250);
 fn runtime() -> Result<Runtime> {
     tokio::runtime::Builder::new_multi_thread()
         .worker_threads(1)
+        .enable_io()
         .enable_time()
         .build()
         .map_err(|e| anyhow!("cannot start the async runtime: {e}"))
