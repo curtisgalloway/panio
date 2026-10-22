@@ -42,7 +42,7 @@ permissions:
 
 env:
   NFPM_VERSION: 2.46.3
-  HELPERS: hdmicap serialcap netbootd cambrionix hidrig ch9329 shellyplug switchport amt
+  HELPERS: hdmicap serialcap netbootd cambrionix dsdrelay hidrig ch9329 shellyplug switchport amt
 
 jobs:
   profile-pins:
@@ -104,6 +104,7 @@ jobs:
             serialcap
             netbootd
             cambrionix
+            dsdrelay
             hidrig
             ch9329
             shellyplug
@@ -315,6 +316,7 @@ jobs:
             serialcap
             netbootd
             cambrionix
+            dsdrelay
             hidrig
             ch9329
             shellyplug
@@ -531,6 +533,7 @@ jobs:
             serialcap
             netbootd
             cambrionix
+            dsdrelay
             hidrig
             ch9329
             shellyplug

@@ -15,6 +15,7 @@ See the [power guide](power.md).
 | [ThirdReality Zigbee Smart Plug (15 A, energy monitoring)](https://www.amazon.com/dp/B0BPY5D1KC) | Switched mains outlet driven by `zigplug`. |
 | [AINOPE USB 3.0 extension cable (6.6 ft)](https://www.amazon.com/dp/B07RQRMGKB) | Moves the Zigbee dongle away from USB 3 devices, whose RF noise (especially video capture) breaks Zigbee pairing. |
 | Cambrionix programmable USB hub | Per-port USB power switching via the [`cambrionix` helper](power.md#cambrionix-hub-control) (control UART, 115200 8N1). |
+| DSD TECH SH-UR01A USB serial relay board (1-channel; 4-channel sibling) | Per-channel power switching via the [`dsdrelay` helper](power.md#usb-serial-relay-board-control-dsdrelay) (CP2102N, 9600 8N1 AT commands). Wired NC: an unpowered board leaves the target powered. |
 | [Shelly Plug US Gen4 (S4PL-00116US, Wi-Fi, energy monitoring)](https://www.amazon.com/dp/B0G2YY8TCJ) | Wi-Fi mains outlet driven by the [`shellyplug` helper](power.md#shelly-smart-plug-control-shellyplug) over local HTTP RPC (no cloud). Any Shelly Gen2+ device works. |
 | Dell OptiPlex 7060 (Intel vPro) | Intel AMT target driven by the [`amt` helper](power.md#intel-amt-power-control-amt) (WS-Management over verified HTTPS, port 16993; legacy HTTP on port 16992 requires explicit opt-in), with true power-state readback; no plug hardware. |
 

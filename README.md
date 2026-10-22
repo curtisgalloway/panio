@@ -42,7 +42,7 @@ More on the [demos page](https://panio.dev/demos/).
 | [Link mode](https://panio.dev/netif/) | `panio netif` | Switch the link between netboot, ffx-over-IPv6, `link`, and `off` modes; `down-hard` adds WoL off + admin-down (many USB adapters keep link anyway) |
 | [Video](https://panio.dev/video/) | `panio video` | HDMI capture daemon (or a network RFB source such as a JetKVM); on-device OCR |
 | [Serial](https://panio.dev/serial/) | `panio serial` | Serial console: interactive (tio), timestamped line log, read-only health, immutable receive evidence, bounded fresh wait/follow, locked request/response transactions |
-| [Power control](https://panio.dev/power/) | `panio power on/off`, `panio power-cycle`, `panio power-state`, `panio serial dtr/reset` | DTR power button (J2 header) and shell-command hooks, with optional named levels (`--level hard`) for targets with several power layers; helpers `cambrionix` (hub ports), `zigplug` (Zigbee plugs), `shellyplug` (Shelly Gen2+), `amt` (Intel AMT/vPro, verified HTTPS by default) |
+| [Power control](https://panio.dev/power/) | `panio power on/off`, `panio power-cycle`, `panio power-state`, `panio serial dtr/reset` | DTR power button (J2 header) and shell-command hooks, with optional named levels (`--level hard`) for targets with several power layers; helpers `cambrionix` (hub ports), `dsdrelay` (USB serial relay boards), `zigplug` (Zigbee plugs), `shellyplug` (Shelly Gen2+), `amt` (Intel AMT/vPro, verified HTTPS by default) |
 | [Named actions](https://panio.dev/actions/) | `panio action` | Per-target named controls that are not power (reset, recovery, boot straps), each a hook command, discoverable by agents |
 | [HID injection](https://panio.dev/hid/) | `panio hid` | USB keyboard/mouse injection via a helper (`hidrig` KB2040 injector, `ch9329` for Openterface Mini-KVM / KVM-Go and Sipeed NanoKVM-USB, or `jetkvm` for the JetKVM network KVM) |
 | [Switchable USB media](https://panio.dev/usb/) | `panio usb` | Switch a KVM-Go's microSD card between control host and target, as boot media |
@@ -147,7 +147,7 @@ make install           # panio CLI + daemons + OCR helper, in one step
 
 - **The `panio` CLI** is the only thing on PATH (`~/.cargo/bin`).
 - **Daemons and helpers** (`hdmicap`, `serialcap`, `netbootd`, `cambrionix`,
-  `hidrig`, `ch9329`, `shellyplug`, `amt`) and **the OCR helper** (`visionocr`
+  `dsdrelay`, `hidrig`, `ch9329`, `shellyplug`, `amt`) and **the OCR helper** (`visionocr`
   on macOS via `swiftc`, `linuxocr` on Linux) go in
   `~/.local/libexec/panio/bin`, off PATH. Run one with
   `panio helper <name> [args…]` (no name lists them; `-t <target>
@@ -184,6 +184,7 @@ cargo install --path ~/src/panio/hdmicap   --root ~/.local/libexec/panio  # if h
 cargo install --path ~/src/panio/serialcap --root ~/.local/libexec/panio  # if serialcap changed
 cargo install --path ~/src/panio/netbootd  --root ~/.local/libexec/panio  # if netbootd changed (re-run `panio setup` to re-setuid the helper on macOS)
 cargo install --path ~/src/panio/cambrionix --root ~/.local/libexec/panio # if cambrionix changed
+cargo install --path ~/src/panio/dsdrelay  --root ~/.local/libexec/panio  # if dsdrelay changed
 cargo install --path ~/src/panio/hidrig    --root ~/.local/libexec/panio  # if hidrig changed
 cargo install --path ~/src/panio/ch9329    --root ~/.local/libexec/panio  # if ch9329 changed
 cargo install --path ~/src/panio/shellyplug --root ~/.local/libexec/panio # if shellyplug changed

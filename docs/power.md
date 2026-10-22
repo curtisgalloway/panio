@@ -139,6 +139,7 @@ helpers:
 | Helper | Switches | Section |
 |---|---|---|
 | `cambrionix` | A port on a Cambrionix USB hub | [Cambrionix hub control](#cambrionix-hub-control) |
+| `dsdrelay` | A channel of a DSD TECH USB serial relay board (NC wiring) | [USB serial relay board control](#usb-serial-relay-board-control-dsdrelay) |
 | `zigplug` | A Zigbee smart plug | [Zigbee smart plug control](#zigbee-smart-plug-control-zigplug) |
 | `shellyplug` | A Shelly Wi-Fi plug or relay | [Shelly smart plug control](#shelly-smart-plug-control-shellyplug) |
 | `amt` | An Intel AMT (vPro) machine's own power | [Intel AMT power control](#intel-amt-power-control-amt) |
@@ -492,6 +493,119 @@ panio power set -t pi5 \
 
 `panio power on pi5`, `panio power off pi5`, `panio power-cycle pi5`, and
 `panio power-state pi5` then work.
+
+---
+
+## USB serial relay board control (dsdrelay)
+
+The `dsdrelay` helper switches a DSD TECH SH-UR01A (1-channel) or SH-UR04A
+(4-channel) USB serial relay board. Both are Silicon Labs USB-UART bridges
+(VID `10c4`, PID `ea60`) speaking ASCII AT commands at 9600 8N1:
+
+| Board | Chip | USB serial number | Replies end |
+|---|---|---|---|
+| SH-UR01A (1-channel) | CP2102N | unique | `\n` |
+| SH-UR04A (4-channel) | older CP2102 ("CP2102 USB to UART Bridge Controller") | factory default `0001`, the same on every board | `\n\0` |
+
+Protocol facts, measured on hardware: every command **must end in `\r\n`**.
+An unterminated command gets no reply, and its bytes stay in the board's
+input buffer across port close and reopen, so the next command answers
+`Error`. `dsdrelay` therefore sends `?\r\n`, waits 150 ms, discards
+whatever came back, and only then sends `cmd\r\n`. The `?` matters: a bare
+`\r\n` would complete a leftover but valid command such as `AT+CH1=1` and the
+board would execute it (a read-only `state` could cut a target's power), whereas
+`AT+CH1=1?` is just an `Error`, and a lone `?` on a clean buffer is silent. It skips the NUL byte the
+SH-UR04A appends to every reply. A previous session that died mid-command
+cannot corrupt the next one.
+
+### Wiring: targets go on the NC contact
+
+`dsdrelay` hardcodes **normally closed (NC)** wiring: the target's power runs
+through the relay's NC contact, so the relay's coil is the inverse of the
+target.
+
+| Verb | Sends | Coil | Target |
+|---|---|---|---|
+| `on <ch>` | `AT+CH<ch>=0` | released | powered |
+| `off <ch>` | `AT+CH<ch>=1` | energized | unpowered |
+
+**Consequence:** an unpowered relay board (USB unplugged, control host
+rebooting or off) leaves every target **powered**. Do not rely on this helper
+for a fail-safe cut-off. `state <ch>` prints `on` when the board reports
+`AT+CH<ch>=?` as `0` and `off` when it reports `1`; any other reply is an
+error that quotes the raw reply.
+
+### Installation
+
+`make install` / `panio setup` installs it into the private libexec dir. Run
+it by hand via `panio helper dsdrelay …`.
+
+### Commands
+
+```bash
+dsdrelay list                                  # CP2102/CP2102N ports: path, USB serial, product, manufacturer
+dsdrelay -d <path> state <ch>                  # print exactly "on" or "off" (state_cmd contract)
+dsdrelay -d <path> on <ch>                     # release the coil, confirm by read-back
+dsdrelay -d <path> off <ch>                    # energize the coil, confirm by read-back
+dsdrelay -d <path> cycle <ch> [--delay-ms 3000]
+                                               # off → confirm → delay → on → confirm
+dsdrelay -d <path> doctor [--json] [<ch>]      # read-only health check (panio doctor)
+dsdrelay -s <usb-serial> state <ch>            # select the port by USB serial number (SH-UR01A)
+```
+
+- **Device selection:** exactly one of `-d/--device <path>` or
+  `-s/--serial <usb-serial>`, before the verb. `-s` matches the chip's USB
+  serial number (find it with `list`), so the hook survives a re-plug into
+  another port, which renames the `/dev` node (macOS names CP2102N nodes by
+  USB topology). It prefers the `/dev/cu.*` node over `/dev/tty.*` and fails
+  when zero or several ports match. **`-s` is the right choice for the
+  SH-UR01A (CP2102N, unique serial). The SH-UR04A reports the factory serial
+  `0001`, which every such board shares, so use `-d` for it:** on Linux
+  prefer `/dev/serial/by-path/…`, which is tied to the physical USB port (a
+  `/dev/serial/by-id/…` path embeds the non-unique serial); on macOS the node
+  (`/dev/cu.usbserial-0001`, or another name when several boards collide)
+  depends on the serial and USB topology, so re-check `list` after re-plugging.
+  `list` prints one line per device (the macOS `/dev/tty.*` twin is dropped)
+  and warns on stderr when serials are shared or `0001`.
+- **Channels** are numbered from 1 with no fixed upper bound. A channel the
+  board lacks answers `Error`, reported as "channel N not present on this
+  relay". The SH-UR04A is hardware-verified on all four channels (they switch
+  independently and read back exactly; switching through a wired load is not
+  yet verified); the SH-UR01A has channel 1.
+- **Every change is confirmed twice:** the command's own echo
+  (`OK+CH<n>=<v>`), then a fresh `AT+CH<n>=?` read-back. A board that
+  ignores a command exits non-zero. `cycle` confirms both phases, so a relay
+  that ignored `off` is not reported as a successful cycle.
+- **Opening or closing the port does not change relay state.** The port is
+  opened exclusively, with a 1 s read timeout; each command is preceded by
+  the `?\r\n` resync described above.
+- **`list` never opens a port.** A Sonoff ZBDongle-P Zigbee coordinator (the
+  [`zigplug`](#zigbee-smart-plug-control-zigplug) dongle) uses the same
+  CP2102N VID:PID, and opening its port can reset its CC2652 into the
+  bootloader. Identify the relay by its USB serial number and never probe the
+  other entries by hand.
+- **`doctor --json`** is read-only (`AT` and `AT+CHn=?` only) and reports
+  `device`, `responds` and `channel` (channel 1 unless given), always
+  exiting 0 with the report. Opt a channel in with `--doctor`.
+
+### Wiring into panio power hooks
+
+Example: a Raspberry Pi 5 on relay channel 1 of an SH-UR01A, selected by the
+board's USB serial number (a placeholder here; use the value `list` prints).
+For an SH-UR04A use `-d <path>` instead (see Device selection):
+
+```bash
+panio power set -t pi5 \
+    --cycle-cmd "dsdrelay -s AA00BB11CC22DD33 cycle 1" \
+    --on-cmd    "dsdrelay -s AA00BB11CC22DD33 on 1" \
+    --off-cmd   "dsdrelay -s AA00BB11CC22DD33 off 1" \
+    --state-cmd "dsdrelay -s AA00BB11CC22DD33 state 1" \
+    --doctor
+```
+
+`panio power on pi5`, `panio power off pi5`, `panio power-cycle pi5`, and
+`panio power-state pi5` then work. Install the helper on the control host
+that owns the relay's USB port (`--host`).
 
 ---
 
