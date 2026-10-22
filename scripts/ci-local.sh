@@ -33,6 +33,8 @@
 # shared host mount (a virtiofs/9p mount rejects setuptools' editable egg-info
 # and would clobber a host cargo target/). The macOS-only CI job (hdmicap
 # AVFoundation + visionocr) is not covered here — run it on the host.
+# Like the skippable CI jobs, it deletes every doc-only file from the copy before
+# building (scripts/ci-doc-only.sh strip), so a crate that reads one fails here.
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -117,6 +119,13 @@ rsync -a --delete \
   --exclude "$MARKER" \
   "$SRC/" "$DST/"
 touch "$DST/$MARKER"
+
+# Same invariant as the skippable CI jobs: delete every doc-only file from the
+# build copy, so a crate that starts to read one fails here too. The copy has
+# no .git, so the script lists files with find.
+echo "### [setup] strip doc-only files (scripts/ci-doc-only.sh)"
+( cd "$DST" && PANIO_STRIP_NO_GIT=1 bash scripts/ci-doc-only.sh strip ) \
+  || { echo "FATAL: strip failed; aborting." >&2; exit 2; }
 
 declare -A RES
 
