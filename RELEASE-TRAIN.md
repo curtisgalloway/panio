@@ -25,7 +25,7 @@ bench-host run and by CI's new smoke step.
 - releaser identity: tag with the author's GitHub noreply form already in the history (`git log --format=%ae | sort -u`), passed as `-c user.email` on the tag command, never edited into config
 - helpers: `hdmicap serialcap netbootd cambrionix dsdrelay hidrig ch9329 shellyplug switchport amt` (the `HELPERS` line in the release workflow, and `CRATES` in `Makefile` minus the library crates, must agree; `scripts/ci-coverage-check.sh` enforces it). The Go helper `jetkvm` is deliberately NOT in that list yet: release packaging for it is milestone 1b, and the coverage script carries the written exemption. Until then it reaches users only through the source channel (`panio setup` with Go installed). Its video path needs `ffmpeg` at runtime (JetKVM video only; HID does not), and `hdmicap` gained the `tokio-tungstenite` and `futures-util` dependencies for its RFB client, so a channel smoke that builds `hdmicap` offline needs them vendored or fetchable
 - library crates: `secret` (no binary; in `Makefile` `CRATES` and CI, never in `HELPERS`; it ships compiled into `amt`, so no channel stages it and the smoke contract has nothing to check for it)
-- bundled skills: `skills/panio`, `skills/kvm-puppeting`, `skills/control-host` (shipped to `share/panio/skills` in every channel)
+- bundled skills: `skills/panio`, `skills/kvm-puppeting`, `skills/control-host`, `skills/managed-switch` (shipped to `share/panio/skills` in every channel)
 - log dir: `logs/release-train/<run>/` (gitignored, persistent)
 
 ## Hosts
@@ -50,7 +50,7 @@ plugin root (#303) adds entries to the S2/S3 lists.
 | id | check | pass condition |
 |---|---|---|
 | S1 | `panio --help`, then `panio --version` | exit 0; lists `target`, `serial`, `video`, `hid`, `doctor`, `daemons`, `skill`, `helper`; `--version` prints exactly `panio X.Y.Z` |
-| S2 | `panio skill` and `panio skill panio` | exit 0; lists `panio`, `kvm-puppeting`, `control-host`; the second prints a SKILL.md body |
+| S2 | `panio skill` and `panio skill panio` | exit 0; lists `panio`, `kvm-puppeting`, `control-host`, `managed-switch`; the second prints a SKILL.md body |
 | S3 | `panio helper` then `panio helper -- <h> --help` for each helper, `<h>` being the first field of each list line (a plugin-root entry adds `<TAB>plugin: <root>`; none appear with the variable unset) (since #300 everything after the helper name goes to the helper, so the `--` is optional; it stays here because a pre-#300 panio needs it, where clap otherwise answers for the `helper` verb and the binary never runs) | each exit 0 (a `--help` that returns 0 proves the shared libraries loaded), except `netbootd-bpf-helper` on macOS: the setuid helper takes no arguments and answers any call, `--help` included, with a usage line and exit 2 (`release.yml` asserts exactly that), which is its pass condition |
 | S4 | `panio --lab $T/lab.toml init`, `target add smoke`, `target list`, `config show`, `target rm smoke`, `target list` | exit 0 each; `smoke` listed before `rm`, absent after |
 | S5 | `panio --lab $T/lab.toml doctor` on that hardware-free lab, then `panio daemons list` | exit 0 or a clean "nothing configured" exit; never a panic or traceback |
@@ -168,7 +168,7 @@ feeds needs re-reading before `--update` re-pins it.
 |---|---|---|
 | `.github/workflows/release.yml` | a9fbf69e327e | Channels (every arm's build and staging), Publish |
 | `.github/workflows/docs.yml` | 206e9ae532f2 | Publish: re-verify apt |
-| `packaging/nfpm.yaml` | a4a812d176dc | Channels: deb |
+| `packaging/nfpm.yaml` | 1385ffedd380 | Channels: deb |
 | `packaging/scripts/build-apt-repo.sh` | 391037a4ea4c | Channels: deb, install like a user |
 | `Makefile` | 37267d1242f1 | Project: helpers; Channels: source |
 | `cli/src/setup.rs` | addba03ca821 | Channels: source |
@@ -177,4 +177,4 @@ feeds needs re-reading before `--update` re-pins it.
 | `scripts/ci-coverage-check.sh` | 14c39a57f1c7 | Project: helpers |
 | `scripts/sync-brik.sh` | 1920fb8f6241 | Channels: windows |
 | `README.md` | 6a46a384e3f5 | Channels: source; Publish: re-verify apt |
-| `AGENTS.md` | 6737d8516b2f | Project: bump rules, tag format; Publish |
+| `AGENTS.md` | 4b48ca2dbd73 | Project: bump rules, tag format; Publish |

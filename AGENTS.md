@@ -108,7 +108,10 @@ reflect the change.** Stale docs/help make the PR incomplete; fix them in the
    update it if you change the surface it relies on) and
    `skills/control-host/SKILL.md` (the executable procedure for building a
    control host from blank media; it owns those commands and
-   `docs/control-host.md` points at it, so keep the procedure in one place).
+   `docs/control-host.md` points at it, so keep the procedure in one place) and
+   `skills/managed-switch/SKILL.md` (taking a managed switch from factory
+   defaults to a working `switchport` link hook; it owns those commands and
+   `docs/netif.md` points at it).
    **Adding or removing a skill** needs a `contents` entry in `packaging/nfpm.yaml` (one explicit file→dst line
    per skill); `setup.rs` and the tarball enumerate `skills/` automatically.
 

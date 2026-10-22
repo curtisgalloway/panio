@@ -85,6 +85,10 @@ contents:
     dst: /usr/share/panio/skills/control-host/SKILL.md
     file_info:
       mode: 0o644
+  - src: skills/managed-switch/SKILL.md
+    dst: /usr/share/panio/skills/managed-switch/SKILL.md
+    file_info:
+      mode: 0o644
   # Keeps systemd-tmpfiles from deleting a long-running daemon's discovery
   # file out from under it -- see the file's own comment and GitHub #187.
   - src: packaging/tmpfiles.d/panio.conf

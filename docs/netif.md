@@ -174,6 +174,28 @@ port the host manages the switch through.
 
 ### Guaranteed link drop with a managed switch
 
+#### Supported switches
+
+| Switch | Backend | Measured | Link drop / restore |
+|---|---|---|---|
+| TP-Link TL-SG108PE, hardware 3.0, firmware 1.0.0 Build 20200415 | `easysmart` (web UI, password) | yes | carrier lost 0.8 s after `off`, back 1.7 s after `on` |
+| D-Link DGS-1100-05V2, hardware A1, firmware 1.00.003 | `snmp` (v2c, read-write community) | yes | carrier lost 0.6 s after `off`, back 1.7 s after `on` |
+
+The D-Link has no PoE, so its `poe` verbs do not apply. It ships with SNMP
+disabled and a web UI that must enable it, so the setup is a procedure: the
+bundled `managed-switch` skill (`panio skill managed-switch`, or
+[on GitHub](https://github.com/curtisgalloway/panio/blob/main/skills/managed-switch/SKILL.md))
+takes a factory-default switch to a working link hook. The rationale is
+here and the commands are there. Protocol facts: `switchport/AGENTS.md`.
+
+The factory D-Link has SNMP communities `private` (read-write) and `public`
+(read-only), and SNMP is cleartext. Enabling SNMP with the factory read-write
+community lets anyone on that link reconfigure the switch, so use it on an
+isolated bench link only; the skill points at the secret sources for a
+changed community.
+
+#### Link hooks
+
 A *link hook* is a shell command stored on the target's netboot channel. It
 runs on the channel's host the way a power hook does (`sh -c`, panio's helper
 directory first on `PATH`, under the target's hook lock). panio itself knows

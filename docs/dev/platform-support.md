@@ -140,7 +140,7 @@ panio\
   libexec\
     hdmicap.exe  serialcap.exe  netbootd.exe  hidrig.exe  …  winocr.exe
   share\panio\skills\
-    panio\SKILL.md  kvm-puppeting\SKILL.md  control-host\SKILL.md
+    panio\SKILL.md  kvm-puppeting\SKILL.md  control-host\SKILL.md  managed-switch\SKILL.md
 ```
 
 `daemons::exe_relative_dirs` adds `<exe dir>\libexec` on Windows, and

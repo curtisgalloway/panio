@@ -126,7 +126,7 @@ They are **not** kept current and not published.
 
 ## Elsewhere in the repo
 
-- **Agent skills** in [`skills/`](https://github.com/curtisgalloway/panio/tree/main/skills): `panio` (driving a target), `kvm-puppeting` (GUI puppeting), `control-host` (building a control host). `panio skill` lists them; `panio skill <name>` prints one's `SKILL.md`.
+- **Agent skills** in [`skills/`](https://github.com/curtisgalloway/panio/tree/main/skills): `panio` (driving a target), `kvm-puppeting` (GUI puppeting), `control-host` (building a control host), `managed-switch` (setting up a managed switch for link control). `panio skill` lists them; `panio skill <name>` prints one's `SKILL.md`.
 - [`AGENTS.md`](https://github.com/curtisgalloway/panio/blob/main/AGENTS.md): rules for contributors (privacy, PR checklist, releases, source constraints, adding a subsystem), plus per-component `AGENTS.md` files for internals.
 - [`hidrig/README.md`](https://github.com/curtisgalloway/panio/blob/main/hidrig/README.md): HID injector CLI and daemon; board and firmware are in [`paniolo-hardware`](https://github.com/curtisgalloway/paniolo-hardware) (`hidrig-kb2040/`).
 - [`docs/provenance/`](https://github.com/curtisgalloway/panio/tree/main/docs/provenance): the pinned source files read for each clean-room spec, for verifiers.

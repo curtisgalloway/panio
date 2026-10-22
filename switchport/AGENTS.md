@@ -96,6 +96,61 @@ or unsupported, 3 not configured (missing secret, or `--mgmt-port` for an
   `snmp`/`csnmp`. The fake agent in the tests hand-encodes BER and shares no
   code with snmp2, so a codec bug cannot hide on both sides.
 
+## D-Link DGS-1100-05V2 facts
+
+All measured on hardware: hardware A1, firmware 1.00.003, boot 1.0.0. The
+setup procedure is `skills/managed-switch/SKILL.md`; this section is the
+protocol reference behind it.
+
+- **Factory state.** Management address 10.90.90.90, mask 255.0.0.0, no
+  gateway, no DHCP server on the link. A host reaches it with a temporary
+  address in 10.90.90.0/24 (deliberately not /8, so the host does not route all
+  of 10/8 out the bench adapter); the switch replies because the host address
+  is inside its /8. The web UI is cleartext HTTP. SNMP is disabled; the
+  communities are preset to `private` (read-write) and `public` (read-only).
+- **SNMP.** v1/v2c. sysDescr `DGS-1100-05V2 Gigabit Ethernet Switch`,
+  sysObjectID 1.3.6.1.4.1.171.10.173.1.1. ifIndex 1..5 = ports 1..5, ifDescr
+  `port1`..`port5`, so the default `--if-index-offset 0` is right. No
+  POWER-ETHERNET-MIB (no PoE): `poe` does not apply. The bridge MIBs are not
+  exposed (`dot1dTpFdbPort` and `dot1qTpFdbPort` are "No Such Instance"), so
+  the management port is found from the web MAC table. Writes need
+  `SWITCHPORT_COMMUNITY=private` (the read-write community).
+- **Web UI protocol** (used only to enable SNMP; the helper itself speaks
+  SNMP).
+  - Every request needs `Referer: http://10.90.90.90/`; without it the server
+    returns a 143-byte stub that resets cookies and redirects to `/`.
+  - Static files are under `/DGS-1100-05V2_1.00.003/`. The root page sets
+    `RT='/DGS-1100-05V2_1.00.003/'`; the prefix carries the firmware version,
+    so read it from the root page.
+  - Login is password only (factory `admin`): POST `/cgi/login.cgi`, body
+    `pass=<lowercase hex MD5 of the password>`, cookie `Gambit=login`. The
+    session is not in `Set-Cookie`: it arrives in the body as JavaScript,
+    `document.cookie='SessID=1;path=/';document.cookie='Gambit=<token>;path=/';`.
+    Later requests send `Cookie: SessID=1; Gambit=<token>`. Never retry a
+    failed login.
+  - Page data is `<RT>DS/<Name>.js`: `Switch.js` (`ds_IPInfo`, `g_DeviceInfo`
+    with the switch MAC), `SNMP_Global.js` (`var ds_Snmp=[enabled,trap,...]`),
+    `SNMP_Community.js` (`ds_SnmpCom=['private','public']`), `Port.js`
+    (`ds_PortSetting`, a row per port), `DFT.js` (dynamic MAC table
+    `ds_DFT=[[port,'AA-BB-CC-DD-EE-FF',vid,type],...]`), `const.js`
+    (`g_SwitchInfo=['DGS-1100-05V2','1.00.003','1.0.0']`, `g_PortNum=5`,
+    `g_bPoE_Support=0`).
+  - Enable SNMP: POST `/cgi/snmp_global.cgi`, body `Snmp=1&Trap=0&item=00000`;
+    `SNMP_Global.js`'s first element becomes 1.
+  - Save to flash: POST `/cgi/save.cgi` with an empty body; the reply loads
+    `DS/Message.js` with `ds_nMsgID=2` ("The configuration has been saved.").
+    Without it the settings are lost at power-off. Save only while every port
+    is admin-up, so a port disabled for a test is not persisted.
+- **Results.** `switchport -d <switch> --backend snmp --mgmt-port <M> doctor
+  --json`: identity ok, ports ok ("5 reported"), mgmt-port ok. `port <M> off`
+  is refused before any request (exit 2, "refusing to turn port M off: port M
+  is --mgmt-port ..."). `port N off`: the host adapter on that port lost
+  carrier 0.6 s later; `port N on`: carrier back 1.7 s later (TP-Link: 0.8 s /
+  1.7 s). Admin state and link read back correctly.
+- **Security.** Enabling SNMP with the factory read-write community lets
+  anyone on the link reconfigure the switch: isolated bench links only.
+  Changing the communities was not measured.
+
 ## Tests
 
 Loopback only; nothing touches a real switch. Easy Smart: a `TcpListener`
