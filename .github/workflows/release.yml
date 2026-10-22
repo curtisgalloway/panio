@@ -917,7 +917,9 @@ jobs:
     # Tag-only, and skips prereleases like v0.2.0-rc.1. A no-op until
     # WINGET_TOKEN exists. The FIRST version must be submitted by hand
     # (wingetcreate or komac) to create the package — this action only updates
-    # packages that already exist.
+    # packages that already exist, so until that submission is merged into
+    # microsoft/winget-pkgs the job checks for the package's manifest
+    # directory and skips with a notice instead of failing the release.
     if: ${{ github.event_name == 'push' && github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-') }}
     needs: release
     runs-on: ubuntu-latest
@@ -926,8 +928,28 @@ jobs:
       # that invalidates the whole workflow) — test it through env.
       WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
     steps:
-      - name: Publish to winget (update PR)
+      - name: Is the package in winget-pkgs yet?
+        id: listed
         if: ${{ env.WINGET_TOKEN != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          code=$(curl -s -o /dev/null -w '%{http_code}' \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            https://api.github.com/repos/microsoft/winget-pkgs/contents/manifests/c/CurtisGalloway/Panio)
+          case "$code" in
+            200) echo "listed=true" >> "$GITHUB_OUTPUT" ;;
+            404)
+              echo "listed=false" >> "$GITHUB_OUTPUT"
+              echo "::notice::CurtisGalloway.Panio is not in microsoft/winget-pkgs yet (first submission not merged); skipping winget publish."
+              ;;
+            *)
+              echo "::error::checking microsoft/winget-pkgs for CurtisGalloway.Panio returned HTTP $code"
+              exit 1
+              ;;
+          esac
+      - name: Publish to winget (update PR)
+        if: ${{ env.WINGET_TOKEN != '' && steps.listed.outputs.listed == 'true' }}
         uses: vedantmgoyal9/winget-releaser@b7370d4d152efdce803a26cc6ca9eee58cb2ad54 # v2
         with:
           identifier: CurtisGalloway.Panio
