@@ -510,8 +510,11 @@ The `dsdrelay` helper switches a DSD TECH SH-UR01A (1-channel) or SH-UR04A
 Protocol facts, measured on hardware: every command **must end in `\r\n`**.
 An unterminated command gets no reply, and its bytes stay in the board's
 input buffer across port close and reopen, so the next command answers
-`Error`. `dsdrelay` therefore sends a bare `\r\n`, waits 150 ms, discards
-whatever came back, and only then sends `cmd\r\n`; it skips the NUL byte the
+`Error`. `dsdrelay` therefore sends `?\r\n`, waits 150 ms, discards
+whatever came back, and only then sends `cmd\r\n`. The `?` matters: a bare
+`\r\n` would complete a leftover but valid command such as `AT+CH1=1` and the
+board would execute it (a read-only `state` could cut a target's power), whereas
+`AT+CH1=1?` is just an `Error`, and a lone `?` on a clean buffer is silent. It skips the NUL byte the
 SH-UR04A appends to every reply. A previous session that died mid-command
 cannot corrupt the next one.
 
@@ -575,7 +578,7 @@ dsdrelay -s <usb-serial> state <ch>            # select the port by USB serial n
   that ignored `off` is not reported as a successful cycle.
 - **Opening or closing the port does not change relay state.** The port is
   opened exclusively, with a 1 s read timeout; each command is preceded by
-  the `\r\n` resync described above.
+  the `?\r\n` resync described above.
 - **`list` never opens a port.** A Sonoff ZBDongle-P Zigbee coordinator (the
   [`zigplug`](#zigbee-smart-plug-control-zigplug) dongle) uses the same
   CP2102N VID:PID, and opening its port can reset its CC2652 into the

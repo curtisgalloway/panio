@@ -40,12 +40,14 @@ change relay state. Measured on hardware:
   commands (`AT\r\n` -> `OK\n`), replies without the NUL, in about 55 ms.
 - **Commands must end in `\r\n`.** An unterminated command gets no reply and its
   bytes stay in the board's input buffer *across port close and reopen*, corrupting
-  the next command (which answers `Error`). A bare `\r\n` on a clean buffer gets no
-  reply; on leftover garbage it gets `Error\n\0`, after which the next command is
-  answered correctly.
-- So `proto::exchange` resyncs before every command: write a bare `\r\n`, wait
-  `RESYNC_SETTLE` (150 ms, `Transport::settle`, a no-op in tests), clear input
-  (discarding the resync's `Error`), then write `cmd\r\n`. The reply reader skips NUL
+  the next command (which answers `Error`). **A bare `\r\n` is dangerous as a
+  resync**: if the leftover is a complete command (`AT+CH1=1`), the terminator
+  completes it and the board executes it (measured; a read-only `state` could cut
+  power). `?\r\n` is safe: on a clean buffer a lone `?` gets no reply; on leftover
+  (`AT+CH1=1?`) it gets `Error\n\0` and nothing runs.
+- So `proto::exchange` resyncs before every command: write `proto::RESYNC`
+  (`?\r\n`), wait `RESYNC_SETTLE` (150 ms, `Transport::settle`, a no-op in tests),
+  clear input (discarding the resync's `Error`), then write `cmd\r\n`. The reply reader skips NUL
   bytes anywhere and does not count them toward the cap. Callers pass commands without
   terminators.
 

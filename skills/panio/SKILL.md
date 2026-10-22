@@ -780,7 +780,7 @@ never open one by hand to identify it, because a Sonoff ZBDongle-P Zigbee
 coordinator shares the VID:PID and opening its port can reset it into the
 bootloader. A channel the board lacks is an error ("channel N not present on
 this relay"). Commands must end in `\r\n` (the helper handles this and resyncs
-before each command, so never write to the port by hand; leftover bytes survive
+with `?\r\n` before each command, so a leftover `AT+CH1=1` is never completed, so never write to the port by hand; leftover bytes survive
 a close/reopen and corrupt the next command), and SH-UR04A replies end in a NUL.
 `list` warns when serials are not unique. See `docs/power.md` for the full `dsdrelay` command surface.
 

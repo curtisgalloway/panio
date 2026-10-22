@@ -424,6 +424,39 @@ mod tests {
         assert!(e.to_string().contains("target may be left off"), "{e}");
     }
 
+    struct Borrowed<'a>(&'a mut FakeRelay);
+    impl std::io::Read for Borrowed<'_> {
+        fn read(&mut self, b: &mut [u8]) -> std::io::Result<usize> {
+            self.0.read(b)
+        }
+    }
+    impl std::io::Write for Borrowed<'_> {
+        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+            self.0.write(b)
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    impl Transport for Borrowed<'_> {
+        fn clear_input(&mut self) -> std::io::Result<()> {
+            self.0.clear_input()
+        }
+        fn settle(&mut self, _d: Duration) {}
+    }
+
+    #[test]
+    fn doctor_never_executes_a_leftover_command() {
+        for (seed, coil) in [(&b"AT+CH1=1"[..], false), (&b"AT+CH1=0"[..], true)] {
+            let mut d = FakeRelay::new(1);
+            d.coils[0] = coil;
+            d.inbuf.extend_from_slice(seed);
+            let checks = doctor_checks(Ok(("/dev/fake0".to_string(), Borrowed(&mut d))), 1);
+            assert!(checks.iter().all(|c| c.status == "ok"), "after {seed:?}");
+            assert_eq!(d.coils, [coil], "doctor after {seed:?}");
+        }
+    }
+
     #[test]
     fn doctor_reports_a_healthy_released_relay() {
         let checks = doctor_checks(opened(FakeRelay::new(1)), 1);

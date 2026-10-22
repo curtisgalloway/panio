@@ -29,14 +29,20 @@
 //! anything else, or a channel the board lacks -> Error
 //! ```
 //!
-//! # Resync: why every command is preceded by a bare `\r\n`
+//! # Resync: why every command is preceded by `?\r\n`
 //!
 //! An unterminated command gets no reply, and its bytes stay in the board's
 //! input buffer **across port close and reopen**, so the next command is
-//! glued onto them and answers `Error`. [`exchange`] therefore first writes a
-//! bare `\r\n` (which finishes any leftover garbage as one bad line; a clean
-//! buffer answers nothing), waits [`RESYNC_SETTLE`], discards whatever came
-//! back (the `Error` the garbage produced), and only then sends the command.
+//! glued onto them and answers `Error`. [`exchange`] therefore first writes
+//! [`RESYNC`] (`?\r\n`), waits [`RESYNC_SETTLE`], discards whatever came
+//! back, and only then sends the command.
+//!
+//! The resync must not be a bare `\r\n`: if the leftover is a complete but
+//! unterminated command (`AT+CH1=1` from a killed process or an older build),
+//! a bare terminator COMPLETES it and the board executes it, so a read-only
+//! `state` or `doctor` could cut a target's power (measured on the SH-UR04A).
+//! The `?` makes any leftover an invalid command (`AT+CH1=1?` answers
+//! `Error`), and on a clean buffer a lone `?` is silent.
 //!
 //! # Wiring: the target is on the NC contact
 //!
@@ -58,7 +64,15 @@ pub const USB_PID: u16 = 0xea60;
 /// Wall-clock bound on one reply (the board answers in about 55 ms).
 pub const REPLY_DEADLINE: Duration = Duration::from_secs(1);
 
-/// How long to wait after the resync `\r\n` for the board to finish
+/// The resync bytes written before every command.
+///
+/// The leading `?` turns any leftover in the board's input buffer into an
+/// invalid command (`Error`) instead of completing it. A bare `\r\n` would
+/// finish a leftover `AT+CH1=1` and energize the relay. A lone `?` on a
+/// clean buffer gets no reply.
+pub const RESYNC: &[u8] = b"?\r\n";
+
+/// How long to wait after the resync [`RESYNC`] for the board to finish
 /// answering it, before the input is cleared and the real command is sent.
 pub const RESYNC_SETTLE: Duration = Duration::from_millis(150);
 
@@ -153,7 +167,7 @@ pub fn onoff(on: bool) -> &'static str {
 /// Send one command (no terminator; `\r\n` is added) and return the reply
 /// line, trimmed, without its newline.
 ///
-/// The board is resynchronized first: a bare `\r\n`, a [`RESYNC_SETTLE`]
+/// The board is resynchronized first: [`RESYNC`] (`?\r\n`), a [`RESYNC_SETTLE`]
 /// wait, then the input is cleared (see the module docs). The reply is read
 /// byte by byte until `\n`, within `deadline` and `cap` bytes; NUL bytes are
 /// skipped and not counted. Silence and a stream that ends are errors.
@@ -163,7 +177,7 @@ pub fn exchange<T: Transport>(
     deadline: Duration,
     cap: usize,
 ) -> Result<String> {
-    t.write_all(b"\r\n")
+    t.write_all(RESYNC)
         .and_then(|()| t.flush())
         .map_err(|e| anyhow!("write error: {e}"))?;
     t.settle(RESYNC_SETTLE);
@@ -450,8 +464,10 @@ pub mod fake {
     //!
     //! It models the SH-UR04A's framing: it acts only on `\r\n`-terminated
     //! lines and keeps a partial line in `inbuf` (as the real board does,
-    //! across port close and reopen); a bare empty line gets no reply, while
-    //! a garbage line gets `Error`.
+    //! across port close and reopen). A bare empty line and a lone `?` get no
+    //! reply (the resync on a clean buffer), while a garbage line, including
+    //! leftover + `?` such as `AT+CH1=1?`, gets `Error`. An empty line
+    //! completes whatever is in `inbuf`, as on the real board.
 
     use super::*;
     use std::collections::VecDeque;
@@ -524,7 +540,7 @@ pub mod fake {
             let cmd = String::from_utf8_lossy(raw)
                 .trim_end_matches('\r')
                 .to_string();
-            if cmd.is_empty() {
+            if cmd.is_empty() || cmd == "?" {
                 return;
             }
             self.log.push(cmd.clone());
@@ -835,7 +851,7 @@ mod tests {
     }
 
     #[test]
-    fn every_command_is_crlf_terminated_after_a_bare_resync() {
+    fn every_command_is_crlf_terminated_after_a_question_mark_resync() {
         struct Spy(FakeRelay, Vec<Vec<u8>>);
         impl Read for Spy {
             fn read(&mut self, b: &mut [u8]) -> io::Result<usize> {
@@ -859,7 +875,7 @@ mod tests {
         }
         let mut s = Spy(FakeRelay::new(1), Vec::new());
         ping(&mut s).unwrap();
-        assert_eq!(s.1, [b"\r\n".to_vec(), b"AT\r\n".to_vec()]);
+        assert_eq!(s.1, [b"?\r\n".to_vec(), b"AT\r\n".to_vec()]);
     }
 
     #[test]
@@ -895,6 +911,36 @@ mod tests {
         assert!(!query_target(&mut d, 1).unwrap());
         set_target(&mut d, 1, true).unwrap();
         assert!(query_target(&mut d, 1).unwrap());
+    }
+
+    #[test]
+    fn leftover_complete_command_is_never_executed_by_reads() {
+        for (seed, coil) in [(&b"AT+CH1=1"[..], false), (&b"AT+CH1=0"[..], true)] {
+            let mut d = FakeRelay::new(2);
+            d.coils[0] = coil;
+            d.inbuf.extend_from_slice(seed);
+            query_target(&mut d, 1).unwrap();
+            assert_eq!(d.coils, [coil, false], "query_target after {seed:?}");
+            let mut d = FakeRelay::new(2);
+            d.coils[0] = coil;
+            d.inbuf.extend_from_slice(seed);
+            ping(&mut d).unwrap();
+            assert_eq!(d.coils, [coil, false], "ping after {seed:?}");
+        }
+    }
+
+    #[test]
+    fn fake_board_models_the_question_mark_resync() {
+        let mut d = FakeRelay::new(1);
+        d.write_all(b"?\r\n").unwrap();
+        assert!(d.out.is_empty(), "lone ? on a clean buffer is silent");
+        d.write_all(b"AT+CH1=1?\r\n").unwrap();
+        assert_eq!(d.out.iter().copied().collect::<Vec<_>>(), b"Error\n\0");
+        assert!(!d.coils[0], "leftover + ? must not execute");
+        d.out.clear();
+        d.write_all(b"AT+CH1=1").unwrap();
+        d.write_all(b"\r\n").unwrap();
+        assert!(d.coils[0], "a bare terminator completes a leftover command");
     }
 
     #[test]
