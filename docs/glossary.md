@@ -88,6 +88,9 @@ each term briefly on first use; this page is the longer reference.
 | **line coding** | A USB serial control request describing baud, stop bits, parity, and data bits. Firmware can act on it even when data travels over USB rather than a physical UART. |
 | **tty / termios** | A Unix terminal or serial device / the settings that control it, including raw input and automatic echo. |
 | **VID/PID** | USB vendor and product identifiers. Shared identifiers do not uniquely identify a board or firmware build. |
+| **BLE** | Bluetooth Low Energy, the low-power Bluetooth mode small devices such as the `dsdble` relay board use. |
+| **GATT / characteristic** | How a BLE device exposes itself: a list of services, each holding values called characteristics that a client reads, writes or subscribes to. `dsdble` writes one characteristic (`FFE1`). |
+| **NC (normally closed)** | A relay contact that conducts while the relay coil is off. `dsdrelay` and `dsdble` wire the target through it, so an unpowered board leaves the target powered. |
 | **HID** | Human Interface Device: the USB class for keyboards and mice. |
 | **fastboot / RAM staging** | Fastboot is a bootloader communication protocol. Its download operation places bytes in a temporary RAM buffer; flashing writes persistent storage, and booting executes an image. These are separate operations. |
 | **H.264** | A lossy video codec. A JetKVM streams its screen as H.264; the `jetkvm` daemon decodes it with `ffmpeg`. |

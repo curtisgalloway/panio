@@ -86,7 +86,7 @@ rejects `--json-errors`.
 cd ~/src/panio
 make install               # cargo-installs the `panio` CLI, then `panio setup`
                            # builds/installs the helper binaries (hdmicap, serialcap,
-                           # netbootd, cambrionix, dsdrelay, hidrig, ch9329, shellyplug,
+                           # netbootd, cambrionix, dsdrelay, dsdble, hidrig, ch9329, shellyplug,
                            # amt), the OCR helper, zigplug, and the bundled skills;
                            # on macOS also installs netbootd-bpf-helper
                            # setuid-root (one sudo)
@@ -94,7 +94,7 @@ make install               # cargo-installs the `panio` CLI, then `panio setup`
 
 Run once per machine; re-run after pulling or editing (it's a full rebuild).
 Only the `panio` CLI lands in `~/.cargo/bin` — make sure that's on `PATH`.
-The helpers (hdmicap, serialcap, netbootd, cambrionix, dsdrelay, hidrig, ch9329,
+The helpers (hdmicap, serialcap, netbootd, cambrionix, dsdrelay, dsdble, hidrig, ch9329,
 shellyplug, amt, jetkvm (needs Go), zigplug, the
 OCR tool) live in the private libexec dir `~/.local/libexec/panio/bin`,
 off PATH; panio resolves them itself, and `panio helper [NAME] [ARGS…]`
@@ -784,6 +784,34 @@ this relay"). Commands must end in `\r\n` (the helper handles this and resyncs
 with `?\r\n` before each command, so a leftover `AT+CH1=1` is never completed, so never write to the port by hand; leftover bytes survive
 a close/reopen and corrupt the next command), and SH-UR04A replies end in a NUL.
 `list` warns when serials are not unique. See `docs/power.md` for the full `dsdrelay` command surface.
+
+### DSD TECH Bluetooth LE relay board (dsdble)
+
+The `dsdble` helper switches a channel of a DSD TECH SH-BT01E Bluetooth LE
+relay board over BLE. Wiring is the same hardcoded **NC** as `dsdrelay`
+(`on` releases the coil, `off` energizes it; an unpowered board leaves the
+target powered). Select the board with `-a <addr>`: its MAC on Linux, the
+per-host CoreBluetooth UUID on macOS (find either with `dsdble scan`, which
+connects to nothing).
+
+**The board cannot report state.** `on`/`off`/`cycle` succeed when the BLE
+write is acknowledged, which does not prove the target changed state, and
+`dsdble state` always fails with `state unknown` rather than guess. Do not
+wire a `--state-cmd`; confirm power changes another way (serial console,
+power-sense, the target's network presence).
+
+```
+panio power set -t pi5 \
+    --cycle-cmd "dsdble -a 00:11:22:33:44:55 cycle 1" \
+    --on-cmd    "dsdble -a 00:11:22:33:44:55 on 1" \
+    --off-cmd   "dsdble -a 00:11:22:33:44:55 off 1" \
+    --doctor
+```
+
+Gotchas: use it from a Linux control host. On macOS the binary only works
+from a terminal app that has Bluetooth permission and is killed over SSH or
+from a hook. A board still connected to a phone app does not advertise and is
+not found. See `docs/power.md` for the full `dsdble` command surface.
 
 ### Intel AMT / vPro (example)
 

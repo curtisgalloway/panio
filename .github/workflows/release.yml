@@ -42,7 +42,7 @@ permissions:
 
 env:
   NFPM_VERSION: 2.46.3
-  HELPERS: hdmicap serialcap netbootd cambrionix dsdrelay hidrig ch9329 shellyplug switchport amt
+  HELPERS: hdmicap serialcap netbootd cambrionix dsdrelay dsdble hidrig ch9329 shellyplug switchport amt
 
 jobs:
   profile-pins:
@@ -82,7 +82,7 @@ jobs:
         run: |
           apt-get update
           apt-get install -y --no-install-recommends \
-            build-essential pkg-config libudev-dev libclang-dev clang \
+            build-essential pkg-config libudev-dev libdbus-1-dev libclang-dev clang \
             cmake nasm curl ca-certificates git
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -105,6 +105,7 @@ jobs:
             netbootd
             cambrionix
             dsdrelay
+            dsdble
             hidrig
             ch9329
             shellyplug
@@ -317,6 +318,7 @@ jobs:
             netbootd
             cambrionix
             dsdrelay
+            dsdble
             hidrig
             ch9329
             shellyplug
@@ -534,6 +536,7 @@ jobs:
             netbootd
             cambrionix
             dsdrelay
+            dsdble
             hidrig
             ch9329
             shellyplug

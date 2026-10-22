@@ -46,11 +46,11 @@ echo "### [setup] system deps"
 # Wait for the dpkg lock rather than failing on it: a freshly booted VM usually
 # has unattended-upgrades holding it for the first few minutes. And abort if the
 # install still fails -- without these libraries every serialport crate (cli,
-# serialcap, cambrionix, ch9329, hidrig) and hdmicap fail to build, which reads
+# serialcap, cambrionix, ch9329, hidrig, dsdble) and hdmicap fail to build, which reads
 # as six code failures instead of one missing dependency.
 APT=(-o DPkg::Lock::Timeout=300)
 if ! sudo apt-get "${APT[@]}" update -qq \
-  || ! sudo apt-get "${APT[@]}" install -y -qq pkg-config libudev-dev build-essential \
+  || ! sudo apt-get "${APT[@]}" install -y -qq pkg-config libudev-dev libdbus-1-dev build-essential \
        libclang-dev clang cmake nasm libturbojpeg0-dev curl ca-certificates rsync >/dev/null
 then
   echo "FATAL: could not install the system build dependencies; aborting." >&2
@@ -191,6 +191,7 @@ crate_job "netbootd"   "netbootd"   "cargo test"
 crate_job "hdmicap"    "hdmicap"    "cargo build"
 crate_job "cambrionix" "cambrionix" "cargo test"
 crate_job "dsdrelay"   "dsdrelay"   "cargo test"
+crate_job "dsdble"     "dsdble"     "cargo test"
 crate_job "ch9329"     "ch9329"     "cargo test"
 crate_job "hidrig"     "hidrig"     "cargo test"
 crate_job "shellyplug" "shellyplug" "cargo test"
@@ -202,7 +203,7 @@ go_job    "jetkvm"     "jetkvm"
 echo
 echo "########## LOCAL CI SUMMARY ##########"
 fail=0
-for k in "cli" "serialcap" "netbootd" "hdmicap" "cambrionix" "dsdrelay" "ch9329" \
+for k in "cli" "serialcap" "netbootd" "hdmicap" "cambrionix" "dsdrelay" "dsdble" "ch9329" \
          "hidrig" "shellyplug" "switchport" "amt" "secret" "jetkvm"; do
   c="${RES[$k]:-NA}"
   if [ "$c" = "0" ]; then printf 'PASS       %s\n' "$k"; else printf 'FAIL(%s)  %s\n' "$c" "$k"; fail=1; fi
