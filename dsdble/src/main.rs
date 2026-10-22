@@ -298,7 +298,9 @@ fn format_scan(found: &[Seen]) -> String {
         out.push_str(&format!(
             "{}\t{}\t{}\n",
             s.address,
-            s.name.as_deref().unwrap_or("-"),
+            s.name
+                .as_deref()
+                .map_or_else(|| "-".to_string(), proto::printable_name),
             rssi
         ));
     }

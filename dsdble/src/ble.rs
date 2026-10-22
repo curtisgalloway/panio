@@ -102,7 +102,10 @@ pub fn scan(timeout: Duration) -> Result<Vec<Seen>> {
             }
             found.push(Seen {
                 address: proto::display_address(&p.address().to_string(), &p.id().to_string()),
-                name: props.local_name.or(props.advertisement_name),
+                name: props
+                    .local_name
+                    .or(props.advertisement_name)
+                    .map(|n| proto::printable_name(&n)),
                 rssi: props.rssi,
             });
         }
@@ -200,8 +203,18 @@ impl Probe for Session {
             let mut hit = None;
             while hit.is_none() {
                 for p in adapter.peripherals().await.unwrap_or_default() {
-                    if proto::address_matches(&query, &p.address().to_string(), &p.id().to_string())
-                    {
+                    if !proto::address_matches(
+                        &query,
+                        &p.address().to_string(),
+                        &p.id().to_string(),
+                    ) {
+                        continue;
+                    }
+                    // Same gate as `scan`: the adapter's list can hold cached
+                    // peripherals the service filter did not select.
+                    let relay = matches!(p.properties().await, Ok(Some(props))
+                        if props.services.contains(&uuid_from_u16(SERVICE_SHORT_UUID)));
+                    if relay {
                         hit = Some(p);
                         break;
                     }
@@ -228,7 +241,7 @@ impl Probe for Session {
                 props
                     .local_name
                     .or(props.advertisement_name)
-                    .unwrap_or_else(|| "(unnamed)".to_string()),
+                    .map_or_else(|| "(unnamed)".to_string(), |n| proto::printable_name(&n)),
                 props
                     .rssi
                     .map_or_else(|| "unknown".to_string(), |r| format!("{r} dBm"))

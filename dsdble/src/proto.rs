@@ -114,7 +114,9 @@ pub fn normalize_address(s: &str) -> String {
 /// object-path id (`.../dev_AA_BB_CC_DD_EE_FF`) also matches by its MAC.
 pub fn address_matches(query: &str, address: &str, id: &str) -> bool {
     let q = normalize_address(query);
-    if q.is_empty() {
+    // An all-zero query would match every peripheral on macOS, which reports
+    // 00:00:00:00:00:00 for all of them.
+    if q.is_empty() || is_placeholder_address(&q) {
         return false;
     }
     let tail = id.rsplit('/').next().unwrap_or(id);
@@ -124,11 +126,26 @@ pub fn address_matches(query: &str, address: &str, id: &str) -> bool {
         .any(|c| normalize_address(c) == q)
 }
 
+/// True for an address made only of zeros and separators: macOS's stand-in
+/// for "no MAC", never an identity.
+fn is_placeholder_address(address: &str) -> bool {
+    address.chars().all(|c| matches!(c, '0' | ':'))
+}
+
+/// An advertised name made safe to print: control characters (a nearby
+/// device chooses its own name) become `.`, and the length is capped.
+pub fn printable_name(name: &str) -> String {
+    name.chars()
+        .map(|c| if c.is_control() { '.' } else { c })
+        .take(64)
+        .collect()
+}
+
 /// The address string `scan` shows for a peripheral: its MAC where the
 /// platform exposes one (Linux), else the platform id (macOS reports an
 /// all-zero address and identifies a device by a per-host CoreBluetooth UUID).
 pub fn display_address(address: &str, id: &str) -> String {
-    if address.chars().all(|c| matches!(c, '0' | ':')) {
+    if is_placeholder_address(address) {
         id.to_string()
     } else {
         address.to_string()
@@ -138,6 +155,22 @@ pub fn display_address(address: &str, id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn all_zero_query_matches_nothing() {
+        assert!(!address_matches(
+            "00:00:00:00:00:00",
+            "00:00:00:00:00:00",
+            "00000000-0000-4000-8000-000000000001"
+        ));
+        assert!(!address_matches("000000000000", "00:00:00:00:00:00", "x"));
+    }
+
+    #[test]
+    fn printable_name_strips_control_characters() {
+        assert_eq!(printable_name("DSD\x1b[2J\tTECH\n"), "DSD.[2J.TECH.");
+        assert_eq!(printable_name(&"x".repeat(100)).len(), 64);
+    }
 
     #[test]
     fn measured_frames() {
