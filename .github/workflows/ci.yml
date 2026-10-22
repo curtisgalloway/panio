@@ -294,17 +294,15 @@ jobs:
         run: cargo test
 
   netbootd:
-    name: ${{ matrix.name }}
-    strategy:
-      matrix:
-        include:
-          - os: ubuntu-latest
-            name: netbootd (fmt, clippy, test)
-          - os: macos-latest
-            name: netbootd (macOS, fmt, clippy, test)
+    # Two jobs rather than a matrix: a matrix job skipped by `if:` (a doc-only
+    # PR) reports its check under the unexpanded name `matrix.name`, so the
+    # required "netbootd (fmt, clippy, test)" check would never report (#354).
+    # scripts/tests/test_ci_doc_only.py forbids matrix/expression names on
+    # skippable jobs.
+    name: netbootd (fmt, clippy, test)
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: netbootd
@@ -327,6 +325,32 @@ jobs:
       - name: Test
         run: cargo test
 
+  netbootd-macos:
+    name: netbootd (macOS, fmt, clippy, test)
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: netbootd
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Strip doc-only files (enforces the doc-only skip invariant)
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        run: bash scripts/ci-doc-only.sh strip
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: netbootd
+      - name: Format check
+        run: cargo fmt --check
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Test
+        run: cargo test
   hdmicap-linux:
     name: hdmicap (Linux, fmt, clippy, V4L2 build)
     needs: changes
