@@ -1996,6 +1996,7 @@ echo 'warning: serialcap is not running; the log may be stale' >&2"#,
         assert!(err.contains("5m"), "{err}");
     }
 
+    #[cfg(unix)]
     #[test]
     fn lease_acquire_result_hides_token() {
         let dir = tempfile::tempdir().unwrap();
