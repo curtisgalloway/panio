@@ -331,15 +331,16 @@ pub fn dispatch(
     };
     let argv = remote_argv(&host, &remote_path, token_file.as_deref(), sub_argv);
 
-    let code = match mode {
+    let result = match mode {
         // No environment crosses here: the remote's stdin *is* the terminal
         // the user is typing into (see `ssh::run_interactive`'s doc comment
         // for why that rules out a forwarding channel).
         Mode::Interactive => ssh::run_interactive(&host, &argv),
         Mode::Reexec => ssh::run_passthrough(&host, &argv, &ssh::forwarded_env()?),
-    }?;
+    };
 
-    // Best-effort cleanup of the shipped slice, before judging the code: a
+    // Best-effort cleanup of the shipped slice (also when the run itself
+    // failed with an io error), before judging the code: a
     // 255 does not always mean the host is gone (see `transport_checked`),
     // and when it is, the removal just fails.
     let _ = ssh::sftp_rm(&host, &remote_path);
@@ -347,6 +348,7 @@ pub fn dispatch(
         // The remote deletes it on read; this is the backstop.
         let _ = ssh::sftp_rm(&host, f);
     }
+    let code = result?;
     transport_checked(code, host_name, target)
 }
 

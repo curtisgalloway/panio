@@ -583,3 +583,36 @@ fn lease_file_is_read_and_deleted() {
     );
     assert_eq!(o.status.code(), Some(109), "{}", stderr(&o));
 }
+
+#[test]
+fn lease_file_token_reaches_hooks_and_empty_file_is_refused() {
+    let name = "lease_file_token_reaches_hooks";
+    let dir = scratch(name, REQUIRED_LAB);
+    let out = dir.join("seen");
+    let lab = REQUIRED_LAB.replace(
+        "on_cmd = \"true\"",
+        &format!(
+            "on_cmd = \"printf %s \\\"$PANIO_LEASE\\\" > {}\"",
+            out.display()
+        ),
+    );
+    std::fs::write(dir.join("lab.toml"), lab).unwrap();
+    let tok = acquire(&dir);
+    let file = dir.join("t");
+    std::fs::write(&file, &tok).unwrap();
+    let o = panio(
+        &dir,
+        &["--lease-file", file.to_str().unwrap(), "power", "on", "dut"],
+        None,
+    );
+    assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
+    assert_eq!(std::fs::read_to_string(&out).unwrap(), tok);
+
+    std::fs::write(&file, "  \n").unwrap();
+    let o = panio(
+        &dir,
+        &["--lease-file", file.to_str().unwrap(), "power", "on", "dut"],
+        Some(&tok),
+    );
+    assert_eq!(o.status.code(), Some(109), "{}", stderr(&o));
+}

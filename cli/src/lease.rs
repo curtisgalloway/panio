@@ -494,7 +494,7 @@ static FILE_TOKEN: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::ne
 
 /// Read and delete the `--lease-file` a dispatching panio shipped, and keep
 /// its trimmed content as the caller's token for the rest of this process
-/// (it overrides `PANIO_LEASE`). Call once, right after argument parsing: the
+/// (it overrides, and is exported as, `PANIO_LEASE`). Call once, right after argument parsing: the
 /// file is deleted on read so the token does not outlive the command. An
 /// unreadable file is an error, never a silent run without a token.
 pub fn take_lease_file(path: &str) -> anyhow::Result<()> {
@@ -502,9 +502,17 @@ pub fn take_lease_file(path: &str) -> anyhow::Result<()> {
     let text = std::fs::read_to_string(path)
         .with_context(|| format!("reading the shipped lease token file '{path}'"))?;
     // Best effort: the dispatching side also removes it afterward.
-    let _ = std::fs::remove_file(path);
+    if let Err(e) = std::fs::remove_file(path) {
+        eprintln!("warning: could not delete the lease token file '{path}': {e}");
+    }
     let t = text.trim().to_string();
-    let _ = FILE_TOKEN.set((!t.is_empty()).then_some(t));
+    if t.is_empty() {
+        anyhow::bail!("the shipped lease token file '{path}' is empty");
+    }
+    // Single-threaded here (called from main before `run`): children, hooks
+    // and helpers see the token as PANIO_LEASE too.
+    unsafe { std::env::set_var("PANIO_LEASE", &t) };
+    let _ = FILE_TOKEN.set(Some(t));
     Ok(())
 }
 

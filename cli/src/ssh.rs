@@ -601,9 +601,6 @@ mod tests {
         stdin_prelude(&argv(&["x"]), &["A-B"]);
     }
 
-    /// Only the listed variables cross, in list order; an unset one is
-    /// simply absent, and a value the remote's line-oriented `read` could
-    /// not take back intact is refused rather than truncated.
     #[test]
     fn forwarded_env_includes_panio_lease() {
         let lookup = |n: &str| (n == "PANIO_LEASE").then(|| std::ffi::OsString::from("tok"));
@@ -611,6 +608,9 @@ mod tests {
         assert_eq!(got, vec![("PANIO_LEASE".to_string(), "tok".to_string())]);
     }
 
+    /// Only the listed variables cross, in list order; an unset one is
+    /// simply absent, and a value the remote's line-oriented `read` could
+    /// not take back intact is refused rather than truncated.
     #[test]
     fn collect_forwarded_takes_set_names_in_order_and_rejects_newlines() {
         let lookup = |name: &str| -> Option<std::ffi::OsString> {
