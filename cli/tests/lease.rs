@@ -666,6 +666,26 @@ fn ended_lease_token_warns_on_read() {
     assert!(err.contains("warning:"), "{err}");
     assert!(err.contains("released"), "{err}");
     assert!(!err.contains(&tok), "{err}");
+    assert!(!stdout(&o).contains("warning:"), "{}", stdout(&o));
+}
+
+#[test]
+fn ended_token_sees_new_holder() {
+    let dir = scratch("ended_token_new_holder", FULL_LAB);
+    let a = acquire(&dir);
+    let o = panio(&dir, &["lease", "release", "dut"], Some(&a));
+    assert_eq!(o.status.code(), Some(0), "{o:?}");
+    let o = panio(
+        &dir,
+        &["lease", "acquire", "dut", "--owner", "bob@bench1"],
+        None,
+    );
+    assert_eq!(o.status.code(), Some(0), "{o:?}");
+    let o = panio(&dir, &["power", "on", "dut"], Some(&a));
+    assert_eq!(o.status.code(), Some(23), "{o:?}");
+    let err = stderr(&o);
+    assert!(err.contains("released"), "{err}");
+    assert!(err.contains("bob@bench1"), "{err}");
 }
 
 #[test]

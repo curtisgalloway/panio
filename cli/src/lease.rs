@@ -572,9 +572,13 @@ fn note_no_lease(
     let msg = lock
         .and_then(|l| lost_lease_message(l, Some(t), target))
         .or_else(|| {
-            expired
-                .filter(|l| l.token == t)
-                .map(|l| ended_message(target, l.expires_at, "found expired"))
+            expired.filter(|l| l.token == t).map(|l| {
+                ended_message(
+                    target,
+                    l.expires_at.min(l.last_used_at.saturating_add(l.idle_secs)),
+                    "found expired",
+                )
+            })
         });
     match msg {
         Some(m) if access == Access::Mutating => Err(crate::error::target_leased(target, m).into()),
@@ -656,7 +660,16 @@ pub fn enforce(lab: &crate::model::Lab, target: &str, access: Access) -> anyhow:
             lock.write(&l).context("recording lease activity")?;
             Ok(())
         }
-        Verdict::Refuse(msg) => Err(refuse(&lock, msg)),
+        Verdict::Refuse(msg) => {
+            let held = matches!(st, State::Held(_));
+            match lost_lease_message(&lock, token.as_deref(), target) {
+                Some(ended) if held => {
+                    let m = format!("{ended}; meanwhile: {msg}");
+                    Err(crate::error::target_leased(target, m).into())
+                }
+                _ => Err(refuse(&lock, msg)),
+            }
+        }
         Verdict::CleanupThenRun(old) => {
             crate::lease_cmd::retire(lab, target, &lock, &old, "expired", None)?;
             lock.remove().context("removing the expired lease")?;
