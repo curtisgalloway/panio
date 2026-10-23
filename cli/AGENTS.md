@@ -222,7 +222,9 @@ cli/src/
                 daemons, netboot, link down; never power and never the lease
                 check, since it runs under the lock), `--lease-file` handoff
   lease_cmd.rs  `panio lease acquire|renew|release|status` bodies and `retire`
-                (cleanup + history line). main.rs `lease_scope` classifies every
+                (cleanup + history line). main.rs `remote_console` runs a
+                `Keepalive` thread (holder read every min(idle/2, 5 min)) while
+                a caller with a token has a console open. main.rs `lease_scope` classifies every
                 command as Read/Mutating/Unchecked with no `_` arm, so a new
                 subcommand must be classified; `lease_check` runs it once in
                 `run`. Guide: docs/leases.md, design: notes/target-leases.md

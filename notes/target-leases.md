@@ -336,7 +336,27 @@ Deviations from the design above, all deliberate. User guide: `docs/leases.md`.
   released, force-released, preempted or found expired refuses mutating
   commands with exit 23 (the message says how and when it ended, and who holds
   the target now, if anyone) and warns on reads. A token that matches nothing
-  on that target warns and runs. ("Silent surprises are bad.")
+  on that target warns and runs. A read carrying a token that is not the
+  current holder's also warns (naming the new holder) and runs. ("Silent
+  surprises are bad.")
+- **`release` and `renew` after a lease ended.** `release` with a token that
+  names an ended lease exits 0 with the history message on stderr (a new
+  holder is left alone); with no token on an unleased target it exits 0
+  (`not leased`). `renew` on an expired lease retires it (expired history) and
+  exits 23 with the history wording.
+- **The dashboard does not refresh the idle timer.** A remote `console` runs a
+  keepalive while it runs and the caller has a token: every
+  min(idle/2, 5 min) a holder read (`video show`) on the control host; one
+  loud stderr line if it is refused. The local `console` and `video preview`
+  return as soon as the page is handed off (so, unlike the design, local
+  `console` is not a live registered process); with a token set they print a
+  note to renew. `lease status --json` gained `idle_secs` for the pacing.
+- **Windows `serial connect`/`adb shell`** run their tool in a kill-on-close
+  Job object, so terminating the registered panio pid kills the tool.
+- **`lease status`** shows `kept alive by N process(es)` instead of an idle
+  countdown while a registered process is alive; `idle_left_secs` is `null`
+  then. It is not read-only (it retires an expired lease), and the MCP tool is
+  annotated so. MCP `lease_acquire` caps `wait` at 5 minutes.
 - **`lease_required` needs every channel on the target's default host.** A
   cross-host target cannot be leased, and the lab fails validation if it sets
   `lease_required`. `target set --lease-required` is the editing verb.
@@ -346,8 +366,11 @@ Deviations from the design above, all deliberate. User guide: `docs/leases.md`.
   local (the control host after dispatch). It replaces the per-call-site hooks
   the design listed.
 - **`daemons stop|restart`** refuse a named daemon of a target leased to
-  someone else (exit 23); `--all` and `--stale` skip them with one stderr line
-  each.
+  someone else (exit 23): the capture daemons, hid, and a target's netboot
+  session. `stop --all` and `restart --all|--stale` skip them with one stderr
+  line each (`--stale` is restart-only). All checks run before anything is
+  stopped. The `stop --all` stray sweep skips untracked orphans whose device
+  belongs to a leased target (matched through the lab; no lab, a warning).
 - **Cleanup** stops the target's serialcap, hdmicap and hid daemons (reaping
   orphans and waiting for exit), its netboot session, and takes the netboot
   link down; it never touches power. It runs under the lease lock, so it calls

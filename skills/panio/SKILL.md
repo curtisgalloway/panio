@@ -1033,7 +1033,15 @@ panio lease release pi5                              # when done
   the 2 h / 30 min defaults; `lease renew` extends a lease you hold. Long
   jobs: renew before the end.
 - **Release when done.** Release stops the target's daemons and netboot
-  session and takes the link down; it never changes power.
+  session and takes the link down; it never changes power. Releasing a lease
+  that is already over exits 0 and says on stderr how it ended (it does not
+  disturb a new holder), so an end-of-job `release` is safe to run twice; on a
+  target nobody holds it exits 0 (`not leased`). `renew` on an expired lease
+  exits 23.
+- **The dashboard does not keep a lease alive.** `console` and `video preview`
+  hand you a web page whose use is not a panio command; with a token set they
+  print a note. A remote `console` refreshes the lease itself while it runs; a
+  local one does not: `lease renew` while you use it.
 - Do not use `--preempt` (on `acquire` or `release`) unless the user told you
   to: it ends someone else's work.
 - MCP: `lease_acquire`, `lease_renew`, `lease_release`, `lease_status`. The
@@ -1047,7 +1055,8 @@ directly.
 
 **Your own token stopped working.** If your lease was released, preempted or
 expired, a mutating command exits 23 with how and when it ended (and who holds
-the board now); a read warns on stderr and still runs. Do not keep driving the
+the board now); a read warns on stderr and still runs, including when someone
+else holds the board now. Do not keep driving the
 board: the cleanup stopped your daemons. Re-acquire (`panio lease acquire`) if
 the job is still yours, or report the preemption. A warning that
 `PANIO_LEASE` is set but the target is "not leased" means the token matches
@@ -1228,7 +1237,9 @@ the device is free just because a daemon is gone from the tracked list.
 - **Leased target.** Exit 23 means someone holds the board or your token's
   lease ended: `panio lease status <target>`, never retry blindly. Reads still
   work on a leased target. `daemons stop|restart` of a leased target's daemon
-  is refused too (and `--all` skips them).
+  is refused too (this includes a target's netboot session, `netbootd[target]`);
+  `stop --all` and `restart --all|--stale` skip them. `lease_acquire` over MCP
+  waits at most 5 minutes; call it again to keep waiting.
 
 - **USB fastboot RAM staging needs an external guarded runner.** Require fresh
   service entry for every artifact, separate bounded USB readiness, USB-host

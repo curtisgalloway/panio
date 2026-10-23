@@ -100,9 +100,9 @@ omit it when the lab has exactly one target. Durations are written `90s`,
 | Command | What it does |
 |---|---|
 | `panio lease acquire [TARGET]` | Reserve the target and print its token alone on stdout. Exits 23 when someone else holds it. `--owner LABEL` sets the display name (default `user@host` of the machine you run it on). `--duration DUR` is the total length (default `2h`). `--idle DUR` ends the lease after this long with no command and no live registered process (default `30m`). `--wait DUR` polls every 2 s for that long. `--preempt` takes the target from its holder. `--json` prints `{token, owner, expires_at, expires_in_secs}`. If `PANIO_LEASE` already matches, `acquire` renews and prints the same token. |
-| `panio lease renew [TARGET]` | Move the end to now plus `--duration` (default: the lease's original duration), capped at 24 h from now. Needs `PANIO_LEASE`. |
-| `panio lease release [TARGET]` | End your lease and clean the target up. Needs `PANIO_LEASE`, or `--preempt` to end someone else's. |
-| `panio lease status [TARGET]` | Who holds the target, until when, idle time left, and registered processes. Never prints the token. With no target in a lab of several, lists them all; an unreachable host is reported in its row. `--json` for scripts. |
+| `panio lease renew [TARGET]` | Move the end to now plus `--duration` (default: the lease's original duration), capped at 24 h from now. Needs `PANIO_LEASE`. If the lease had already expired, `renew` retires it (cleaning up, as any expiry does) and exits 23 saying so. |
+| `panio lease release [TARGET]` | End your lease and clean the target up. Needs `PANIO_LEASE`, or `--preempt` to end someone else's. Releasing a lease that is already over is not an error, so an end-of-job `release` does not retry: with a token that names an ended lease it exits 0 and says on stderr how it ended (and leaves a new holder alone); on a target nobody holds, with no token, it exits 0 and says `'<target>' is not leased`. A token that never named a lease on the target, or no token while someone else holds it, exits 23. |
+| `panio lease status [TARGET]` | Who holds the target, until when, idle time left (or, while a registered process is alive, `kept alive by N process(es)`; `idle_left_secs` is `null` then), and registered processes. Never prints the token. With no target in a lab of several, lists them all; an unreachable host is reported in its row. `--json` for scripts. Not read-only: it cleans up a lease that has expired. |
 
 ### Preemption
 
@@ -119,8 +119,9 @@ A lease ends at the first of:
 - its total duration (default 2 h, at most 24 h);
 - being idle for the idle timeout (default 30 min): no command by the holder
   and no live registered process. A mutating command by the holder registers
-  its own process, so an open `serial connect`, `console` or `adb shell` keeps
-  the lease from going idle; the total duration still applies;
+  its own process, so an open `serial connect` or `adb shell` keeps the lease from
+  going idle; the total duration still applies. The dashboard is different:
+  see [the dashboard and the idle timer](#the-dashboard-and-the-idle-timer);
 - `lease release`, or a preemption.
 
 Expiry is **lazy**: no background process watches the clock. The next
@@ -169,12 +170,34 @@ Not checked at all: commands that edit the lab file (`set`, `add`, `rm`,
 (`discover`, `setup`, `configure`, `helper`, `skill`, `mcp`, `* devices`,
 `netif vlan`), and the `lease` commands themselves.
 
+### The dashboard and the idle timer
+
+`console` and `video preview` hand you a web page. What you do in the page
+(typing, mouse, watching) goes to the daemons directly and never runs a panio
+command, so it does not count as activity.
+
+- A **remote** `console` (the target is on a control host) keeps the lease
+  alive itself while it runs, as long as you carry the token: every half idle
+  timeout, at most every 5 minutes, it makes a read of the target on the
+  control host, which counts as holder activity. If that read is ever refused
+  (the lease ended or was taken), it says so once on stderr, loudly, and the
+  console keeps running.
+- A **local** `console` and `video preview` cannot do that: the command
+  returns as soon as the page is handed off. With a token set they print a
+  one-line note on stderr. Run `panio lease renew` now and then, or keep any
+  panio command going (`serial connect`, a `serial log` loop), while you use
+  the page.
+
 ### Daemons
 
-`panio daemons stop` and `restart` look at the daemon's target. Naming a
-daemon of a target leased to someone else (`'serialcap[pi5]'`) is refused with
-exit 23. `--all` and `--stale` skip those daemons, with one line on stderr for
-each, and stop the rest.
+`panio daemons stop` and `restart` look at the daemon's target: the capture
+daemons, hid, and a target's netboot session (`netbootd[pi5]`). Naming one that
+belongs to a target leased to someone else (`'serialcap[pi5]'`) is refused with
+exit 23. `stop --all` and `restart --all|--stale` skip those with one line on
+stderr for each, and stop the rest. Every lease check runs before anything is
+stopped, so a refusal leaves the host exactly as it was. The `stop --all`
+sweep of untracked orphan daemons skips an orphan whose device belongs to a
+leased target the same way; with no readable lab it cannot tell and says so.
 
 ## Requiring a lease
 
@@ -198,7 +221,9 @@ token no longer works. panio does not run quietly as if nothing happened:
 - A **mutating** command refuses with exit 23. The message says how and when
   the lease ended (for example "preempted by bob"), and who holds the target
   now, if anyone.
-- A **read** runs and prints the same message as a warning on stderr.
+- A **read** runs and prints the same message as a warning on stderr. That
+  includes a read on a target someone else holds now (for example after you
+  were preempted): it still runs, with a `warning:` naming the new holder.
 - A token that matches nothing on that target (it never named a lease there)
   warns that the target is not leased and runs. A holder legitimately keeps
   its token while it touches a different, unleased target.
@@ -215,13 +240,14 @@ setting is `lease_required`.
 
 `PANIO_LEASE` is forwarded to the control host on stdin like `AMT_PASSWORD`,
 so it never appears on a remote command line. For interactive commands
-(`serial connect`, `adb shell`, `console`) stdin is your terminal, so the token
+(`serial connect`, `adb shell`) stdin is your terminal, so the token
 travels in a short-lived owner-only file named by a hidden `--lease-file`
 option, which the remote panio reads and deletes. You do not use that option
 yourself.
 
 The check runs once, before the command, on the host where the target's
-default host is local: the control host, after dispatch.
+default host is local: the control host after dispatch, or this machine when
+every channel and the default host are local.
 
 ## Limits
 
@@ -232,6 +258,9 @@ default host is local: the control host, after dispatch.
   users and agents. Anyone can preempt, and anyone who can read the control
   host's lease file can read the token. A process that talks to a daemon's
   HTTP API directly bypasses panio and the lease.
+- **Windows.** Cleanup ends a registered process by pid. The Windows
+  `serial connect` and `adb shell` run their tool as a child of panio inside a
+  job object that kills it when panio ends, so the cleanup also frees the port.
 - **Not a calendar.** There are no future bookings and no queue; waiting is
   `--wait`, which polls.
 - **Whole target.** There is no per-channel lease. Agents that want to share
