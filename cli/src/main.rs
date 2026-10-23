@@ -1541,6 +1541,7 @@ fn lease_scope(cmd: &Command) -> (lease::Access, LeaseScope<'_>) {
             SerialCmd::Add { .. }
             | SerialCmd::Set { .. }
             | SerialCmd::Rm { .. }
+            | SerialCmd::Fault { .. }
             | SerialCmd::Devices => none(),
             SerialCmd::Connect { target, .. }
             | SerialCmd::Watch { target, .. }
