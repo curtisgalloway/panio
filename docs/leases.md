@@ -184,8 +184,14 @@ command, so it does not count as activity.
   under the lease, so ending the lease never kills it silently. If the lease
   is ever no longer yours (released, preempted, expired), the console prints
   why on stderr and exits with 23 (`target_leased`): a local one within about
-  5 seconds, a remote one at its next keep-alive tick. The cleanup that ended
-  the lease has stopped the daemons, so the dashboard is gone anyway. If your token is not the
+  5 seconds, a remote one at its next keep-alive tick. It returns normally, so
+  its ssh tunnels are closed. For a released or preempted lease the cleanup has
+  already stopped the target's daemons; for one that expired the message says
+  the next lease check will stop them. Only the lease check's own answer ends
+  a remote console: a network failure on a keep-alive tick is a warning and is
+  retried (three in a row warn that the lease may idle out), and a local console
+  that cannot read its lease record gives up after three tries with exit 109,
+  not 23. If your token is not the
   holder's when the console starts, it says the lease will not be kept alive
   (a local console then returns as before). Without a token, a local `console`
   returns as soon as the page is handed off, as always.

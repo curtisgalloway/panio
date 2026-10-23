@@ -594,10 +594,27 @@ pub fn caller_token() -> Option<String> {
         .filter(|t| !t.is_empty())
 }
 
+/// The start of every message saying the caller's own lease ended.
+const ENDED_PREFIX: &str = "your lease on '";
+/// The start of the message for a token that is not the current holder's.
+const NOT_HOLDER_PREFIX: &str = "PANIO_LEASE does not match the current holder";
+/// The start of the warning for a token on a target nobody holds.
+const NOT_LEASED_PREFIX: &str = "PANIO_LEASE is set but '";
+
+/// True when a warning line (without its `warning:` label) is one of the
+/// lease check's messages that the caller no longer holds the lease, as
+/// opposed to an unrelated warning or a transport failure.
+pub fn is_lease_loss_message(text: &str) -> bool {
+    let t = text.trim();
+    t.starts_with(ENDED_PREFIX)
+        || t.starts_with(NOT_HOLDER_PREFIX)
+        || t.starts_with(NOT_LEASED_PREFIX)
+}
+
 /// The text for a lease that has ended, for a caller still carrying its token.
 fn ended_message(target: &str, at: u64, reason: &str) -> String {
     format!(
-        "your lease on '{target}' ended at {} ({reason}); run `panio lease acquire {target}` \
+        "{ENDED_PREFIX}{target}' ended at {} ({reason}); run `panio lease acquire {target}` \
          to take it again, or unset PANIO_LEASE to run without a lease",
         clock(at)
     )
@@ -653,7 +670,7 @@ fn note_no_lease(
         }
         None => {
             eprintln!(
-                "warning: PANIO_LEASE is set but '{target}' is not leased; \
+                "warning: {NOT_LEASED_PREFIX}{target}' is not leased; \
                  running without a lease"
             );
             Ok(())
@@ -724,13 +741,8 @@ pub fn enforce_with(
             State::Held(l) => {
                 // A read that carries a token which is not the holder's runs,
                 // but never silently: the caller most likely lost its lease.
-                let msg =
-                    lost_lease_message(&lock, token.as_deref(), target).unwrap_or_else(|| {
-                        format!(
-                            "PANIO_LEASE does not match the current holder ({}) of '{target}'",
-                            l.owner
-                        )
-                    });
+                let msg = lost_lease_message(&lock, token.as_deref(), target)
+                    .unwrap_or_else(|| format!("{NOT_HOLDER_PREFIX} ({}) of '{target}'", l.owner));
                 eprintln!("warning: {msg}");
                 Ok(())
             }
@@ -788,52 +800,64 @@ pub fn held_idle_secs(target: &str) -> Option<u64> {
     }
 }
 
-/// Why the caller's `token` no longer holds the lease in `store`, or `None`
-/// while it does. Read-only, and never includes the token.
-fn lost_reason(store: &Store, token: &str, target: &str, now: u64) -> Option<String> {
+/// What one look at the lease showed a console that holds it.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Poll {
+    /// The caller still holds the lease.
+    Holds,
+    /// It does not: the reason, never including the token.
+    Lost(String),
+    /// The record could not be read (I/O error, corrupt): not proof of
+    /// anything, so the caller retries.
+    Unreadable(String),
+}
+
+/// Whether the caller's `token` still holds the lease in `store`. Read-only.
+fn lost_reason(store: &Store, token: &str, target: &str, now: u64) -> Poll {
     let lock = match store.lock() {
         Ok(l) => l,
-        Err(e) => return Some(format!("cannot read the lease: {e}")),
+        Err(e) => return Poll::Unreadable(format!("cannot read the lease: {e}")),
     };
     let rec = match lock.read() {
         Ok(r) => r,
-        Err(e) => return Some(format!("cannot read the lease: {e}")),
+        Err(ReadError::Corrupt(c)) => {
+            return Poll::Unreadable(format!("the lease record is corrupt: {}", c.0))
+        }
+        Err(e) => return Poll::Unreadable(format!("cannot read the lease: {e}")),
     };
     match state(rec, now, proc_is_live) {
-        State::Held(l) if l.token == token => None,
-        State::Held(l) => Some(
-            lost_lease_message(&lock, Some(token), target).unwrap_or_else(|| {
-                format!(
-                    "PANIO_LEASE does not match the current holder ({}) of '{target}'",
-                    l.owner
-                )
-            }),
+        State::Held(l) if l.token == token => Poll::Holds,
+        State::Held(l) => Poll::Lost(
+            lost_lease_message(&lock, Some(token), target)
+                .unwrap_or_else(|| format!("{NOT_HOLDER_PREFIX} ({}) of '{target}'", l.owner)),
         ),
-        State::Expired(l) if l.token == token => Some(ended_message(
-            target,
-            l.expires_at.min(l.last_used_at.saturating_add(l.idle_secs)),
-            "found expired",
+        State::Expired(l) if l.token == token => Poll::Lost(format!(
+            "{ENDED_PREFIX}{target}' expired at {}; the next lease check will stop \
+             this target's daemons",
+            clock(l.expires_at.min(l.last_used_at.saturating_add(l.idle_secs)))
         )),
-        State::Expired(_) | State::Unleased => Some(
+        State::Expired(_) | State::Unleased => Poll::Lost(
             lost_lease_message(&lock, Some(token), target)
                 .unwrap_or_else(|| format!("'{target}' is no longer leased to you")),
         ),
     }
 }
 
-/// One in-process poll for a local console: why the caller no longer holds the
-/// lease on `target`, or, while it does, `None` after a holder read (`enforce`
-/// with [`Access::Read`], which touches `last_used_at`) when `touch` is set.
-/// Cheap without `touch`: one brief lock and a file read.
-pub fn keepalive_tick(lab: &crate::model::Lab, target: &str, touch: bool) -> Option<String> {
-    let token = caller_token()?;
-    let lost = lost_reason(&Store::for_target(target), &token, target, now());
-    if lost.is_none() && touch {
+/// One in-process poll for a local console: what the lease on `target` looks
+/// like to the caller, and, while it holds it, a holder read (`enforce` with
+/// [`Access::Read`], which touches `last_used_at`) when `touch` is set. Cheap
+/// without `touch`: one brief lock and a file read.
+pub fn keepalive_tick(lab: &crate::model::Lab, target: &str, touch: bool) -> Poll {
+    let Some(token) = caller_token() else {
+        return Poll::Holds;
+    };
+    let poll = lost_reason(&Store::for_target(target), &token, target, now());
+    if poll == Poll::Holds && touch {
         if let Err(e) = enforce(lab, target, Access::Read) {
-            return Some(format!("{e:#}"));
+            return Poll::Unreadable(format!("{e:#}"));
         }
     }
-    lost
+    poll
 }
 
 /// Parse `90s`, `30m`, `2h`, or bare seconds. Zero and negative values are
@@ -936,7 +960,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::at(dir.path().to_path_buf());
         write_held(&store, "tok-a", now() + 3600, now());
-        assert_eq!(lost_reason(&store, "tok-a", "dut", now()), None);
+        assert_eq!(lost_reason(&store, "tok-a", "dut", now()), Poll::Holds);
     }
 
     #[test]
@@ -946,11 +970,11 @@ mod tests {
         // Preempted: a new holder, the old token in the history.
         ended(&store, "tok-a", "preempted", Some("bob@bench1"));
         write_held(&store, "tok-b", now() + 3600, now());
-        let r = lost_reason(&store, "tok-a", "dut", now()).expect("lost");
+        let r = lost("tok-a", &store);
         assert!(r.contains("preempted by bob@bench1"), "{r}");
         assert!(!r.contains("tok-a"), "{r}");
         // A token that never named a lease here, while someone holds it.
-        let r = lost_reason(&store, "tok-x", "dut", now()).expect("lost");
+        let r = lost("tok-x", &store);
         assert!(
             r.contains("does not match the current holder (alice@bench1)"),
             "{r}"
@@ -959,15 +983,52 @@ mod tests {
         let dir2 = tempfile::tempdir().unwrap();
         let store2 = Store::at(dir2.path().to_path_buf());
         ended(&store2, "tok-a", "released", None);
-        let r = lost_reason(&store2, "tok-a", "dut", now()).expect("lost");
+        let r = lost("tok-a", &store2);
         assert!(r.contains("released"), "{r}");
         // Expired but not yet cleaned up.
         let dir3 = tempfile::tempdir().unwrap();
         let store3 = Store::at(dir3.path().to_path_buf());
         write_held(&store3, "tok-a", now() - 10, now() - 20);
-        let r = lost_reason(&store3, "tok-a", "dut", now()).expect("lost");
-        assert!(r.contains("found expired"), "{r}");
+        let r = lost("tok-a", &store3);
+        assert!(r.contains("expired at"), "{r}");
+        assert!(r.contains("next lease check will stop"), "{r}");
         assert!(!r.contains("tok-a"), "{r}");
+    }
+
+    fn lost(token: &str, store: &Store) -> String {
+        match lost_reason(store, token, "dut", now()) {
+            Poll::Lost(r) => r,
+            other => panic!("expected a loss, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_unreadable_record_is_not_a_loss() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::at(dir.path().to_path_buf());
+        std::fs::write(dir.path().join("lease.json"), "{not json").unwrap();
+        match lost_reason(&store, "tok-a", "dut", now()) {
+            Poll::Unreadable(m) => assert!(m.contains("corrupt"), "{m}"),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn loss_messages_are_recognized_and_others_are_not() {
+        for m in [
+            "your lease on 'pi5' ended at 10:30 local (released); run it",
+            "PANIO_LEASE does not match the current holder (alice@bench1) of 'pi5'",
+            "PANIO_LEASE is set but 'pi5' is not leased; running without a lease",
+        ] {
+            assert!(is_lease_loss_message(m), "{m}");
+        }
+        for m in ["cannot release: no token", "ssh: connect timed out", ""] {
+            assert!(!is_lease_loss_message(m), "{m}");
+        }
+        // The producing functions use the same prefixes.
+        assert!(is_lease_loss_message(&ended_message(
+            "pi5", 1000, "released"
+        )));
     }
 
     #[test]

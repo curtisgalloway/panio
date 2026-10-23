@@ -4144,21 +4144,23 @@ fn cmd_console(
                 // at the keepalive interval.
                 let every = keepalive_interval(idle);
                 let mut last_touch = std::time::Instant::now();
-                let _keepalive = Keepalive::spawn(
+                let keepalive = Keepalive::spawn(
                     LOCAL_LEASE_POLL,
                     move || {
                         let touch = last_touch.elapsed() >= every;
                         if touch {
                             last_touch = std::time::Instant::now();
                         }
-                        lease::keepalive_tick(&lab, &t, touch)
+                        match lease::keepalive_tick(&lab, &t, touch) {
+                            lease::Poll::Holds => Tick::Ok,
+                            lease::Poll::Lost(m) => Tick::Lost(m),
+                            lease::Poll::Unreadable(m) => Tick::Fail(m),
+                        }
                     },
-                    leave_on_lost_lease,
+                    OnRepeat::Exit,
                 );
                 println!("Keeping the lease on '{target}' alive. Press Ctrl-C to close.");
-                loop {
-                    std::thread::sleep(std::time::Duration::from_secs(1));
-                }
+                return Err(keepalive.wait(&target));
             }
             None => eprintln!(
                 "note: the lease on '{target}' will not be kept alive by this console \
@@ -4190,41 +4192,109 @@ fn keepalive_interval(idle_secs: u64) -> std::time::Duration {
     std::time::Duration::from_secs((idle_secs / 2).clamp(10, 300))
 }
 
-/// What a console does when its lease is no longer the caller's: say why, once
-/// and loudly, and leave with `target_leased` (23). The cleanup that ended the
-/// lease has stopped the daemons, so the dashboard is dead anyway.
-fn leave_on_lost_lease(msg: String) {
-    eprintln!(
-        "error: the console no longer holds the lease ({msg}); \
-         its dashboard is going away, so the console is exiting"
-    );
-    std::process::exit(error::Kind::TargetLeased.exit_code());
+/// What one keepalive tick found.
+enum Tick {
+    /// The lease is still the caller's (and was refreshed if due).
+    Ok,
+    /// Clearly not the caller's any more: the reason.
+    Lost(String),
+    /// Could not tell (a network blip, an unreadable record): the cause.
+    Fail(String),
 }
 
-/// A background thread that calls `touch` every `interval` until dropped.
-/// `touch` returns a message when the lease is no longer this caller's; the
-/// thread then calls `on_lost` with it once and stops ticking.
+/// What to do about repeated [`Tick::Fail`]s.
+#[derive(Clone, Copy)]
+enum OnRepeat {
+    /// Keep going and warn that the lease may idle out (a remote console: the
+    /// lease itself is fine, the link is not).
+    Warn,
+    /// Give up with an honest error (a local console that cannot read its own
+    /// lease record).
+    Exit,
+}
+
+/// Consecutive failed ticks before [`OnRepeat`] applies.
+const KEEPALIVE_MAX_FAILS: u32 = 3;
+
+/// Why a console's keepalive ended it.
+#[derive(Debug, PartialEq, Eq)]
+enum ConsoleExit {
+    Lost(String),
+    Unreadable(String),
+}
+
+/// The error a console returns when its keepalive ended it. Returned rather
+/// than exiting the process, so the console's tunnels are dropped (killed).
+fn console_exit_error(target: &str, why: ConsoleExit) -> anyhow::Error {
+    match why {
+        ConsoleExit::Lost(m) => error::target_leased(
+            target,
+            format!("the console no longer holds the lease on '{target}': {m}"),
+        )
+        .into(),
+        ConsoleExit::Unreadable(m) => error::PanioError::new(
+            error::Kind::Internal,
+            format!("the console could not read its lease on '{target}' ({m}); exiting"),
+        )
+        .target(target)
+        .into(),
+    }
+}
+
+/// A background thread that ticks every `interval` until dropped and reports
+/// the one thing that ends a console: the lease is lost, or cannot be read.
 struct Keepalive {
     stop: Option<std::sync::mpsc::Sender<()>>,
+    ended: std::sync::mpsc::Receiver<ConsoleExit>,
 }
 
 impl Keepalive {
     fn spawn(
         interval: std::time::Duration,
-        mut touch: impl FnMut() -> Option<String> + Send + 'static,
-        on_lost: impl FnOnce(String) + Send + 'static,
+        mut touch: impl FnMut() -> Tick + Send + 'static,
+        repeat: OnRepeat,
     ) -> Keepalive {
         let (stop, rx) = std::sync::mpsc::channel::<()>();
+        let (tx, ended) = std::sync::mpsc::channel::<ConsoleExit>();
         std::thread::spawn(move || {
+            let mut fails = 0u32;
             // A timeout is the tick; a message or a dropped sender is the stop.
             while let Err(std::sync::mpsc::RecvTimeoutError::Timeout) = rx.recv_timeout(interval) {
-                if let Some(msg) = touch() {
-                    on_lost(msg);
-                    break;
+                match touch() {
+                    Tick::Ok => fails = 0,
+                    Tick::Lost(m) => {
+                        let _ = tx.send(ConsoleExit::Lost(m));
+                        break;
+                    }
+                    Tick::Fail(m) => {
+                        fails += 1;
+                        if matches!(repeat, OnRepeat::Exit) && fails >= KEEPALIVE_MAX_FAILS {
+                            let _ = tx.send(ConsoleExit::Unreadable(m));
+                            break;
+                        }
+                        eprintln!("warning: could not refresh the lease ({m}); will retry");
+                        if fails == KEEPALIVE_MAX_FAILS {
+                            eprintln!(
+                                "warning: {fails} lease refreshes in a row failed; the lease \
+                                 may idle out (it has not been reported lost)"
+                            );
+                        }
+                    }
                 }
             }
         });
-        Keepalive { stop: Some(stop) }
+        Keepalive {
+            stop: Some(stop),
+            ended,
+        }
+    }
+
+    /// Block until the keepalive ends the console; the error to return.
+    fn wait(&self, target: &str) -> anyhow::Error {
+        let why = self.ended.recv().unwrap_or_else(|_| {
+            ConsoleExit::Unreadable("the keepalive thread stopped".to_string())
+        });
+        console_exit_error(target, why)
     }
 }
 
@@ -4235,33 +4305,40 @@ impl Drop for Keepalive {
     }
 }
 
-/// One keepalive read on the control host: `video show` as a holder read. A
-/// non-zero exit, or a `warning:` on stderr (what a read by a non-holder
-/// prints), means the lease is not this caller's: the text says why.
-fn remote_touch(lab: &Lab, target: &str, host_name: &str) -> Option<String> {
+/// One keepalive read on the control host: `video show` as a holder read.
+fn remote_touch(lab: &Lab, target: &str, host_name: &str) -> Tick {
     match dispatch::run_subcommand(lab, target, host_name, &["video", "show", target]) {
-        Ok(out) => lost_from_remote_read(out.status, &out.stderr),
-        Err(e) => Some(format!("{e:#}")),
+        Ok(out) => classify_remote_read(out.status, &out.stderr),
+        Err(e) => Tick::Fail(format!("{e:#}")),
     }
 }
 
-/// [`remote_touch`]'s verdict on a finished read.
-fn lost_from_remote_read(status: i32, stderr: &str) -> Option<String> {
-    let warning = stderr
+/// [`remote_touch`]'s verdict on a finished read. Only the lease check's own
+/// answer is a loss: exit 23, or a `warning:` that is one of its messages (a
+/// read by a non-holder exits 0 with one). Any other failure (ssh exit 255, a
+/// timeout) says nothing about the lease and is retried.
+fn classify_remote_read(status: i32, stderr: &str) -> Tick {
+    let loss = stderr
         .lines()
-        .find_map(|l| l.trim().strip_prefix("warning:"))
-        .map(|w| w.trim().to_string());
-    match (status, warning) {
-        (_, Some(w)) => Some(w),
-        (0, None) => None,
-        (code, None) => {
-            let text = stderr.trim();
-            Some(if text.is_empty() {
-                format!("exit {code}")
-            } else {
-                text.to_string()
-            })
-        }
+        .filter_map(|l| l.trim().strip_prefix("warning:"))
+        .map(str::trim)
+        .find(|w| lease::is_lease_loss_message(w));
+    if let Some(w) = loss {
+        return Tick::Lost(w.to_string());
+    }
+    let text = stderr.trim();
+    match status {
+        0 => Tick::Ok,
+        s if s == error::Kind::TargetLeased.exit_code() => Tick::Lost(if text.is_empty() {
+            "refused by the lease check".to_string()
+        } else {
+            text.to_string()
+        }),
+        s => Tick::Fail(if text.is_empty() {
+            format!("exit {s}")
+        } else {
+            text.to_string()
+        }),
     }
 }
 
@@ -4298,16 +4375,19 @@ fn lease_keepalive(lab: &Lab, target: &str, host_name: &str) -> Option<Keepalive
     if row.held != Some(true) {
         return None;
     }
-    if let Some(why) = remote_touch(lab, target, host_name) {
-        not_kept(&why);
-        return None;
+    match remote_touch(lab, target, host_name) {
+        Tick::Ok => {}
+        Tick::Lost(why) | Tick::Fail(why) => {
+            not_kept(&why);
+            return None;
+        }
     }
     let interval = keepalive_interval(row.idle_secs.unwrap_or(lease::DEFAULT_IDLE));
     let (lab, target, host_name) = (lab.clone(), target.to_string(), host_name.to_string());
     Some(Keepalive::spawn(
         interval,
         move || remote_touch(&lab, &target, &host_name),
-        leave_on_lost_lease,
+        OnRepeat::Warn,
     ))
 }
 
@@ -4435,10 +4515,14 @@ fn remote_console(
     show_console(target, &video, &url, &ports, view);
     // Dashboard input goes straight to the daemons and never touches panio on
     // the host, so without this the lease would idle out under an active user.
-    let _keepalive = lease_keepalive(lab, target, host_name);
+    let keepalive = lease_keepalive(lab, target, host_name);
     println!("Tunnels to {host_name} open. Press Ctrl-C to close.");
-    loop {
-        std::thread::sleep(std::time::Duration::from_secs(1));
+    match keepalive {
+        // Returning (rather than exiting) drops the tunnels, which kills them.
+        Some(k) => Err(k.wait(target)),
+        None => loop {
+            std::thread::sleep(std::time::Duration::from_secs(1));
+        },
     }
 }
 
@@ -7198,59 +7282,119 @@ device = "/dev/video-nuc"
     }
 
     #[test]
-    fn a_remote_read_that_warns_or_fails_means_the_lease_is_lost() {
-        assert_eq!(lost_from_remote_read(0, ""), None);
-        assert_eq!(lost_from_remote_read(0, "note: something\n"), None);
+    fn only_the_lease_checks_own_answer_is_a_loss() {
+        assert!(matches!(classify_remote_read(0, ""), Tick::Ok));
+        assert!(matches!(
+            classify_remote_read(0, "note: something\n"),
+            Tick::Ok
+        ));
+        // An unrelated warning is not a lease loss.
+        assert!(matches!(
+            classify_remote_read(0, "warning: video daemon is stale\n"),
+            Tick::Ok
+        ));
         let w = "warning: your lease on 'pi5' ended at 10:30 local (preempted by bob)\n";
-        let lost = lost_from_remote_read(0, w).expect("warning means lost");
-        assert!(lost.contains("preempted by bob"), "{lost}");
-        assert!(!lost.starts_with("warning"), "{lost}");
-        assert_eq!(
-            lost_from_remote_read(23, "refused\n").as_deref(),
-            Some("refused")
-        );
-        assert_eq!(lost_from_remote_read(255, "").as_deref(), Some("exit 255"));
+        match classify_remote_read(0, w) {
+            Tick::Lost(m) => {
+                assert!(m.contains("preempted by bob"), "{m}");
+                assert!(!m.starts_with("warning"), "{m}");
+            }
+            _ => panic!("a lease warning is a loss"),
+        }
+        let w = "warning: PANIO_LEASE does not match the current holder (bob) of 'pi5'\n";
+        assert!(matches!(classify_remote_read(0, w), Tick::Lost(_)));
+        let w = "warning: PANIO_LEASE is set but 'pi5' is not leased; running without a lease\n";
+        assert!(matches!(classify_remote_read(0, w), Tick::Lost(_)));
+        assert!(matches!(classify_remote_read(23, "refused\n"), Tick::Lost(m) if m == "refused"));
+        // A network blip is not a loss.
+        match classify_remote_read(255, "ssh: connect to host: timed out\n") {
+            Tick::Fail(m) => assert!(m.contains("timed out"), "{m}"),
+            _ => panic!("ssh failure must be a retryable failure"),
+        }
+        assert!(matches!(classify_remote_read(1, ""), Tick::Fail(m) if m == "exit 1"));
     }
 
-    #[test]
-    fn keepalive_stops_ticking_once_the_lease_is_lost() {
+    fn run_keepalive(
+        ticks: Vec<Tick>,
+        repeat: OnRepeat,
+    ) -> (Keepalive, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
         use std::sync::atomic::{AtomicUsize, Ordering};
-        use std::sync::Arc;
-        let n = Arc::new(AtomicUsize::new(0));
+        let n = std::sync::Arc::new(AtomicUsize::new(0));
         let seen = n.clone();
-        let lost = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let told = lost.clone();
-        let _k = Keepalive::spawn(
+        let mut ticks = ticks.into_iter();
+        let k = Keepalive::spawn(
             std::time::Duration::from_millis(10),
             move || {
                 seen.fetch_add(1, Ordering::SeqCst);
-                Some("preempted".to_string())
+                ticks.next().unwrap_or(Tick::Ok)
             },
-            move |msg| told.lock().unwrap().push(msg),
+            repeat,
         );
-        std::thread::sleep(std::time::Duration::from_millis(300));
-        assert_eq!(*lost.lock().unwrap(), vec!["preempted".to_string()]);
+        (k, n)
+    }
+
+    #[test]
+    fn a_lost_lease_makes_the_console_return_target_leased_not_exit() {
+        let (k, n) = run_keepalive(
+            vec![Tick::Ok, Tick::Lost("preempted".into())],
+            OnRepeat::Warn,
+        );
+        let err = k.wait("pi5");
+        let pe = err.downcast_ref::<error::PanioError>().expect("typed");
+        assert_eq!(pe.kind, error::Kind::TargetLeased);
+        assert!(err.to_string().contains("preempted"), "{err}");
+        std::thread::sleep(std::time::Duration::from_millis(100));
         assert_eq!(
-            n.load(Ordering::SeqCst),
-            1,
-            "must stop after the first loss"
+            n.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "stops after the loss"
         );
+    }
+
+    #[test]
+    fn failed_ticks_are_retried_and_never_reported_as_a_loss() {
+        use std::sync::atomic::Ordering;
+        let fails = (0..5).map(|_| Tick::Fail("ssh down".into())).collect();
+        let (k, n) = run_keepalive(fails, OnRepeat::Warn);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while n.load(Ordering::SeqCst) < 6 && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(
+            n.load(Ordering::SeqCst) >= 6,
+            "it kept retrying past 3 failures"
+        );
+        assert!(k.ended.try_recv().is_err(), "no exit was requested");
+    }
+
+    #[test]
+    fn a_local_console_that_cannot_read_its_lease_exits_internal_not_23() {
+        let fails = (0..3)
+            .map(|_| Tick::Fail("cannot read the lease: eio".into()))
+            .collect();
+        let (k, _) = run_keepalive(fails, OnRepeat::Exit);
+        let err = k.wait("pi5");
+        let pe = err.downcast_ref::<error::PanioError>().expect("typed");
+        assert_eq!(pe.kind, error::Kind::Internal);
+        assert!(err.to_string().contains("cannot read the lease"), "{err}");
+        // Two failures then success resets the count.
+        let ticks = vec![
+            Tick::Fail("x".into()),
+            Tick::Fail("x".into()),
+            Tick::Ok,
+            Tick::Fail("x".into()),
+            Tick::Fail("x".into()),
+        ];
+        let (k, n) = run_keepalive(ticks, OnRepeat::Exit);
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        assert!(n.load(std::sync::atomic::Ordering::SeqCst) > 5);
+        assert!(k.ended.try_recv().is_err(), "a reset count must not exit");
     }
 
     #[test]
     fn keepalive_ticks_until_dropped() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        use std::sync::Arc;
-        let n = Arc::new(AtomicUsize::new(0));
-        let seen = n.clone();
-        let k = Keepalive::spawn(
-            std::time::Duration::from_millis(20),
-            move || {
-                seen.fetch_add(1, Ordering::SeqCst);
-                None
-            },
-            |_| panic!("the lease was not lost"),
-        );
+        use std::sync::atomic::Ordering;
+        let (k, n) = run_keepalive(vec![], OnRepeat::Warn);
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         while n.load(Ordering::SeqCst) < 3 && std::time::Instant::now() < deadline {
             std::thread::sleep(std::time::Duration::from_millis(10));

@@ -348,7 +348,8 @@ Deviations from the design above, all deliberate. User guide: `docs/leases.md`.
   keepalive while it runs and the caller holds the lease: every
   min(idle/2, 5 min) a holder read (`video show`) on the control host; a
   `warning:` on its stderr or a non-zero exit means the lease is lost: the
-  console prints the reason once and exits 23. A local `console` with a token
+  console prints the reason and exits 23 by returning (so its ssh tunnels are dropped); a
+  non-lease failure (ssh 255) is retried, with a loud warning after 3 in a row. A local `console` with a token
   that holds the lease stays in the foreground, is not registered in
   `lease.procs` (`enforce_with(.., register = false)`; it is still checked as
   mutating), polls the lease state every 5 s (`lease::keepalive_tick`, reading
