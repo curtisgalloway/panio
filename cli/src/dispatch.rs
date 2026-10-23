@@ -625,6 +625,29 @@ pub fn maybe_dispatch(
     Ok(Some(code))
 }
 
+/// Like [`maybe_dispatch`], but for commands about the whole target (the
+/// lease commands): routes to the target's default host, whatever channels it
+/// has. `extra` is appended to the re-sent argv.
+pub fn maybe_dispatch_default_host(
+    lab: &Lab,
+    target: &str,
+    mode: Mode,
+    extra: &[String],
+) -> anyhow::Result<Option<i32>> {
+    let rt = lab
+        .resolved_target(target)
+        .ok_or_else(|| crate::error::target_not_found(target))?;
+    let host_name = rt.default_host.clone();
+    let host = lab.host(&host_name);
+    if host.is_local(&host_name) {
+        return Ok(None);
+    }
+    let mut argv = subcommand_args();
+    argv.extend(extra.iter().cloned());
+    let code = dispatch(lab, target, &host_name, mode, &argv)?;
+    Ok(Some(code))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

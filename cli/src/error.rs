@@ -369,9 +369,6 @@ pub fn unreachable_host(host: &str, message: String) -> PanioError {
 
 /// `target` is leased to someone else (or the lab requires a lease and none
 /// is held). The message names the holder and when the lease ends.
-///
-/// Unused until the lease commands land; remove the `allow` with the first caller.
-#[allow(dead_code)]
 pub fn target_leased(target: &str, message: String) -> PanioError {
     PanioError::new(Kind::TargetLeased, message).target(target)
 }

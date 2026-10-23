@@ -226,6 +226,11 @@ impl StoreLock {
         write_private(&self.history_path(), &out)
     }
 
+    /// The newest history line, if any.
+    pub fn last_history(&self) -> Option<HistoryEntry> {
+        self.history().pop()
+    }
+
     /// The newest history line whose previous holder used `token`.
     pub fn history_for_token(&self, token: &str) -> Option<HistoryEntry> {
         self.history()
@@ -349,6 +354,14 @@ pub fn decide(
             }
         }
     }
+}
+
+/// Tear down what a departing holder left on the target: its registered
+/// processes, the target's daemons, the netboot link. Returns one message per
+/// step that failed.
+pub fn cleanup(_lab: &crate::model::Lab, _target: &str, _lease: &Lease) -> Vec<String> {
+    // Task 6
+    Vec::new()
 }
 
 /// Parse `90s`, `30m`, `2h`, or bare seconds. Zero and negative values are

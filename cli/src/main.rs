@@ -28,6 +28,7 @@ mod doctor;
 mod error;
 mod labfile;
 mod lease;
+mod lease_cmd;
 mod mcp;
 mod model;
 mod netboot;
@@ -144,6 +145,15 @@ enum Command {
     Hid {
         #[command(subcommand)]
         cmd: HidCmd,
+    },
+    /// Reserve a whole target for one holder (acquire, renew, release, status).
+    ///
+    /// `acquire` prints a secret token; pass it to later commands in
+    /// PANIO_LEASE. A lease ends on its own after its duration or when idle,
+    /// and anyone can take it with `acquire --preempt`.
+    Lease {
+        #[command(subcommand)]
+        cmd: LeaseCmd,
     },
     /// Switch a shared USB device between the control host and the target —
     /// an Openterface KVM-Go's onboard microSD card, or a Mini-KVM's
@@ -1114,6 +1124,69 @@ enum HidCmd {
 }
 
 #[derive(Subcommand)]
+enum LeaseCmd {
+    /// Reserve the target and print its token (alone on stdout).
+    ///
+    /// Fails with exit 23 when someone else holds it; --wait polls until it
+    /// is free, --preempt takes it. Already holding it (PANIO_LEASE matches)
+    /// renews it and prints the same token. Durations are 90s, 30m, 2h, at
+    /// most 24h.
+    Acquire {
+        #[command(flatten)]
+        target: TargetArg,
+        /// Display name for the holder (default: USER@short-hostname of the
+        /// machine you run this on).
+        #[arg(long, value_name = "LABEL")]
+        owner: Option<String>,
+        /// Total lease length (default 2h).
+        #[arg(long, value_name = "DUR")]
+        duration: Option<String>,
+        /// End the lease after this long with no command and no live
+        /// registered process (default 30m).
+        #[arg(long, value_name = "DUR")]
+        idle: Option<String>,
+        /// If the target is held, keep trying (every 2 s) for this long.
+        #[arg(long, value_name = "DUR")]
+        wait: Option<String>,
+        /// Take the target from its current holder, who is told on its next
+        /// command. The holder's leftovers are cleaned up first.
+        #[arg(long)]
+        preempt: bool,
+        /// Print {token, owner, expires_at, expires_in_secs} as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Extend your lease (needs PANIO_LEASE).
+    Renew {
+        #[command(flatten)]
+        target: TargetArg,
+        /// New length from now (default: the lease's original duration).
+        #[arg(long, value_name = "DUR")]
+        duration: Option<String>,
+    },
+    /// End your lease and clean the target up (needs PANIO_LEASE, or --preempt).
+    Release {
+        #[command(flatten)]
+        target: TargetArg,
+        /// End someone else's lease without its token.
+        #[arg(long)]
+        preempt: bool,
+    },
+    /// Show who holds a target and for how long; never prints the token.
+    ///
+    /// With no target in a lab that has several, lists them all; a host that
+    /// cannot be reached is reported in its row.
+    Status {
+        #[command(flatten)]
+        target: TargetArg,
+        /// Print JSON ({target, held, owner, expires_in_secs, idle_left_secs,
+        /// procs, last_change}; an array when listing every target).
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
 enum UsbCmd {
     /// Configure the target's usb channel (one per target).
     Set {
@@ -1371,6 +1444,7 @@ fn run(cli: Cli) -> Result<()> {
         Command::Video { cmd } => video_cmd(lab_flag, cmd),
         Command::Hid { cmd } => hid_cmd(lab_flag, cmd),
         Command::Usb { cmd } => usb_cmd(lab_flag, cmd),
+        Command::Lease { cmd } => lease_command(lab_flag, cmd),
         Command::Action { cmd } => action_cmd(lab_flag, cmd),
         Command::Adb { cmd } => adb_cmd(lab_flag, cmd),
         Command::Console {
@@ -2305,6 +2379,47 @@ fn cmd_setup(lab_flag: Option<&str>, host: Option<&str>, rust_only: bool) -> Res
 }
 
 /// Resolve a runtime command's target: the given name, or the sole target.
+fn lease_command(lab_flag: Option<&str>, cmd: LeaseCmd) -> Result<()> {
+    let lab = load_for_read(lab_flag)?;
+    match cmd {
+        LeaseCmd::Acquire {
+            target,
+            owner,
+            duration,
+            idle,
+            wait,
+            preempt,
+            json,
+        } => {
+            let t = resolve_single_target(&lab, target.name())?;
+            let opts = lease_cmd::AcquireOpts {
+                owner,
+                duration,
+                idle,
+                wait,
+                preempt,
+                json,
+            };
+            lease_cmd::acquire(&lab, &t, &opts)
+        }
+        LeaseCmd::Renew { target, duration } => {
+            let t = resolve_single_target(&lab, target.name())?;
+            lease_cmd::renew(&lab, &t, &duration)
+        }
+        LeaseCmd::Release { target, preempt } => {
+            let t = resolve_single_target(&lab, target.name())?;
+            lease_cmd::release(&lab, &t, preempt)
+        }
+        LeaseCmd::Status { target, json } => {
+            if target.name().is_none() && lab.target_names().len() > 1 {
+                return lease_cmd::status_all(&lab, json);
+            }
+            let t = resolve_single_target(&lab, target.name())?;
+            lease_cmd::status(&lab, &t, json)
+        }
+    }
+}
+
 fn resolve_single_target(lab: &Lab, name: Option<&str>) -> Result<String> {
     if let Some(n) = name {
         return Ok(n.to_string());

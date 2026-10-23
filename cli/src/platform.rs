@@ -461,8 +461,6 @@ pub fn process_start_time(pid: i32) -> Option<u64> {
 
 /// 32 lowercase hex characters from the operating system's random source,
 /// for lease tokens.
-// Used by lease.rs (later task); nothing calls it yet.
-#[allow(dead_code)]
 pub fn random_token() -> std::io::Result<String> {
     let mut buf = [0u8; 16];
     fill_random(&mut buf)?;
