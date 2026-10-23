@@ -21,6 +21,9 @@ text, serial log, power state) and acting on it (keyboard and mouse, serial
 input, power). Configuration stays in the CLI. The design is in
 [`notes/mcp-server.md`](https://github.com/curtisgalloway/panio/blob/main/notes/mcp-server.md).
 
+Four lease tools (`lease_acquire`, `lease_renew`, `lease_release`,
+`lease_status`) reserve a target for this server. See [Target leases](leases.md#mcp).
+
 ## Set it up
 
 Run it on the machine that holds your lab file, usually your own machine,
@@ -43,7 +46,7 @@ arguments `["mcp"]`. In the common JSON form:
 ```
 
 The harness starts the server and keeps it running for the session. The
-server holds no state of its own, so restarting it loses nothing.
+server keeps no state except the lease tokens it was given by `lease_acquire`; restarting it loses those tokens (the lease itself stays until it expires, so `lease_release` with `preempt`, or wait).
 
 ## Tools
 

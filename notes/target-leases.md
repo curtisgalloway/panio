@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0
 
 # Target leases (#360): design
 
-Status: design, awaiting the maintainer's approval. Not built.
+Status: built (#360). See [As built](#as-built) for where the code differs from this design; the code wins.
 
 **Terms**
 
@@ -327,3 +327,33 @@ acquire --wait` and retry.
 - Exact `lease status` output and `--json` shape.
 - Duration parser (none exists today).
 - The exit code number for `target_leased`, chosen per `docs/errors.md`'s bands.
+
+## As built
+
+Deviations from the design above, all deliberate. User guide: `docs/leases.md`.
+
+- **A token whose lease has ended is not silent.** A token whose lease was
+  released, force-released, preempted or found expired refuses mutating
+  commands with exit 23 (the message says how and when it ended, and who holds
+  the target now, if anyone) and warns on reads. A token that matches nothing
+  on that target warns and runs. ("Silent surprises are bad.")
+- **`lease_required` needs every channel on the target's default host.** A
+  cross-host target cannot be leased, and the lab fails validation if it sets
+  `lease_required`. `target set --lease-required` is the editing verb.
+- **One central check.** `lease_scope` classifies every command (an exhaustive
+  match, so a new subcommand must be classified) and `lease_check` runs once
+  in `run`, before the handler, on the host where the target's default host is
+  local (the control host after dispatch). It replaces the per-call-site hooks
+  the design listed.
+- **`daemons stop|restart`** refuse a named daemon of a target leased to
+  someone else (exit 23); `--all` and `--stale` skip them with one stderr line
+  each.
+- **Cleanup** stops the target's serialcap, hdmicap and hid daemons (reaping
+  orphans and waiting for exit), its netboot session, and takes the netboot
+  link down; it never touches power. It runs under the lease lock, so it calls
+  library functions, never the lease check.
+- **`--lease-file`** is a hidden flag used only by interactive dispatch to
+  carry the token in a 0600 file instead of the environment.
+- The history record also keeps the previous token (so an ended token can be
+  explained), and the lease record keeps `duration_secs` (so `renew` can default
+  to it).

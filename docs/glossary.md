@@ -12,6 +12,11 @@ each term briefly on first use; this page is the longer reference.
 
 | Term | Meaning |
 |---|---|
+| **lease** | A time-limited reservation of a whole target by one holder. Others can still read from the target but cannot change it. See [Target leases](leases.md). |
+| **holder** | Whoever acquired a lease and has its token: a person, an agent, or several agents sharing the token. |
+| **lease token** | The random secret `panio lease acquire` prints. Passed in the `PANIO_LEASE` environment variable to prove a command belongs to the holder. |
+| **default host** | A target's `host` field: the host every channel uses unless it names its own. A lease record lives there. |
+| **preempt** | Take a lease from its holder with `--preempt`; the holder is told on its next command. |
 | **action** | A named hook command in a target's `actions` table for a control that is not power, such as a reset line or boot strap. Run with `panio action run`. See [Named actions](actions.md). |
 | **power level** | A named set of power hooks (such as `soft` or `hard`) beside a target's default ones, for a target with more than one independent power layer. Picked with `--level` on the power commands. See [Power levels](power.md#power-levels-soft-and-hard). |
 | **receive boundary** | A capture epoch and exclusive RX chunk sequence; only later received chunks from that epoch belong to an acquisition. |

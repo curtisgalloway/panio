@@ -38,6 +38,7 @@ More on the [demos page](https://panio.dev/demos/).
 |---|---|---|
 | [Netboot](https://panio.dev/netboot/) | `panio netboot` | DHCP + TFTP + HTTP netboot over a direct USB-Ethernet link (Raspberry Pi; UEFI PXE / HTTP Boot) |
 | [Remote labs](https://panio.dev/distributed-control/) | `panio --lab …` | Drive targets on remote control hosts over SSH from one git-tracked lab file |
+| [Target leases](https://panio.dev/leases/) | `panio lease` | Reserve a whole target for one holder (shared lab, parallel agents): others can read but not change it; leases expire on their own and clean the target up |
 | [Control hosts](https://panio.dev/control-host/) | `panio skill control-host` | Blank Raspberry Pi to agent-reachable control host in one human action (stock Pi OS plus a cloud-init seed) |
 | [Link mode](https://panio.dev/netif/) | `panio netif` | Switch the link between netboot, ffx-over-IPv6, `link`, and `off` modes; `down-hard` adds WoL off + admin-down (many USB adapters keep link anyway) |
 | [Video](https://panio.dev/video/) | `panio video` | HDMI capture daemon (or a network RFB source such as a JetKVM); on-device OCR |

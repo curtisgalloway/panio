@@ -63,6 +63,7 @@ running, 101 hook failed, …); `--json-errors` adds a one-line JSON object. See
 | Doc | What it covers |
 |---|---|
 | [Distributed control: one lab, one file](distributed-control.md) | Driving targets on remote control hosts over SSH from one git-tracked lab file: `--lab`, tunnelled `console`, remote `setup --host`, `discover`/`configure`. |
+| [Target leases](leases.md) | `panio lease` | Reserve a whole target so a second person or agent cannot change it mid-run: tokens, expiry, preemption, cleanup, `lease_required`. |
 | [Standing up a control host](control-host.md) | Blank Raspberry Pi to control host with the cloud-init seed in [`packaging/host-seed/`](https://github.com/curtisgalloway/panio/tree/main/packaging/host-seed); sizing; first-boot failures. |
 
 ## Developer documentation
