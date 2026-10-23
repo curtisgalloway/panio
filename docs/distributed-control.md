@@ -286,8 +286,10 @@ Reconfiguration is the same flow.
   target whose serial and video live apart with a clear error (other channels
   may sit anywhere).
 - **`console --detach`** and its local tunnel registry.
-- **Multi-user / locking / reservations** (labgrid's *places*). Single-user is
-  assumed.
+- **Cross-host leasing.** Locking now exists for single-host targets: a
+  [lease](leases.md) reserves a whole target for one holder. A target whose
+  channels span more than one host cannot be leased yet. There is still no
+  booking calendar or queue (labgrid's *places*).
 - **A long-running agent daemon / RPC API.**
 - **Multi-file / multi-lab composition.**
 

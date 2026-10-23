@@ -61,6 +61,7 @@ text. `panio --help` prints the table.
 | 3 | `not_configured` | Wrong target/channel/interface name, required configuration missing, or a hook/helper missing. Don't retry; check `panio config show`, and don't edit the lab to fix it — report it |
 | 4 | `unreachable` | The control host did not answer over SSH; the command may or may not have run |
 | 22 | `timeout` | Outcome unknown: check state (`power-state`, `serial log`, `video shot`) before repeating a power cycle or other mutation |
+| 23 | `target_leased` | The target is leased to someone else, or the lab requires a lease and none is held; the message names the holder and when it ends. Wait (`panio lease acquire --wait`) and retry |
 | 100 | `daemon_down` | Start the daemon (`serial watch`, `video watch`); `panio daemons` lists what is running |
 | 101 | `helper_failed` | The hook/helper/daemon ran and failed; its message (and its own code in `child_exit`) says why. On Windows a *missing* hook also lands here (`cmd.exe` exits 1 for it) |
 | 109 | `internal` | Unclassified; read the message |
@@ -75,7 +76,7 @@ For a machine-readable reason, set `PANIO_JSON_ERRORS=1` (or put
 `{"error": {"kind", "code", "category", "message", "target", "channel",
 "host", "child_exit"}}`. `category` groups the kinds by where to look:
 `infrastructure` (3, 4, 100: fix the setup, the target was not reached),
-`transient` (22: a retry may work, but check state first), `device_state`
+`transient` (22: a retry may work, but check state first; 23: retry once the lease ends), `device_state`
 (101: the target or its hardware refused), or null (2, 109). Exit codes do not
 change with it; a control host older than 0.13 omits the field. Passthroughs (`helper`, `config edit`, `video shot`/`devices`,
 `adb run`/`input`/`devices`, `setup --host`, and the consoles `serial connect`
@@ -1020,6 +1021,62 @@ and navigating a desktop/app/installer/BIOS you can only see over the capture
 and only touch through emulated HID — read the companion **`kvm-puppeting`**
 skill (the look-act-settle-verify discipline): `panio skill kvm-puppeting`.
 
+## Leases — reserve a board before a multi-step job
+
+A **lease** gives one holder exclusive control of a whole target; everyone
+else can still read from it (`video shot`, `serial log`, `power-state`) but
+cannot change it. Full guide: `docs/leases.md`.
+
+**When to acquire.** Before a multi-step job that another agent or person
+could wreck midway: a flash, an OS install, a netboot-and-test cycle. Do not
+bother for a one-shot read. If the lab sets `lease_required` on a target, you
+must.
+
+```
+export PANIO_LEASE=$(panio lease acquire pi5)       # prints the token alone
+panio power-cycle pi5                                # carries the token
+panio lease release pi5                              # when done
+```
+
+- Hand the token to sub-agents that share the board (`export
+  PANIO_LEASE=<token>` in their shell). Treat it as a secret: only `acquire`
+  prints it, `lease status` never does.
+- Acquire **per target**; a token for one target does nothing on another.
+- `acquire --wait 30m` waits for a busy board; `--duration`/`--idle` change
+  the 2 h / 30 min defaults; `lease renew` extends a lease you hold. Long
+  jobs: renew before the end.
+- **Release when done.** Release stops the target's daemons and netboot
+  session and takes the link down; it never changes power. Releasing a lease
+  that is already over exits 0 and says on stderr how it ended (it does not
+  disturb a new holder), so an end-of-job `release` is safe to run twice; on a
+  target nobody holds it exits 0 (`not leased`). `renew` on an expired lease
+  exits 23.
+- **The dashboard does not keep a lease alive.** `console` and `video preview`
+  hand you a web page whose use is not a panio command; with a token set they
+  print a note. `console` refreshes the lease itself while it runs and you
+  hold the token (it stays in the foreground and Ctrl-C closes it; if the lease
+  is released, taken or expires it prints why and exits 23); with no token a local `console` returns at
+  once. For `video preview`, `lease renew` while you use the page.
+- Do not use `--preempt` (on `acquire` or `release`) unless the user told you
+  to: it ends someone else's work.
+- MCP: `lease_acquire`, `lease_renew`, `lease_release`, `lease_status`. The
+  server keeps the token itself, so there is no `PANIO_LEASE` to export.
+
+**Exit 23 (`target_leased`).** A mutating command was refused: the message
+names the holder and when the lease ends. Run `panio lease status <target>`,
+then wait (`panio lease acquire <target> --wait 30m`) or tell the user. Do not
+retry in a loop and do not work around it by touching the daemons or devices
+directly.
+
+**Your own token stopped working.** If your lease was released, preempted or
+expired, a mutating command exits 23 with how and when it ended (and who holds
+the board now); a read warns on stderr and still runs, including when someone
+else holds the board now. Do not keep driving the
+board: the cleanup stopped your daemons. Re-acquire (`panio lease acquire`) if
+the job is still yours, or report the preemption. A warning that
+`PANIO_LEASE` is set but the target is "not leased" means the token matches
+nothing there; it ran without a lease.
+
 ## Companion skills
 
 Panio ships its own agent skills; list them and read any one from the CLI,
@@ -1038,7 +1095,8 @@ tools are the runtime verbs above: `target_list`, `video_shot`, `video_read`,
 `serial_log`, `serial_send`, `hid_send` (`command` is an array of words, e.g.
 `["key", "ENTER"]`), `action_list`, `action_run`, `power_state`, `power_on`,
 `power_off`, `power_cycle` (the power tools take an optional `level`, as
-`--level`).
+`--level`), and `lease_acquire`, `lease_renew`, `lease_release`,
+`lease_status` (see *Leases*).
 `video_shot` returns the screen as an image plus `signal=…  hash=…`; pass the
 hash back as `changed_since` to wait for a change, as with `video shot
 --changed-since`. Configuration (`set`, `add`, `watch`) is still the CLI. A
@@ -1190,6 +1248,13 @@ daemons**; `panio video watch` / `video stop` and `panio serial watch` /
 the device is free just because a daemon is gone from the tracked list.
 
 ## Quick reference — gotchas
+
+- **Leased target.** Exit 23 means someone holds the board or your token's
+  lease ended: `panio lease status <target>`, never retry blindly. Reads still
+  work on a leased target. `daemons stop|restart` of a leased target's daemon
+  is refused too (this includes a target's netboot session, `netbootd[target]`);
+  `stop --all` and `restart --all|--stale` skip them. `lease_acquire` over MCP
+  waits at most 5 minutes; call it again to keep waiting.
 
 - **USB fastboot RAM staging needs an external guarded runner.** Require fresh
   service entry for every artifact, separate bounded USB readiness, USB-host

@@ -242,6 +242,92 @@ pub fn write_atomic(path: &Path, data: &[u8]) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Take an exclusive, blocking advisory lock on `file`. The lock is released
+/// when the file is closed (dropped), including when the process dies, so a
+/// crashed holder never wedges the next caller.
+///
+/// Unix uses `flock(LOCK_EX)`. Windows uses `LockFileEx` over the whole
+/// range with `LOCKFILE_EXCLUSIVE_LOCK` and no `FAIL_IMMEDIATELY`, which
+/// blocks the same way.
+#[cfg(unix)]
+pub fn lock_exclusive(file: &std::fs::File) -> std::io::Result<()> {
+    use std::os::unix::io::AsRawFd;
+    loop {
+        // Safe: flock on a descriptor we own for the duration of the call.
+        let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
+        if rc == 0 {
+            return Ok(());
+        }
+        let err = std::io::Error::last_os_error();
+        if err.kind() != std::io::ErrorKind::Interrupted {
+            return Err(err);
+        }
+    }
+}
+
+#[cfg(windows)]
+pub fn lock_exclusive(file: &std::fs::File) -> std::io::Result<()> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{LockFileEx, LOCKFILE_EXCLUSIVE_LOCK};
+    use windows_sys::Win32::System::IO::OVERLAPPED;
+    // Safe: a zeroed OVERLAPPED means offset 0 and no event, which is what a
+    // synchronous handle expects; the handle outlives the call.
+    let mut overlapped: OVERLAPPED = unsafe { std::mem::zeroed() };
+    let ok = unsafe {
+        LockFileEx(
+            file.as_raw_handle() as _,
+            LOCKFILE_EXCLUSIVE_LOCK,
+            0,
+            u32::MAX,
+            u32::MAX,
+            &mut overlapped,
+        )
+    };
+    if ok == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// `HH:MM` of `epoch` (Unix seconds) in the machine's local time zone, or
+/// `None` when the system cannot convert it. Unix uses `localtime_r`;
+/// Windows converts through `FileTimeToSystemTime` and
+/// `SystemTimeToTzSpecificLocalTime`.
+#[cfg(unix)]
+pub fn local_hhmm(epoch: u64) -> Option<String> {
+    let t = libc::time_t::try_from(epoch).ok()?;
+    // Safe: localtime_r writes only into the zeroed struct we pass.
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    if unsafe { libc::localtime_r(&t, &mut tm) }.is_null() {
+        return None;
+    }
+    Some(format!("{:02}:{:02}", tm.tm_hour, tm.tm_min))
+}
+
+#[cfg(windows)]
+pub fn local_hhmm(epoch: u64) -> Option<String> {
+    use windows_sys::Win32::Foundation::{FILETIME, SYSTEMTIME};
+    use windows_sys::Win32::System::Time::{FileTimeToSystemTime, SystemTimeToTzSpecificLocalTime};
+    // FILETIME counts 100 ns ticks since 1601; Unix epoch is 11_644_473_600 s later.
+    let ticks = epoch.checked_add(11_644_473_600)?.checked_mul(10_000_000)?;
+    let ft = FILETIME {
+        dwLowDateTime: ticks as u32,
+        dwHighDateTime: (ticks >> 32) as u32,
+    };
+    // Safe: both structs are plain data and the calls only fill the out-params.
+    unsafe {
+        let mut utc: SYSTEMTIME = std::mem::zeroed();
+        let mut local: SYSTEMTIME = std::mem::zeroed();
+        if FileTimeToSystemTime(&ft, &mut utc) == 0 {
+            return None;
+        }
+        if SystemTimeToTzSpecificLocalTime(std::ptr::null(), &utc, &mut local) == 0 {
+            return None;
+        }
+        Some(format!("{:02}:{:02}", local.wHour, local.wMinute))
+    }
+}
+
 // ── process lifecycle ───────────────────────────────────────────────────────
 
 /// A pid that could not name a real process.
@@ -293,6 +379,133 @@ pub fn pid_alive(pid: i32) -> bool {
         let ok = windows_sys::Win32::System::Threading::GetExitCodeProcess(h, &mut code);
         CloseHandle(h);
         ok != 0 && code == STILL_ACTIVE as u32
+    }
+}
+
+/// An opaque start-time stamp for `pid`: equal across calls for the same
+/// process, different for a recycled pid. `None` when the process does not
+/// exist or cannot be queried. Units differ per platform and are not
+/// comparable across machines or boots.
+#[cfg(target_os = "linux")]
+pub fn process_start_time(pid: i32) -> Option<u64> {
+    if !is_real_pid(pid) {
+        return None;
+    }
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    start_time_from_stat(&stat)
+}
+
+/// The start time in a Linux `/proc/<pid>/stat` line, or `None` for a zombie
+/// (state `Z`) or dead (`X`) process: it has exited and only waits for its
+/// parent to reap it, so it is not "the same running process" any more.
+#[cfg(any(target_os = "linux", test))]
+fn start_time_from_stat(stat: &str) -> Option<u64> {
+    // The command name (field 2) may contain spaces and parentheses, so
+    // parse from the last `)`. Fields after it start at field 3 (state);
+    // starttime is field 22, i.e. index 19 of the remainder.
+    let rest = &stat[stat.rfind(')')? + 1..];
+    let mut fields = rest.split_whitespace();
+    if matches!(fields.next()?, "Z" | "X") {
+        return None;
+    }
+    fields.nth(18)?.parse().ok()
+}
+
+#[cfg(target_os = "macos")]
+pub fn process_start_time(pid: i32) -> Option<u64> {
+    if !is_real_pid(pid) {
+        return None;
+    }
+    // Safe: proc_bsdinfo is plain data, and proc_pidinfo writes at most the
+    // buffer size we pass.
+    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+    let n = unsafe {
+        libc::proc_pidinfo(
+            pid,
+            libc::PROC_PIDTBSDINFO,
+            0,
+            &mut info as *mut _ as *mut libc::c_void,
+            size,
+        )
+    };
+    if n != size {
+        return None;
+    }
+    Some(info.pbi_start_tvsec * 1_000_000 + info.pbi_start_tvusec)
+}
+
+#[cfg(windows)]
+pub fn process_start_time(pid: i32) -> Option<u64> {
+    use windows_sys::Win32::Foundation::{CloseHandle, FILETIME, STILL_ACTIVE};
+    use windows_sys::Win32::System::Threading::{
+        GetExitCodeProcess, GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    if !is_real_pid(pid) {
+        return None;
+    }
+    // Safe: OpenProcess validates the pid; the FILETIMEs are plain data.
+    unsafe {
+        let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid as u32);
+        if h.is_null() {
+            return None;
+        }
+        // A terminated process object lives on while any handle is open, so
+        // only a still-running process counts (matches `pid_alive`).
+        let mut code: u32 = 0;
+        if GetExitCodeProcess(h, &mut code) == 0 || code != STILL_ACTIVE as u32 {
+            CloseHandle(h);
+            return None;
+        }
+        let zero = FILETIME {
+            dwLowDateTime: 0,
+            dwHighDateTime: 0,
+        };
+        let (mut created, mut exited, mut kernel, mut user) = (zero, zero, zero, zero);
+        let ok = GetProcessTimes(h, &mut created, &mut exited, &mut kernel, &mut user);
+        CloseHandle(h);
+        if ok == 0 {
+            return None;
+        }
+        Some(((created.dwHighDateTime as u64) << 32) | created.dwLowDateTime as u64)
+    }
+}
+
+/// 32 lowercase hex characters from the operating system's random source,
+/// for lease tokens.
+pub fn random_token() -> std::io::Result<String> {
+    let mut buf = [0u8; 16];
+    fill_random(&mut buf)?;
+    Ok(buf.iter().map(|b| format!("{b:02x}")).collect())
+}
+
+#[cfg(unix)]
+fn fill_random(buf: &mut [u8]) -> std::io::Result<()> {
+    use std::io::Read;
+    std::fs::File::open("/dev/urandom")?.read_exact(buf)
+}
+
+#[cfg(windows)]
+fn fill_random(buf: &mut [u8]) -> std::io::Result<()> {
+    use windows_sys::Win32::Security::Cryptography::{
+        BCryptGenRandom, BCRYPT_USE_SYSTEM_PREFERRED_RNG,
+    };
+    // Safe: the pointer and length describe `buf`; no algorithm handle is
+    // needed with the system-preferred RNG flag.
+    let status = unsafe {
+        BCryptGenRandom(
+            std::ptr::null_mut(),
+            buf.as_mut_ptr(),
+            buf.len() as u32,
+            BCRYPT_USE_SYSTEM_PREFERRED_RNG,
+        )
+    };
+    if status == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::other(format!(
+            "BCryptGenRandom failed: {status:#x}"
+        )))
     }
 }
 
@@ -489,7 +702,8 @@ pub fn kill_process_tree(pid: i32) {
 /// no `exec`, so we spawn, wait, and exit with the child's status. The
 /// observable difference is that this process stays alive as a parent while the
 /// child runs; stdio is inherited either way, so an interactive session behaves
-/// the same.
+/// the same. The child runs in a kill-on-close job object, so ending this
+/// process (as a lease cleanup does, by pid) ends the child too.
 #[cfg(unix)]
 pub fn exec_replace(cmd: &mut Command) -> std::io::Error {
     std::os::unix::process::CommandExt::exec(cmd)
@@ -497,10 +711,128 @@ pub fn exec_replace(cmd: &mut Command) -> std::io::Error {
 
 #[cfg(windows)]
 pub fn exec_replace(cmd: &mut Command) -> std::io::Error {
-    match cmd.status() {
+    // The child goes into a job object that kills its members when the last
+    // handle closes. The handle is held by this process until it exits, so
+    // when something terminates this panio (a lease cleanup does, by pid) the
+    // console tool dies with it instead of keeping the port open.
+    let job = job::Job::kill_on_close();
+    let mut child = match cmd.spawn() {
+        Ok(child) => child,
+        Err(e) => return e,
+    };
+    match job.and_then(|j| j.assign(&child).map(|()| j)) {
+        // Kept alive until `exit` below; the OS closes it with the process.
+        Ok(j) => std::mem::forget(j),
+        Err(e) => eprintln!(
+            "warning: could not put the console tool in a job object ({e}); \
+             ending this panio will not stop it"
+        ),
+    }
+    match child.wait() {
         // A passthrough (design D3): the console's own status.
         Ok(status) => std::process::exit(crate::error::shell_code(status)),
         Err(e) => e,
+    }
+}
+
+/// A Windows job object that kills every process in it when its last handle
+/// closes.
+#[cfg(windows)]
+mod job {
+    use std::os::windows::io::AsRawHandle;
+
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+        SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK,
+    };
+
+    pub struct Job(HANDLE);
+
+    impl Job {
+        pub fn kill_on_close() -> std::io::Result<Job> {
+            // Safe: a null name and default security make an anonymous job; a
+            // null return is checked. The info struct is plain data, zeroed
+            // then given the one limit flag, with the size passed alongside.
+            unsafe {
+                let h = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+                if h.is_null() {
+                    return Err(std::io::Error::last_os_error());
+                }
+                let job = Job(h);
+                let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+                // KILL_ON_JOB_CLOSE: the console tool dies with panio.
+                // SILENT_BREAKAWAY_OK: processes the tool starts leave the job,
+                // so a long-lived server it launches (adb's) is not killed with
+                // the session. This is why the tool itself is assigned
+                // explicitly after it is spawned rather than by putting panio
+                // in the job first: with the flag, a child created by a
+                // process in the job would break away too.
+                info.BasicLimitInformation.LimitFlags =
+                    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK;
+                let ok = SetInformationJobObject(
+                    h,
+                    JobObjectExtendedLimitInformation,
+                    &info as *const _ as *const core::ffi::c_void,
+                    std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+                );
+                if ok == 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(job)
+            }
+        }
+
+        pub fn assign(&self, child: &std::process::Child) -> std::io::Result<()> {
+            // Safe: both handles are live (the child's is owned by `child`).
+            let ok = unsafe { AssignProcessToJobObject(self.0, child.as_raw_handle() as HANDLE) };
+            if ok == 0 {
+                Err(std::io::Error::last_os_error())
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    impl Drop for Job {
+        fn drop(&mut self) {
+            // Safe: the handle is owned here and closed once.
+            unsafe { CloseHandle(self.0) };
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        /// Closing the job's last handle (what the OS does when the owning
+        /// process dies) takes the assigned child with it.
+        #[test]
+        fn closing_the_job_kills_the_child() {
+            let mut child = std::process::Command::new("cmd")
+                .args(["/C", "ping -n 60 127.0.0.1 > NUL"])
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .expect("spawn a long child");
+            let job = Job::kill_on_close().expect("create the job");
+            job.assign(&child).expect("assign the child");
+            assert!(child.try_wait().unwrap().is_none(), "child must be running");
+            drop(job);
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            loop {
+                if child.try_wait().unwrap().is_some() {
+                    break;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "the child outlived its job"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+        }
     }
 }
 
@@ -528,6 +860,17 @@ mod tests {
         .stderr(std::process::Stdio::null())
         .spawn()
         .expect("spawn sleeper")
+    }
+
+    #[test]
+    fn local_hhmm_returns_clock_shape() {
+        let s = local_hhmm(1_800_000_000).expect("local time");
+        let b = s.as_bytes();
+        assert_eq!(b.len(), 5, "{s}");
+        assert_eq!(b[2], b':', "{s}");
+        let h: u32 = s[..2].parse().unwrap();
+        let m: u32 = s[3..].parse().unwrap();
+        assert!(h < 24 && m < 60, "{s}");
     }
 
     /// The daemon machinery lives or dies on these two: every `discover()`
@@ -700,5 +1043,77 @@ mod tests {
         assert!(!path.exists());
         write_atomic(&path, b"{}").unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "{}");
+    }
+
+    #[test]
+    fn start_time_of_self_is_stable() {
+        let pid = std::process::id() as i32;
+        let a = process_start_time(pid);
+        assert!(a.is_some());
+        assert_eq!(a, process_start_time(pid));
+    }
+
+    #[test]
+    fn start_time_of_child_differs_from_self() {
+        // Linux start times are in clock ticks (~10 ms); make sure the child
+        // cannot start in the same tick as this process.
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let mut child = spawn_sleeper();
+        let theirs = process_start_time(child.id() as i32);
+        let ours = process_start_time(std::process::id() as i32);
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(theirs.is_some());
+        assert_ne!(theirs, ours);
+    }
+
+    fn stat_line(state: &str) -> String {
+        format!(
+            "42 (a (b) c) {state} 1 42 42 0 -1 4194560 100 0 0 0 1 2 0 0 20 0 1 0 987654 \
+             1000 10 18446744073709551615"
+        )
+    }
+
+    #[test]
+    fn linux_stat_start_time_is_none_for_zombies() {
+        assert_eq!(start_time_from_stat(&stat_line("S")), Some(987654));
+        assert_eq!(start_time_from_stat(&stat_line("R")), Some(987654));
+        assert_eq!(start_time_from_stat(&stat_line("Z")), None);
+        assert_eq!(start_time_from_stat(&stat_line("X")), None);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_real_zombie_has_no_start_time() {
+        let mut child = spawn_sleeper();
+        let pid = child.id() as i32;
+        assert!(process_start_time(pid).is_some());
+        try_signal_pid(pid, Signal::Kill).expect("kill our child");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        // Not yet waited on: the kernel keeps it as a zombie.
+        while process_start_time(pid).is_some() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert_eq!(process_start_time(pid), None);
+        let _ = child.wait();
+    }
+
+    #[test]
+    fn start_time_of_dead_pid_is_none() {
+        let mut child = spawn_sleeper();
+        let pid = child.id() as i32;
+        let _ = child.kill();
+        let _ = child.wait();
+        drop(child);
+        assert_eq!(process_start_time(pid), None);
+    }
+
+    #[test]
+    fn random_token_shape() {
+        let a = random_token().unwrap();
+        let b = random_token().unwrap();
+        assert_eq!(a.len(), 32);
+        assert!(a.bytes().all(|c| matches!(c, b'0'..=b'9' | b'a'..=b'f')));
+        assert_ne!(a, b);
     }
 }

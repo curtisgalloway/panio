@@ -50,7 +50,7 @@ pub fn state_dir() -> PathBuf {
 /// doc comment) or have been hand-edited, so it is sanitized the same way
 /// every other lab-derived path component is (`daemons::sanitize_component`)
 /// rather than trusted to already be safe.
-fn target_dir(target: &str) -> PathBuf {
+pub(crate) fn target_dir(target: &str) -> PathBuf {
     state_dir().join(crate::daemons::sanitize_component(target))
 }
 

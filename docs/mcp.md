@@ -21,6 +21,9 @@ text, serial log, power state) and acting on it (keyboard and mouse, serial
 input, power). Configuration stays in the CLI. The design is in
 [`notes/mcp-server.md`](https://github.com/curtisgalloway/panio/blob/main/notes/mcp-server.md).
 
+Four lease tools (`lease_acquire`, `lease_renew`, `lease_release`,
+`lease_status`) reserve a target for this server. See [Target leases](leases.md#mcp).
+
 ## Set it up
 
 Run it on the machine that holds your lab file, usually your own machine,
@@ -43,7 +46,9 @@ arguments `["mcp"]`. In the common JSON form:
 ```
 
 The harness starts the server and keeps it running for the session. The
-server holds no state of its own, so restarting it loses nothing.
+server keeps no state except the lease tokens it was given by `lease_acquire`;
+restarting it loses those tokens (the lease itself stays until it expires, so
+`lease_release` with `preempt`, or wait).
 
 ## Tools
 
@@ -63,11 +68,17 @@ server holds no state of its own, so restarting it loses nothing.
 | `action_run` | `target`; `name` (required) | Runs one named action, as `panio action run`. |
 | `power_state` | `target`; `level` | A line like `Power ON  (pi5)`, as `panio power-state`. With no `level`, a target with [power levels](power.md#power-levels-soft-and-hard) gets one line per level, the default first (`Power OFF  (pi5, level hard)`; `Power UNKNOWN … no state_cmd` for a level that cannot be read). With `level`, only that level. |
 | `power_on`, `power_off`, `power_cycle` | `target`; `level` | Switches power, as `panio power on`/`off` and `panio power-cycle`, with `--level` when `level` is given. A level without the needed hook fails as `not_configured` (3); it never falls back to the default level. |
+| `lease_acquire` | `target`; `owner`; `duration`; `idle`; `wait` (at most `5m`; call again to keep waiting); `preempt` | Reserves the target for this server. The server keeps the token and applies it to this target's commands; the result never shows it. Exit 23 when someone else holds it. See [Target leases](leases.md#mcp). |
+| `lease_renew` | `target`; `duration` | Extends the lease this server holds. |
+| `lease_release` | `target`; `preempt` | Ends the lease this server holds and cleans the target up; `preempt` ends someone else's. |
+| `lease_status` | `target` (optional) | JSON: who holds the target and for how long, never the token; no `target` lists every target. |
 
-Every tool but `target_list` needs `target`. The tools that change the target
-(`serial_send`, `serial_transact`, `hid_send`, `action_run`, `power_on`, `power_off`,
-`power_cycle`) are
-marked as such, so a harness that asks before side effects will ask.
+Every tool but `target_list` and `lease_status` needs `target`. The tools that
+change the target (`serial_send`, `serial_transact`, `hid_send`, `action_run`,
+`power_on`, `power_off`, `power_cycle`, `lease_acquire`, `lease_renew`,
+`lease_release`) are marked as such, so a harness that asks before side
+effects will ask. `lease_status` is marked as not read-only too: it cleans up
+a lease that has expired.
 
 `video_shot` needs the target's video daemon to be running already
 (`panio video watch <target>`). To wait for the screen to change after an

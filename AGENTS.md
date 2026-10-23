@@ -302,7 +302,7 @@ reads as "Pan I/O": the agent wrangles the target's I/O.
 Capabilities (full list: docs/dev/architecture.md#capabilities): netboot (`panio
 netboot`), HDMI/USB/RFB video with OCR (`video`), serial console with capture logs
 (`serial`), combined video+serial dashboard/KVM (`console`), HID injection (`hid`),
-named target actions (`action`), switchable USB media (`usb`), and power control
+named target actions (`action`), whole-target leases (`lease`), switchable USB media (`usb`), and power control
 via DTR, hooks, and named levels (`power`, `power-cycle`, `power-state`).
 
 ## Architecture
@@ -393,6 +393,7 @@ host-singleton daemons (zigplug/cambrionix/netbootd) are one per host, in
 | Helper durable state | `~/.config/panio/helpers/<name>/` (`PANIO_STATE_DIR`) |
 | Plugin helpers / skills | `<root>/libexec/panio/bin/`, `<root>/share/panio/skills/` per `PANIO_PLUGIN_PATH` root |
 | Netboot state / log | `~/.local/share/panio/<name>/netboot.json`, `netboot.log` |
+| Target lease | `~/.local/share/panio/<name>/lease.json` (0600), `lease-history.jsonl`, `lease.lock`; on the target's default host. Guide: docs/leases.md |
 | Discovery file | `<daemon dir>/daemon.json`: `{pid, port, token}` + `interfaces:[{name, device, baud}]` (serialcap) or `device` (hid); owner-only |
 | Advisory lock / stderr log | `<daemon dir>/daemon.lock`, `daemon.log` (hdmicap and serialcap; truncated on each CLI-spawned start) |
 | serialcap capture | `<daemon dir>/capture/<name>/serial.jsonl(.1..)` (rotated JSONL, per interface), `pending.json` (current unterminated line) |

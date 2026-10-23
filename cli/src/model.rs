@@ -513,11 +513,20 @@ pub struct Target {
     pub usb: Option<UsbChannel>,
     pub adb: Option<AdbChannel>,
     pub actions: Option<ActionsChannel>,
+    /// When true, every command that touches this target needs a lease held
+    /// by the caller. Refused by [`validate`] on a target whose channels span
+    /// more than one host.
+    pub lease_required: Option<bool>,
 }
 
 impl Target {
     pub fn default_host(&self) -> &str {
         self.host.as_deref().unwrap_or(LOCAL)
+    }
+
+    /// Whether commands on this target require a lease (default false).
+    pub fn lease_required(&self) -> bool {
+        self.lease_required.unwrap_or(false)
     }
 
     /// The serialcap daemon's fixed port: the first interface that sets a
@@ -815,6 +824,17 @@ fn push_opt(fields: &mut Vec<(&'static str, String)>, key: &'static str, v: &Opt
     }
 }
 
+/// Every host any channel of `rt` resolves to, plus the target's default
+/// host (`local` when `host` is unset). The lease lives on the default host,
+/// so a target with no `host` whose channels all sit on `bench2` spans
+/// {local, bench2}: the lease would be stored locally while every check runs
+/// on `bench2`.
+pub fn target_hosts(rt: &ResolvedTarget) -> BTreeSet<String> {
+    let mut s: BTreeSet<String> = rt.hosts().into_iter().collect();
+    s.insert(rt.default_host.clone());
+    s
+}
+
 /// Resolve the host a command should run on, given the channel it touches.
 ///
 /// Singleton kinds use that channel's host (else the target default). Serial
@@ -950,6 +970,22 @@ pub fn validate(lab: &Lab) -> Result<(), LabError> {
         }
         let default_host = t.default_host();
         check_host_ref(default_host, &declared, &format!("target '{name}'"))?;
+        if t.lease_required() {
+            let hosts = lab
+                .resolved_target(name)
+                .map(|rt| target_hosts(&rt))
+                .unwrap_or_default();
+            if hosts.len() > 1 {
+                let list: Vec<&str> = hosts.iter().map(String::as_str).collect();
+                return lab_err(format!(
+                    "target '{name}': lease_required needs every channel on the target's \
+                     default host, but this target spans {}; move each channel to the \
+                     default host (or set `host` to where they are) or remove \
+                     lease_required",
+                    list.join(", ")
+                ));
+            }
+        }
         if let Some(nb) = &t.netboot {
             let h = nb.host.as_deref().unwrap_or(default_host);
             check_host_ref(h, &declared, &format!("target '{name}' netboot"))?;
@@ -1899,5 +1935,89 @@ mod tests {
         }
         let e = validate_name("target", "a b").unwrap_err();
         assert!(e.0.starts_with("invalid target name 'a b':"), "{}", e.0);
+    }
+
+    #[test]
+    fn lease_required_on_cross_host_target_is_invalid() {
+        let e = parse(
+            r#"
+            [hosts.bench1]
+            ssh = "u@bench1"
+            [hosts.bench2]
+            ssh = "u@bench2"
+            [targets.t]
+            host = "bench1"
+            lease_required = true
+            [targets.t.video]
+            host = "bench2"
+            device = "0"
+            "#,
+        )
+        .unwrap_err();
+        assert!(e.0.contains("lease_required"), "{}", e.0);
+        // Single-host (or false) is fine.
+        let ok = parse(
+            r#"
+            [hosts.bench1]
+            ssh = "u@bench1"
+            [hosts.bench2]
+            ssh = "u@bench2"
+            [targets.t]
+            host = "bench1"
+            lease_required = false
+            [targets.t.video]
+            host = "bench2"
+            device = "0"
+            "#,
+        )
+        .unwrap();
+        assert!(!ok.targets["t"].lease_required());
+    }
+
+    #[test]
+    fn target_hosts_lists_each_host() {
+        let lab = parse(
+            r#"
+            [hosts.bench1]
+            ssh = "u@bench1"
+            [hosts.bench2]
+            ssh = "u@bench2"
+            [targets.t]
+            host = "bench1"
+            [targets.t.video]
+            host = "bench2"
+            device = "0"
+            [targets.t.hid]
+            cmd = "x"
+            "#,
+        )
+        .unwrap();
+        let rt = lab.resolved_target("t").unwrap();
+        let hosts: Vec<String> = target_hosts(&rt).into_iter().collect();
+        assert_eq!(hosts, vec!["bench1".to_string(), "bench2".to_string()]);
+    }
+
+    #[test]
+    fn lease_required_needs_channels_on_the_default_host() {
+        let layout = |req: &str| {
+            parse(&format!(
+                r#"
+                [hosts.bench2]
+                ssh = "u@bench2"
+                [targets.t]
+                {req}
+                [targets.t.video]
+                host = "bench2"
+                device = "0"
+                "#
+            ))
+        };
+        let e = layout("lease_required = true").unwrap_err();
+        assert!(e.0.contains("lease_required"), "{}", e.0);
+        assert!(layout("lease_required = false").is_ok());
+        assert!(layout("").is_ok());
+        let ok = parse("[targets.t]\nlease_required = true\n[targets.t.video]\ndevice = \"0\"\n")
+            .unwrap();
+        assert!(ok.targets["t"].lease_required());
     }
 }
