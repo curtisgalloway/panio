@@ -296,6 +296,120 @@ pub fn pid_alive(pid: i32) -> bool {
     }
 }
 
+/// An opaque start-time stamp for `pid`: equal across calls for the same
+/// process, different for a recycled pid. `None` when the process does not
+/// exist or cannot be queried. Units differ per platform and are not
+/// comparable across machines or boots.
+// Used by lease.rs (later task); nothing calls it yet.
+#[allow(dead_code)]
+#[cfg(target_os = "linux")]
+pub fn process_start_time(pid: i32) -> Option<u64> {
+    if !is_real_pid(pid) {
+        return None;
+    }
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    // The command name (field 2) may contain spaces and parentheses, so
+    // parse from the last `)`. Fields after it start at field 3 (state);
+    // starttime is field 22, i.e. index 19 of the remainder.
+    let rest = &stat[stat.rfind(')')? + 1..];
+    rest.split_whitespace().nth(19)?.parse().ok()
+}
+
+#[allow(dead_code)]
+#[cfg(target_os = "macos")]
+pub fn process_start_time(pid: i32) -> Option<u64> {
+    if !is_real_pid(pid) {
+        return None;
+    }
+    // Safe: proc_bsdinfo is plain data, and proc_pidinfo writes at most the
+    // buffer size we pass.
+    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+    let n = unsafe {
+        libc::proc_pidinfo(
+            pid,
+            libc::PROC_PIDTBSDINFO,
+            0,
+            &mut info as *mut _ as *mut libc::c_void,
+            size,
+        )
+    };
+    if n != size {
+        return None;
+    }
+    Some(info.pbi_start_tvsec * 1_000_000 + info.pbi_start_tvusec)
+}
+
+#[allow(dead_code)]
+#[cfg(windows)]
+pub fn process_start_time(pid: i32) -> Option<u64> {
+    use windows_sys::Win32::Foundation::{CloseHandle, FILETIME};
+    use windows_sys::Win32::System::Threading::{
+        GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    if !is_real_pid(pid) {
+        return None;
+    }
+    // Safe: OpenProcess validates the pid; the FILETIMEs are plain data.
+    unsafe {
+        let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid as u32);
+        if h.is_null() {
+            return None;
+        }
+        let zero = FILETIME {
+            dwLowDateTime: 0,
+            dwHighDateTime: 0,
+        };
+        let (mut created, mut exited, mut kernel, mut user) = (zero, zero, zero, zero);
+        let ok = GetProcessTimes(h, &mut created, &mut exited, &mut kernel, &mut user);
+        CloseHandle(h);
+        if ok == 0 {
+            return None;
+        }
+        Some(((created.dwHighDateTime as u64) << 32) | created.dwLowDateTime as u64)
+    }
+}
+
+/// 32 lowercase hex characters from the operating system's random source,
+/// for lease tokens.
+// Used by lease.rs (later task); nothing calls it yet.
+#[allow(dead_code)]
+pub fn random_token() -> std::io::Result<String> {
+    let mut buf = [0u8; 16];
+    fill_random(&mut buf)?;
+    Ok(buf.iter().map(|b| format!("{b:02x}")).collect())
+}
+
+#[cfg(unix)]
+fn fill_random(buf: &mut [u8]) -> std::io::Result<()> {
+    use std::io::Read;
+    std::fs::File::open("/dev/urandom")?.read_exact(buf)
+}
+
+#[cfg(windows)]
+fn fill_random(buf: &mut [u8]) -> std::io::Result<()> {
+    use windows_sys::Win32::Security::Cryptography::{
+        BCryptGenRandom, BCRYPT_USE_SYSTEM_PREFERRED_RNG,
+    };
+    // Safe: the pointer and length describe `buf`; no algorithm handle is
+    // needed with the system-preferred RNG flag.
+    let status = unsafe {
+        BCryptGenRandom(
+            std::ptr::null_mut(),
+            buf.as_mut_ptr(),
+            buf.len() as u32,
+            BCRYPT_USE_SYSTEM_PREFERRED_RNG,
+        )
+    };
+    if status == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::other(format!(
+            "BCryptGenRandom failed: {status:#x}"
+        )))
+    }
+}
+
 /// True if this process runs with superuser rights.
 ///
 /// Used only to decide whether a privileged-port helper needs a `sudo` prefix.
@@ -700,5 +814,42 @@ mod tests {
         assert!(!path.exists());
         write_atomic(&path, b"{}").unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "{}");
+    }
+
+    #[test]
+    fn start_time_of_self_is_stable() {
+        let pid = std::process::id() as i32;
+        let a = process_start_time(pid);
+        assert!(a.is_some());
+        assert_eq!(a, process_start_time(pid));
+    }
+
+    #[test]
+    fn start_time_of_child_differs_from_self() {
+        let mut child = spawn_sleeper();
+        let theirs = process_start_time(child.id() as i32);
+        let ours = process_start_time(std::process::id() as i32);
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(theirs.is_some());
+        assert_ne!(theirs, ours);
+    }
+
+    #[test]
+    fn start_time_of_dead_pid_is_none() {
+        let mut child = spawn_sleeper();
+        let pid = child.id() as i32;
+        let _ = child.kill();
+        let _ = child.wait();
+        assert_eq!(process_start_time(pid), None);
+    }
+
+    #[test]
+    fn random_token_shape() {
+        let a = random_token().unwrap();
+        let b = random_token().unwrap();
+        assert_eq!(a.len(), 32);
+        assert!(a.bytes().all(|c| matches!(c, b'0'..=b'9' | b'a'..=b'f')));
+        assert_ne!(a, b);
     }
 }
