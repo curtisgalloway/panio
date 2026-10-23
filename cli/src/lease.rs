@@ -1,16 +1,5 @@
-// Copyright 2026 Curtis Galloway
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-FileCopyrightText: 2026 Curtis Galloway
+// SPDX-License-Identifier: Apache-2.0
 
 //! Whole-target leases: the on-disk record, a locked store, and the pure
 //! decision logic. Design: `notes/target-leases.md`.
@@ -97,6 +86,26 @@ impl std::fmt::Display for CorruptLease {
 
 impl std::error::Error for CorruptLease {}
 
+/// Why [`StoreLock::read`] failed. Only `Corrupt` means "treat as no lease and
+/// replace it"; `Io` (permissions, a directory in the way, a failing disk)
+/// must not be overwritten, so callers surface it.
+#[derive(Debug)]
+pub enum ReadError {
+    Io(std::io::Error),
+    Corrupt(CorruptLease),
+}
+
+impl std::fmt::Display for ReadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ReadError::Io(e) => write!(f, "cannot read lease record: {e}"),
+            ReadError::Corrupt(c) => c.fmt(f),
+        }
+    }
+}
+
+impl std::error::Error for ReadError {}
+
 /// Unix seconds now. One clock for every lease timestamp.
 pub fn now() -> u64 {
     SystemTime::now()
@@ -165,17 +174,21 @@ impl StoreLock {
         self.dir.join("lease-history.jsonl")
     }
 
-    /// The current record: `Ok(None)` when there is none, `Err` when the file
-    /// exists but is not a valid record.
-    pub fn read(&self) -> Result<Option<Lease>, CorruptLease> {
+    /// The current record: `Ok(None)` when there is none,
+    /// `Err(Corrupt)` when the file is not a valid record, `Err(Io)` when it
+    /// cannot be read at all.
+    pub fn read(&self) -> Result<Option<Lease>, ReadError> {
         let text = match std::fs::read_to_string(self.record_path()) {
             Ok(t) => t,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(e) => return Err(CorruptLease(e.to_string())),
+            Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
+                return Err(ReadError::Corrupt(CorruptLease(e.to_string())))
+            }
+            Err(e) => return Err(ReadError::Io(e)),
         };
         serde_json::from_str(&text)
             .map(Some)
-            .map_err(|e| CorruptLease(e.to_string()))
+            .map_err(|e| ReadError::Corrupt(CorruptLease(e.to_string())))
     }
 
     pub fn write(&self, l: &Lease) -> std::io::Result<()> {
@@ -270,19 +283,15 @@ pub enum Verdict {
     Refuse(String),
     /// Clean up the expired holder's leftovers, then run.
     CleanupThenRun(Lease),
+    /// Clean up the expired holder's leftovers, then refuse: the target is
+    /// now unleased and `lease_required` is set.
+    CleanupThenRefuse(Lease, String),
 }
 
-/// `HH:MM` in local time. Windows has no `localtime_r` here, so it falls back
-/// to UTC and says so.
+/// `HH:MM local`, or `HH:MM UTC` when the system cannot convert.
 fn clock(epoch: u64) -> String {
-    #[cfg(unix)]
-    {
-        let t = epoch as libc::time_t;
-        // Safe: localtime_r writes only into the zeroed struct we pass.
-        let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-        if !unsafe { libc::localtime_r(&t, &mut tm) }.is_null() {
-            return format!("{:02}:{:02} local", tm.tm_hour, tm.tm_min);
-        }
+    if let Some(t) = platform::local_hhmm(epoch) {
+        return format!("{t} local");
     }
     let secs = epoch % 86_400;
     format!("{:02}:{:02} UTC", secs / 3600, (secs % 3600) / 60)
@@ -300,19 +309,24 @@ pub fn decide(
     if access == Access::Unchecked {
         return Verdict::Run;
     }
+    let required_msg = || {
+        format!(
+            "target '{target}' has lease_required = true and no lease is held; \
+             run `panio lease acquire {target}` and export the token as PANIO_LEASE"
+        )
+    };
     match state {
         State::Unleased => {
             if access == Access::Mutating && lease_required {
-                Verdict::Refuse(format!(
-                    "target '{target}' has lease_required = true and no lease is held; \
-                     run `panio lease acquire {target}` and export the token as PANIO_LEASE"
-                ))
+                Verdict::Refuse(required_msg())
             } else {
                 Verdict::Run
             }
         }
         State::Expired(lease) => {
-            if access == Access::Mutating {
+            if access == Access::Mutating && lease_required {
+                Verdict::CleanupThenRefuse(lease.clone(), required_msg())
+            } else if access == Access::Mutating {
                 Verdict::CleanupThenRun(lease.clone())
             } else {
                 Verdict::Run
@@ -556,6 +570,18 @@ mod tests {
     }
 
     #[test]
+    fn decide_expired_mutating_required_cleans_then_refuses() {
+        let s = State::Expired(lease());
+        match decide(&s, Access::Mutating, None, true, "pi5", 9000) {
+            Verdict::CleanupThenRefuse(l, m) => {
+                assert_eq!(l, lease());
+                assert!(m.contains("lease_required"), "{m}");
+            }
+            other => panic!("expected CleanupThenRefuse, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn decide_expired_read_runs_without_cleanup() {
         let s = State::Expired(lease());
         assert_eq!(
@@ -602,11 +628,27 @@ mod tests {
     }
 
     #[test]
+    fn unreadable_record_is_an_io_error_not_corrupt() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("lease.json")).unwrap();
+        let lock = Store::at(dir.path().to_path_buf()).lock().unwrap();
+        assert!(matches!(lock.read(), Err(ReadError::Io(_))));
+    }
+
+    #[test]
+    fn invalid_utf8_record_is_corrupt() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("lease.json"), [0xff, 0xfe]).unwrap();
+        let lock = Store::at(dir.path().to_path_buf()).lock().unwrap();
+        assert!(matches!(lock.read(), Err(ReadError::Corrupt(_))));
+    }
+
+    #[test]
     fn corrupt_record_is_replaced() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("lease.json"), "{").unwrap();
         let lock = Store::at(dir.path().to_path_buf()).lock().unwrap();
-        assert!(lock.read().is_err());
+        assert!(matches!(lock.read(), Err(ReadError::Corrupt(_))));
         lock.write(&lease()).unwrap();
         assert_eq!(lock.read().unwrap(), Some(lease()));
     }

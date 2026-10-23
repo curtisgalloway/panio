@@ -289,6 +289,45 @@ pub fn lock_exclusive(file: &std::fs::File) -> std::io::Result<()> {
     Ok(())
 }
 
+/// `HH:MM` of `epoch` (Unix seconds) in the machine's local time zone, or
+/// `None` when the system cannot convert it. Unix uses `localtime_r`;
+/// Windows converts through `FileTimeToSystemTime` and
+/// `SystemTimeToTzSpecificLocalTime`.
+#[cfg(unix)]
+pub fn local_hhmm(epoch: u64) -> Option<String> {
+    let t = libc::time_t::try_from(epoch).ok()?;
+    // Safe: localtime_r writes only into the zeroed struct we pass.
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    if unsafe { libc::localtime_r(&t, &mut tm) }.is_null() {
+        return None;
+    }
+    Some(format!("{:02}:{:02}", tm.tm_hour, tm.tm_min))
+}
+
+#[cfg(windows)]
+pub fn local_hhmm(epoch: u64) -> Option<String> {
+    use windows_sys::Win32::Foundation::{FILETIME, SYSTEMTIME};
+    use windows_sys::Win32::System::Time::{FileTimeToSystemTime, SystemTimeToTzSpecificLocalTime};
+    // FILETIME counts 100 ns ticks since 1601; Unix epoch is 11_644_473_600 s later.
+    let ticks = epoch.checked_add(11_644_473_600)?.checked_mul(10_000_000)?;
+    let ft = FILETIME {
+        dwLowDateTime: ticks as u32,
+        dwHighDateTime: (ticks >> 32) as u32,
+    };
+    // Safe: both structs are plain data and the calls only fill the out-params.
+    unsafe {
+        let mut utc: SYSTEMTIME = std::mem::zeroed();
+        let mut local: SYSTEMTIME = std::mem::zeroed();
+        if FileTimeToSystemTime(&ft, &mut utc) == 0 {
+            return None;
+        }
+        if SystemTimeToTzSpecificLocalTime(std::ptr::null(), &utc, &mut local) == 0 {
+            return None;
+        }
+        Some(format!("{:02}:{:02}", local.wHour, local.wMinute))
+    }
+}
+
 // ── process lifecycle ───────────────────────────────────────────────────────
 
 /// A pid that could not name a real process.
@@ -698,6 +737,17 @@ mod tests {
     /// asks whether a recorded pid is alive, and every `stop` terminates one.
     /// Both are hand-written per platform — on Windows they are raw Win32
     /// calls — so they get an actual process rather than a mocked one.
+    #[test]
+    fn local_hhmm_returns_clock_shape() {
+        let s = local_hhmm(1_800_000_000).expect("local time");
+        let b = s.as_bytes();
+        assert_eq!(b.len(), 5, "{s}");
+        assert_eq!(b[2], b':', "{s}");
+        let h: u32 = s[..2].parse().unwrap();
+        let m: u32 = s[3..].parse().unwrap();
+        assert!(h < 24 && m < 60, "{s}");
+    }
+
     #[test]
     fn pid_alive_tracks_a_real_process() {
         let mut child = spawn_sleeper();
