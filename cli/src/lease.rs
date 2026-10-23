@@ -909,6 +909,7 @@ mod tests {
         toml::from_str(text).expect("lab parses")
     }
 
+    #[cfg(unix)]
     fn lease_with(procs: Vec<Proc>) -> Lease {
         Lease { procs, ..lease() }
     }
