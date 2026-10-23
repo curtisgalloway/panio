@@ -794,14 +794,13 @@ fn push_opt(fields: &mut Vec<(&'static str, String)>, key: &'static str, v: &Opt
 }
 
 /// Every host any channel of `rt` resolves to, plus the target's default
-/// host when one was set (anything but the implicit `local`): a target homed
-/// on `bench1` with its video on `bench2` spans both, even though only one
-/// has a channel. With no channels, just the default host.
+/// host (`local` when `host` is unset). The lease lives on the default host,
+/// so a target with no `host` whose channels all sit on `bench2` spans
+/// {local, bench2}: the lease would be stored locally while every check runs
+/// on `bench2`.
 pub fn target_hosts(rt: &ResolvedTarget) -> BTreeSet<String> {
     let mut s: BTreeSet<String> = rt.hosts().into_iter().collect();
-    if rt.default_host != LOCAL {
-        s.insert(rt.default_host.clone());
-    }
+    s.insert(rt.default_host.clone());
     s
 }
 
@@ -948,9 +947,10 @@ pub fn validate(lab: &Lab) -> Result<(), LabError> {
             if hosts.len() > 1 {
                 let list: Vec<&str> = hosts.iter().map(String::as_str).collect();
                 return lab_err(format!(
-                    "target '{name}': lease_required is not supported on a target whose \
-                     channels span more than one host ({}); put every channel on one host \
-                     or remove lease_required",
+                    "target '{name}': lease_required needs every channel on the target's \
+                     default host, but this target spans {}; move each channel to the \
+                     default host (or set `host` to where they are) or remove \
+                     lease_required",
                     list.join(", ")
                 ));
             }
@@ -1924,5 +1924,29 @@ mod tests {
         let rt = lab.resolved_target("t").unwrap();
         let hosts: Vec<String> = target_hosts(&rt).into_iter().collect();
         assert_eq!(hosts, vec!["bench1".to_string(), "bench2".to_string()]);
+    }
+
+    #[test]
+    fn lease_required_needs_channels_on_the_default_host() {
+        let layout = |req: &str| {
+            parse(&format!(
+                r#"
+                [hosts.bench2]
+                ssh = "u@bench2"
+                [targets.t]
+                {req}
+                [targets.t.video]
+                host = "bench2"
+                device = "0"
+                "#
+            ))
+        };
+        let e = layout("lease_required = true").unwrap_err();
+        assert!(e.0.contains("lease_required"), "{}", e.0);
+        assert!(layout("lease_required = false").is_ok());
+        assert!(layout("").is_ok());
+        let ok = parse("[targets.t]\nlease_required = true\n[targets.t.video]\ndevice = \"0\"\n")
+            .unwrap();
+        assert!(ok.targets["t"].lease_required());
     }
 }

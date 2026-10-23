@@ -506,8 +506,8 @@ enum TargetCmd {
         #[arg(long, alias = "note")]
         description: Option<String>,
         /// Require a lease for every command on this target (`true`), or stop
-        /// requiring one (`false` removes the key). Refused on a target whose
-        /// channels span more than one host.
+        /// requiring one (`false` removes the key). Every channel must be on the
+        /// target's default host (`--host`); otherwise this is refused.
         #[arg(long, value_name = "BOOL")]
         lease_required: Option<bool>,
     },
