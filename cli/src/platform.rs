@@ -745,7 +745,7 @@ mod job {
     use windows_sys::Win32::System::JobObjects::{
         AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
         SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK,
     };
 
     pub struct Job(HANDLE);
@@ -762,7 +762,15 @@ mod job {
                 }
                 let job = Job(h);
                 let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
-                info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+                // KILL_ON_JOB_CLOSE: the console tool dies with panio.
+                // SILENT_BREAKAWAY_OK: processes the tool starts leave the job,
+                // so a long-lived server it launches (adb's) is not killed with
+                // the session. This is why the tool itself is assigned
+                // explicitly after it is spawned rather than by putting panio
+                // in the job first: with the flag, a child created by a
+                // process in the job would break away too.
+                info.BasicLimitInformation.LimitFlags =
+                    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK;
                 let ok = SetInformationJobObject(
                     h,
                     JobObjectExtendedLimitInformation,

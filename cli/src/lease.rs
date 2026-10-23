@@ -760,6 +760,58 @@ pub fn enforce(lab: &crate::model::Lab, target: &str, access: Access) -> anyhow:
     }
 }
 
+/// The idle timeout of the live lease on `target` when the caller's token is
+/// its holder's, else `None` (no token, no lease, someone else's). Read-only.
+pub fn held_idle_secs(target: &str) -> Option<u64> {
+    let token = caller_token()?;
+    let store = Store::for_target(target);
+    if !store.record_exists() {
+        return None;
+    }
+    let lock = store.lock().ok()?;
+    match state(lock.read().ok()?, now(), proc_is_live) {
+        State::Held(l) if l.token == token => Some(l.idle_secs),
+        _ => None,
+    }
+}
+
+/// One in-process keepalive tick for a local console: if the caller still
+/// holds the lease, a holder read (`enforce` with [`Access::Read`], which
+/// touches `last_used_at`) and `None`; otherwise why it no longer does, from
+/// the lease state itself.
+pub fn keepalive_tick(lab: &crate::model::Lab, target: &str) -> Option<String> {
+    let token = caller_token()?;
+    let store = Store::for_target(target);
+    let lost = {
+        let lock = match store.lock() {
+            Ok(l) => l,
+            Err(e) => return Some(format!("cannot read the lease: {e}")),
+        };
+        let st = state(lock.read().ok().flatten(), now(), proc_is_live);
+        match st {
+            State::Held(l) if l.token == token => None,
+            State::Held(l) => Some(
+                lost_lease_message(&lock, Some(&token), target).unwrap_or_else(|| {
+                    format!(
+                        "PANIO_LEASE does not match the current holder ({}) of '{target}'",
+                        l.owner
+                    )
+                }),
+            ),
+            _ => Some(
+                lost_lease_message(&lock, Some(&token), target)
+                    .unwrap_or_else(|| format!("'{target}' is no longer leased to you")),
+            ),
+        }
+    };
+    if lost.is_none() {
+        if let Err(e) = enforce(lab, target, Access::Read) {
+            return Some(format!("{e:#}"));
+        }
+    }
+    lost
+}
+
 /// Parse `90s`, `30m`, `2h`, or bare seconds. Zero and negative values are
 /// errors.
 pub fn parse_duration(s: &str) -> Result<u64, String> {

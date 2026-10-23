@@ -1974,6 +1974,18 @@ fn apply_lease_check<T>(
     Ok(allowed)
 }
 
+/// The netbootd pids of sessions the lease check left running (their target is
+/// not in `kept`), so the stray sweep does not TERM them right after saying
+/// they were skipped.
+fn skipped_netboot_pids(netboots: &[(String, state::NetbootState)], kept: &[String]) -> Vec<i32> {
+    netboots
+        .iter()
+        .filter(|(target, _)| !kept.contains(target))
+        .flat_map(|(_, st)| [st.dhcp_pid, st.tftp_pid])
+        .filter(|pid| *pid > 0)
+        .collect()
+}
+
 /// The target whose channel devices the untracked daemon `u` holds, if the
 /// lab names one. A serialcap orphan is matched on a serial channel's device,
 /// an hdmicap orphan on the video channel's.
@@ -2120,6 +2132,7 @@ fn cmd_daemons_stop(
         .collect();
     let mut known: Vec<i32> = victims.iter().map(|(_, pid, _)| *pid).collect();
     known.extend(skipped_pids);
+    known.extend(skipped_netboot_pids(&netboots, &netboot_targets));
     if all {
         let strays = daemons::list_stray_helpers(&known);
         let strays = skip_leased_orphans(lab_flag, strays);
@@ -4111,10 +4124,26 @@ fn cmd_console(
         },
     );
     show_console(&target, &video, &url, &ports, view);
-    // This command returns as soon as the page is handed off, so it is not a
-    // live registered process: dashboard use does not hold the lease open.
+    // The page's use never runs a panio command, so a lease holder stays in
+    // the foreground and keeps the lease alive in-process, like the remote
+    // console. Without a token nothing changes: the command returns now.
     if lease::caller_token().is_some() {
-        eprintln!("note: {DASHBOARD_IDLE_NOTE}");
+        match lease::held_idle_secs(&target) {
+            Some(idle) => {
+                let (lab, t) = (lab.clone(), target.clone());
+                let _keepalive = Keepalive::spawn(keepalive_interval(idle), move || {
+                    lease::keepalive_tick(&lab, &t)
+                });
+                println!("Keeping the lease on '{target}' alive. Press Ctrl-C to close.");
+                loop {
+                    std::thread::sleep(std::time::Duration::from_secs(1));
+                }
+            }
+            None => eprintln!(
+                "note: the lease on '{target}' will not be kept alive by this console \
+                 (PANIO_LEASE is not the holder's); {DASHBOARD_IDLE_NOTE}"
+            ),
+        }
     }
     Ok(())
 }
@@ -4138,9 +4167,8 @@ fn keepalive_interval(idle_secs: u64) -> std::time::Duration {
 }
 
 /// A background thread that calls `touch` every `interval` until dropped.
-/// `touch` returns a refusal message when the lease no longer lets this caller
-/// in; the first one is printed on stderr, loudly, and the thread keeps going
-/// (the user may re-acquire).
+/// `touch` returns a message when the lease is no longer this caller's; the
+/// thread prints it once, loudly, on stderr and stops ticking.
 struct Keepalive {
     stop: Option<std::sync::mpsc::Sender<()>>,
 }
@@ -4152,17 +4180,14 @@ impl Keepalive {
     ) -> Keepalive {
         let (stop, rx) = std::sync::mpsc::channel::<()>();
         std::thread::spawn(move || {
-            let mut warned = false;
             // A timeout is the tick; a message or a dropped sender is the stop.
             while let Err(std::sync::mpsc::RecvTimeoutError::Timeout) = rx.recv_timeout(interval) {
                 if let Some(msg) = touch() {
-                    if !warned {
-                        warned = true;
-                        eprintln!(
-                            "warning: the lease keepalive was refused ({msg}); the console is \
-                             no longer holding the lease open"
-                        );
-                    }
+                    eprintln!(
+                        "warning: the console no longer holds the lease ({msg}); \
+                         it is not being kept alive any more"
+                    );
+                    break;
                 }
             }
         });
@@ -4177,39 +4202,78 @@ impl Drop for Keepalive {
     }
 }
 
-/// Keep the caller's lease on `target` alive while a remote console runs: one
-/// holder read (`video show`, which touches `last_used_at`) every
-/// [`keepalive_interval`]. `None` when the caller has no token or the target is
-/// not leased to anyone.
+/// One keepalive read on the control host: `video show` as a holder read. A
+/// non-zero exit, or a `warning:` on stderr (what a read by a non-holder
+/// prints), means the lease is not this caller's: the text says why.
+fn remote_touch(lab: &Lab, target: &str, host_name: &str) -> Option<String> {
+    match dispatch::run_subcommand(lab, target, host_name, &["video", "show", target]) {
+        Ok(out) => lost_from_remote_read(out.status, &out.stderr),
+        Err(e) => Some(format!("{e:#}")),
+    }
+}
+
+/// [`remote_touch`]'s verdict on a finished read.
+fn lost_from_remote_read(status: i32, stderr: &str) -> Option<String> {
+    let warning = stderr
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("warning:"))
+        .map(|w| w.trim().to_string());
+    match (status, warning) {
+        (_, Some(w)) => Some(w),
+        (0, None) => None,
+        (code, None) => {
+            let text = stderr.trim();
+            Some(if text.is_empty() {
+                format!("exit {code}")
+            } else {
+                text.to_string()
+            })
+        }
+    }
+}
+
+/// Keep the caller's lease alive while a remote console runs: one holder read
+/// every [`keepalive_interval`]. Nothing starts without a token or when the
+/// target is not leased; if the lease cannot be confirmed as the caller's, one
+/// line on stderr says it will not be kept alive.
 fn lease_keepalive(lab: &Lab, target: &str, host_name: &str) -> Option<Keepalive> {
     lease::caller_token()?;
-    let out = dispatch::run_subcommand(
+    let not_kept = |why: &str| {
+        eprintln!("note: the lease on '{target}' will not be kept alive by this console ({why})");
+    };
+    let row = dispatch::run_subcommand(
         lab,
         target,
         host_name,
         &["lease", "status", "--json", "-t", target],
     )
-    .ok()?;
-    let row: lease_cmd::StatusRow = serde_json::from_str(out.stdout.trim()).ok()?;
-    if out.status != 0 || row.held != Some(true) {
+    .map_err(|e| format!("{e:#}"))
+    .and_then(|out| {
+        if out.status != 0 {
+            return Err(format!("lease status exited {}", out.status));
+        }
+        serde_json::from_str::<lease_cmd::StatusRow>(out.stdout.trim())
+            .map_err(|e| format!("unreadable lease status: {e}"))
+    });
+    let row = match row {
+        Ok(r) => r,
+        Err(why) => {
+            not_kept(&why);
+            return None;
+        }
+    };
+    if row.held != Some(true) {
+        return None;
+    }
+    if let Some(why) = remote_touch(lab, target, host_name) {
+        not_kept(&why);
         return None;
     }
     let interval = keepalive_interval(row.idle_secs.unwrap_or(lease::DEFAULT_IDLE));
     let (lab, target, host_name) = (lab.clone(), target.to_string(), host_name.to_string());
-    Some(Keepalive::spawn(
-        interval,
-        move || match dispatch::run_subcommand(
-            &lab,
-            &target,
-            &host_name,
-            &["video", "show", &target],
-        ) {
-            Ok(out) if out.status == error::Kind::TargetLeased.exit_code() => {
-                Some(out.stderr.trim().to_string())
-            }
-            _ => None,
-        },
-    ))
+    Some(Keepalive::spawn(interval, move || {
+        remote_touch(&lab, &target, &host_name)
+    }))
 }
 
 fn remote_console(
@@ -7004,6 +7068,28 @@ mod tests {
         assert_eq!(skipped.len(), 1);
     }
 
+    #[test]
+    fn skipped_netboot_sessions_are_excluded_from_the_stray_sweep() {
+        let st = |target: &str, dhcp, tftp| {
+            (
+                target.to_string(),
+                state::NetbootState {
+                    target: target.into(),
+                    dhcp_pid: dhcp,
+                    tftp_pid: tftp,
+                    started_at: 0.0,
+                    interface: "eth0".into(),
+                    tftp_root: "/t".into(),
+                    engine: "rust".into(),
+                },
+            )
+        };
+        let netboots = vec![st("pi5", 100, 101), st("nuc", 200, 0)];
+        let kept = vec!["nuc".to_string()];
+        assert_eq!(skipped_netboot_pids(&netboots, &kept), vec![100, 101]);
+        assert!(skipped_netboot_pids(&netboots, &["pi5".into(), "nuc".into()]).is_empty());
+    }
+
     fn orphan_lab() -> Lab {
         toml::from_str(
             r#"
@@ -7074,6 +7160,39 @@ device = "/dev/video-nuc"
         assert_eq!(secs(60), 30);
         assert_eq!(secs(2), 10);
         assert_eq!(secs(86_400), 300);
+    }
+
+    #[test]
+    fn a_remote_read_that_warns_or_fails_means_the_lease_is_lost() {
+        assert_eq!(lost_from_remote_read(0, ""), None);
+        assert_eq!(lost_from_remote_read(0, "note: something\n"), None);
+        let w = "warning: your lease on 'pi5' ended at 10:30 local (preempted by bob)\n";
+        let lost = lost_from_remote_read(0, w).expect("warning means lost");
+        assert!(lost.contains("preempted by bob"), "{lost}");
+        assert!(!lost.starts_with("warning"), "{lost}");
+        assert_eq!(
+            lost_from_remote_read(23, "refused\n").as_deref(),
+            Some("refused")
+        );
+        assert_eq!(lost_from_remote_read(255, "").as_deref(), Some("exit 255"));
+    }
+
+    #[test]
+    fn keepalive_stops_ticking_once_the_lease_is_lost() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        let n = Arc::new(AtomicUsize::new(0));
+        let seen = n.clone();
+        let _k = Keepalive::spawn(std::time::Duration::from_millis(10), move || {
+            seen.fetch_add(1, Ordering::SeqCst);
+            Some("preempted".to_string())
+        });
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        assert_eq!(
+            n.load(Ordering::SeqCst),
+            1,
+            "must stop after the first loss"
+        );
     }
 
     #[test]

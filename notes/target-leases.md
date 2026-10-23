@@ -345,12 +345,16 @@ Deviations from the design above, all deliberate. User guide: `docs/leases.md`.
   (`not leased`). `renew` on an expired lease retires it (expired history) and
   exits 23 with the history wording.
 - **The dashboard does not refresh the idle timer.** A remote `console` runs a
-  keepalive while it runs and the caller has a token: every
-  min(idle/2, 5 min) a holder read (`video show`) on the control host; one
-  loud stderr line if it is refused. The local `console` and `video preview`
-  return as soon as the page is handed off (so, unlike the design, local
-  `console` is not a live registered process); with a token set they print a
-  note to renew. `lease status --json` gained `idle_secs` for the pacing.
+  keepalive while it runs and the caller holds the lease: every
+  min(idle/2, 5 min) a holder read (`video show`) on the control host; a
+  `warning:` on its stderr or a non-zero exit means the lease is lost, and the
+  loss is printed once, loudly, and ticking stops. A local `console` with a
+  token that holds the lease stays in the foreground and ticks in-process
+  (`lease::keepalive_tick`, reading the lease state directly). `video preview`
+  returns as soon as the page is handed off; with a token it prints a note to
+  renew. The Windows job also sets SILENT_BREAKAWAY_OK, so a server the tool
+  launches is not killed; the tool is assigned right after spawn (not by
+  putting panio in the job first, which breakaway would defeat). `lease status --json` gained `idle_secs` for the pacing.
 - **Windows `serial connect`/`adb shell`** run their tool in a kill-on-close
   Job object, so terminating the registered panio pid kills the tool.
 - **`lease status`** shows `kept alive by N process(es)` instead of an idle

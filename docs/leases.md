@@ -176,17 +176,20 @@ Not checked at all: commands that edit the lab file (`set`, `add`, `rm`,
 (typing, mouse, watching) goes to the daemons directly and never runs a panio
 command, so it does not count as activity.
 
-- A **remote** `console` (the target is on a control host) keeps the lease
-  alive itself while it runs, as long as you carry the token: every half idle
-  timeout, at most every 5 minutes, it makes a read of the target on the
-  control host, which counts as holder activity. If that read is ever refused
-  (the lease ended or was taken), it says so once on stderr, loudly, and the
-  console keeps running.
-- A **local** `console` and `video preview` cannot do that: the command
-  returns as soon as the page is handed off. With a token set they print a
-  one-line note on stderr. Run `panio lease renew` now and then, or keep any
-  panio command going (`serial connect`, a `serial log` loop), while you use
-  the page.
+- `console` keeps the lease alive itself while it runs, as long as you carry
+  the holder's token. It stays in the foreground (a local one prints "Press
+  Ctrl-C to close", as a remote one does): every half idle timeout, at most
+  every 5 minutes, it counts as holder activity (a remote console makes a read
+  of the target on the control host). If the lease is ever no longer yours
+  (ended, preempted, taken), it says why once on stderr, loudly, and stops
+  keeping it alive; the console itself keeps running. If your token is not the
+  holder's when the console starts, it says the lease will not be kept alive
+  (a local console then returns as before). Without a token, a local `console`
+  returns as soon as the page is handed off, as always.
+- `video preview` cannot do that: the command returns as soon as the page is
+  handed off. With a token set it prints a one-line note on stderr. Run
+  `panio lease renew` now and then, or keep any panio command going
+  (`serial connect`, a `serial log` loop), while you use the page.
 
 ### Daemons
 
@@ -261,6 +264,8 @@ every channel and the default host are local.
 - **Windows.** Cleanup ends a registered process by pid. The Windows
   `serial connect` and `adb shell` run their tool as a child of panio inside a
   job object that kills it when panio ends, so the cleanup also frees the port.
+  Processes the tool itself starts (adb's background server) leave the job and
+  are not killed.
 - **Not a calendar.** There are no future bookings and no queue; waiting is
   `--wait`, which polls.
 - **Whole target.** There is no per-channel lease. Agents that want to share
