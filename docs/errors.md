@@ -6,7 +6,9 @@ SPDX-License-Identifier: Apache-2.0
 # Exit status and errors
 
 panio's exit status names the *kind* of failure (`not_configured`,
-`daemon_down`, …), and `--json-errors` adds the details as one JSON line. A
+`daemon_down`, …), each kind belongs to a coarser *category*
+(`infrastructure`, `transient`, `device_state`), and `--json-errors` adds the
+details as one JSON line. A
 *hook* is a lab-file command (`cycle_cmd`, a power `on_cmd`, a USB or HID
 `cmd`); a *helper* is a program panio runs for a channel (`serialcap`,
 `hdmicap`, `shellyplug`, `netbootd`). A *passthrough* hands back another
@@ -14,21 +16,36 @@ program's status ([below](#passthrough-commands)).
 
 ## Exit codes
 
-| Code | Kind | Meaning |
-|---|---|---|
-| 0 | — | Success. |
-| 1 | — | The command ran and the answer is "no": `doctor` found problems. No other panio command exits 1 (a [passthrough](#passthrough-commands) may, for its program), and **no error exits 1**. |
-| 2 | `usage` | Bad flags or arguments. |
-| 3 | `not_configured` | No lab file, an invalid one, or an unknown target, channel, interface or host; a required channel field missing (such as `tftp_root`); a hook or helper missing or not executable. Retrying will not help. |
-| 4 | `unreachable` | SSH to the control host failed. The command may not have run, or may have been killed part way. |
-| 22 | `timeout` | No answer within a deadline (daemon startup, a daemon request, an SSH port forward). The outcome is unknown: check state before repeating a change such as a power cycle. |
-| 100 | `daemon_down` | The channel's daemon is not running and the command needs it, or its record is stale. Start it with `panio serial watch` or `panio video watch`; `panio daemons` lists what is running. |
-| 101 | `helper_failed` | A hook or helper ran and failed: it exited non-zero (its code is in `child_exit`), a daemon exited during startup, or a running daemon refused the request (its reason is the message). |
-| 109 | `internal` | An unclassified failure; likely a bug. The message says what went wrong. |
+| Code | Kind | Category | Meaning |
+|---|---|---|---|
+| 0 | — | — | Success. |
+| 1 | — | — | The command ran and the answer is "no": `doctor` found problems. No other panio command exits 1 (a [passthrough](#passthrough-commands) may, for its program), and **no error exits 1**. |
+| 2 | `usage` | null | Bad flags or arguments. |
+| 3 | `not_configured` | `infrastructure` | No lab file, an invalid one, or an unknown target, channel, interface or host; a required channel field missing (such as `tftp_root`); a hook or helper missing or not executable. Retrying will not help. |
+| 4 | `unreachable` | `infrastructure` | SSH to the control host failed. The command may not have run, or may have been killed part way. |
+| 22 | `timeout` | `transient` | No answer within a deadline (daemon startup, a daemon request, an SSH port forward). The outcome is unknown: check state before repeating a change such as a power cycle. |
+| 100 | `daemon_down` | `infrastructure` | The channel's daemon is not running and the command needs it, or its record is stale. Start it with `panio serial watch` or `panio video watch`; `panio daemons` lists what is running. |
+| 101 | `helper_failed` | `device_state` | A hook or helper ran and failed: it exited non-zero (its code is in `child_exit`), a daemon exited during startup, or a running daemon refused the request (its reason is the message). |
+| 109 | `internal` | null | An unclassified failure; likely a bug. The message says what went wrong. |
 
 **Hooks on Windows.** `cmd.exe` exits 1 for a missing command or script, so a
 missing hook reports 101 `helper_failed` with `child_exit` 1, not 3; the
 message carries `cmd.exe`'s "is not recognized" or "cannot find the path" text.
+
+## Categories
+
+The `category` field of the [JSON object](#the-json-error-object) says where a
+workflow should look, for a caller that does not need the full kind:
+
+| Category | Kinds | Meaning |
+|---|---|---|
+| `infrastructure` | `not_configured`, `unreachable`, `daemon_down` | panio's own setup failed: the lab file, a control host, a daemon. The target was not reached. Fix the setup; retrying will not help. |
+| `transient` | `timeout` | No answer in time. A retry may succeed, but the first attempt's outcome is unknown: check state before repeating a change. |
+| `device_state` | `helper_failed` | The target or the hardware panio drives refused or failed: a hook or helper reported failure, a daemon rejected the request (such as "no video signal"). |
+| null | `usage`, `internal` | A caller's mistake or an unclassified failure; neither points at the setup or the target. |
+
+The category is derived from the kind, so exit codes do not change with it. A
+control host older than 0.13 sends an object without the field.
 
 Bands: 2–9 will fail the same way again; 20s may succeed on retry; 100 and up
 are panio-specific. Nothing exits 125 or above except a
@@ -61,7 +78,7 @@ On failure, the **last line of stderr** is exactly one JSON object:
 ```console
 $ panio --json-errors power-cycle nosuch
 target 'nosuch' not found in lab
-{"error":{"channel":null,"child_exit":null,"code":3,"host":null,"kind":"not_configured","message":"target 'nosuch' not found in lab","target":"nosuch"}}
+{"error":{"category":"infrastructure","channel":null,"child_exit":null,"code":3,"host":null,"kind":"not_configured","message":"target 'nosuch' not found in lab","target":"nosuch"}}
 $ echo $?
 3
 ```
@@ -70,6 +87,7 @@ $ echo $?
 |---|---|
 | `kind` | One of the kinds in the table above. |
 | `code` | The exit status, repeated. |
+| `category` | The kind's [category](#categories): `infrastructure`, `transient`, `device_state`, or null. |
 | `message` | The text printed above it; for `usage`, only the first sentence, without its `error: ` prefix. |
 | `target` | The target name, when the failure is about one. |
 | `channel` | The channel kind (`power`, `serial`, `video`, `hid`, `usb`, `netboot`, …). |
