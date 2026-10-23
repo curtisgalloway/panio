@@ -16,6 +16,19 @@
 //! `src/main.rs`; without this hint cargo would keep a stale stamp in an
 //! incremental build after the variable changed.
 
+//!
+//! On Windows the main thread's stack is whatever the linker reserves,
+//! 1 MiB by default, against 8 MiB on Linux and macOS. The debug build of
+//! the full command set overflowed it before parsing finished (exit
+//! 0xC00000FD on `panio --help`), so reserve 8 MiB there too.
+
 fn main() {
     println!("cargo:rerun-if-env-changed=PANIO_VERSION");
+    let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    let target_env = std::env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
+    match (target_os.as_str(), target_env.as_str()) {
+        ("windows", "msvc") => println!("cargo:rustc-link-arg=/STACK:8388608"),
+        ("windows", "gnu") => println!("cargo:rustc-link-arg=-Wl,--stack,8388608"),
+        _ => {}
+    }
 }
