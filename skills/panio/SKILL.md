@@ -764,8 +764,11 @@ hardware-verified) USB serial relay board. Targets are wired through the relay's
 closed)** contact: `on` releases the coil, `off` energizes it, and an
 unpowered board leaves the target powered. Select the port with `-d <path>` or
 by USB serial number with `-s <usb-serial>` (survives re-plugs). Use `-s` for
-the SH-UR01A (unique serial); use `-d` for the SH-UR04A, whose serial is the
-shared factory default `0001` (Linux: `/dev/serial/by-path/...`).
+the SH-UR01A (unique serial). The SH-UR04A ships with the shared factory
+serial `0001`: use `-d` for it (Linux: `/dev/serial/by-path/...`) unless its
+serial was rewritten, in which case `-s` works. Rewriting the serial is the
+user's call, at their own risk (`docs/power.md`, "Giving an SH-UR04A a unique
+serial"); never do it on your own initiative.
 
 ```
 panio power set -t pi5 \
