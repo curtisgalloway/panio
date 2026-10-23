@@ -9,10 +9,6 @@
 //! [`StoreLock`], an exclusive file lock on `lease.lock` beside it, so two
 //! panio processes can never both decide a target is free.
 
-// Callers arrive in later tasks (acquire/release in 5, the check in 6-7).
-// Task 7 removes this allow.
-#![allow(dead_code)]
-
 use std::fs::File;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -142,6 +138,7 @@ impl Store {
     }
 
     /// A store rooted at `dir` (tests).
+    #[cfg(test)]
     pub fn at(dir: PathBuf) -> Store {
         Store { dir }
     }
@@ -484,6 +481,106 @@ pub fn cleanup(lab: &crate::model::Lab, target: &str, lease: &Lease) -> Vec<Stri
         }
     }
     run_steps(steps)
+}
+
+static ACCESS: std::sync::OnceLock<Access> = std::sync::OnceLock::new();
+
+/// Record how the running command is classified. Called once, by `run()`.
+pub fn set_access(a: Access) {
+    let _ = ACCESS.set(a);
+}
+
+/// The caller's lease token, from `PANIO_LEASE` (trimmed; empty is none).
+pub fn caller_token() -> Option<String> {
+    std::env::var("PANIO_LEASE")
+        .ok()
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty())
+}
+
+/// Why the caller's token stopped working, if the history knows: the message
+/// for a holder that was preempted, force-released or expired.
+fn lost_lease_message(lock: &StoreLock, token: Option<&str>, target: &str) -> Option<String> {
+    let e = lock.history_for_token(token?)?;
+    let at = clock(e.at);
+    match e.how.as_str() {
+        "preempted" => Some(match &e.new_owner {
+            Some(o) => format!(
+                "your lease on '{target}' was preempted by {o} at {at}; \
+                 run `panio lease acquire {target} --wait 30m` to get it back"
+            ),
+            None => format!(
+                "your lease on '{target}' was ended by a forced release at {at}; \
+                 run `panio lease acquire {target}` to take a new one"
+            ),
+        }),
+        "expired" => Some(format!(
+            "your lease on '{target}' expired at {at}; \
+             run `panio lease acquire {target}` to take a new one"
+        )),
+        _ => None,
+    }
+}
+
+/// The lease check for the running command against `target`, on the host
+/// where it executes. Takes the store lock, decides, and releases the lock
+/// before returning: it is never held while the command runs.
+pub fn enforce(lab: &crate::model::Lab, target: &str) -> anyhow::Result<()> {
+    use anyhow::Context;
+    let access = ACCESS.get().copied().unwrap_or(Access::Unchecked);
+    if access == Access::Unchecked {
+        return Ok(());
+    }
+    let lease_required = lab.targets.get(target).is_some_and(|t| t.lease_required());
+    let token = caller_token();
+    let lock = Store::for_target(target)
+        .lock()
+        .with_context(|| format!("locking the lease store for '{target}'"))?;
+    let rec = match lock.read() {
+        Ok(r) => r,
+        Err(ReadError::Corrupt(c)) => {
+            eprintln!("warning: {target}: {c}; treating it as no lease and replacing it");
+            None
+        }
+        Err(e @ ReadError::Io(_)) => {
+            return Err(anyhow::anyhow!(e).context(format!("lease for '{target}'")));
+        }
+    };
+    let now = now();
+    let st = state(rec, now, proc_is_live);
+    let refuse = |lock: &StoreLock, msg: String| {
+        let msg = lost_lease_message(lock, token.as_deref(), target).unwrap_or(msg);
+        anyhow::Error::from(crate::error::target_leased(target, msg))
+    };
+    match decide(&st, access, token.as_deref(), lease_required, target, now) {
+        Verdict::Run => Ok(()),
+        Verdict::RunAndTouch => {
+            let State::Held(mut l) = st else {
+                return Ok(());
+            };
+            l.last_used_at = now;
+            if access == Access::Mutating {
+                let pid = std::process::id() as i32;
+                if let Some(start_time) = platform::process_start_time(pid) {
+                    l.procs.retain(|p| p.pid != pid);
+                    l.procs.push(Proc { pid, start_time });
+                }
+            }
+            lock.write(&l).context("recording lease activity")?;
+            Ok(())
+        }
+        Verdict::Refuse(msg) => Err(refuse(&lock, msg)),
+        Verdict::CleanupThenRun(old) => {
+            crate::lease_cmd::retire(lab, target, &lock, &old, "expired", None)?;
+            lock.remove().context("removing the expired lease")?;
+            Ok(())
+        }
+        Verdict::CleanupThenRefuse(old, msg) => {
+            crate::lease_cmd::retire(lab, target, &lock, &old, "expired", None)?;
+            lock.remove().context("removing the expired lease")?;
+            Err(refuse(&lock, msg))
+        }
+    }
 }
 
 /// Parse `90s`, `30m`, `2h`, or bare seconds. Zero and negative values are

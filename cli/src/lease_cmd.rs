@@ -20,9 +20,6 @@ use crate::model::Lab;
 /// How often `acquire --wait` looks again.
 const POLL: Duration = Duration::from_secs(2);
 
-/// The variable that carries a holder's token.
-const TOKEN_VAR: &str = "PANIO_LEASE";
-
 /// `lease acquire`'s options, as typed.
 #[derive(Default)]
 pub struct AcquireOpts {
@@ -84,7 +81,7 @@ fn default_owner() -> String {
 
 /// The caller's token, if `PANIO_LEASE` is set and non-empty.
 fn env_token() -> Option<String> {
-    std::env::var(TOKEN_VAR).ok().filter(|t| !t.is_empty())
+    lease::caller_token()
 }
 
 /// v1 leases cover targets on one host only.
@@ -143,7 +140,7 @@ fn open(target: &str) -> Result<StoreLock> {
 }
 
 /// Clean up after `old` and record why its token stopped working.
-fn retire(
+pub(crate) fn retire(
     lab: &Lab,
     target: &str,
     lock: &StoreLock,

@@ -1426,8 +1426,177 @@ fn main() {
     }
 }
 
+/// Which target a command acts on, for the lease check.
+enum LeaseScope<'a> {
+    /// No target: nothing to check.
+    None,
+    /// The target the user named.
+    Named(&'a str),
+    /// The target the user did not name: the lab's only one.
+    Sole,
+}
+
+impl<'a> LeaseScope<'a> {
+    fn from_arg(t: &'a TargetArg) -> Self {
+        t.name().map_or(LeaseScope::Sole, LeaseScope::Named)
+    }
+
+    fn from_opt(t: &'a Option<String>) -> Self {
+        t.as_deref().map_or(LeaseScope::Sole, LeaseScope::Named)
+    }
+}
+
+/// How a command touches its target, and which target, for the lease check
+/// (`notes/target-leases.md`, "Which commands are mutating"). Exhaustive
+/// with no `_` arm: a new subcommand does not compile until it is classified.
+fn lease_scope(cmd: &Command) -> (lease::Access, LeaseScope<'_>) {
+    use lease::Access::{Mutating, Read, Unchecked};
+    let a = LeaseScope::from_arg;
+    let o = LeaseScope::from_opt;
+    let none = || (Unchecked, LeaseScope::None);
+    match cmd {
+        Command::Init { .. }
+        | Command::Config { .. }
+        | Command::Host { .. }
+        | Command::Target { .. }
+        | Command::Lease { .. }
+        | Command::Discover { .. }
+        | Command::Configure { .. }
+        | Command::Setup { .. }
+        | Command::Mcp
+        | Command::Helper { .. }
+        | Command::Skill { .. }
+        | Command::Daemons { .. } => none(),
+        Command::Serial { cmd } => match cmd {
+            SerialCmd::Add { .. }
+            | SerialCmd::Set { .. }
+            | SerialCmd::Rm { .. }
+            | SerialCmd::Devices => none(),
+            SerialCmd::Connect { target, .. }
+            | SerialCmd::Watch { target, .. }
+            | SerialCmd::Stop { target }
+            | SerialCmd::Dtr { target, .. }
+            | SerialCmd::Reset { target, .. } => (Mutating, a(target)),
+            SerialCmd::Send {
+                first,
+                second,
+                target,
+                ..
+            } => {
+                let named = if second.is_some() {
+                    Some(first.as_str())
+                } else {
+                    target.as_deref()
+                };
+                (Mutating, named.map_or(LeaseScope::Sole, LeaseScope::Named))
+            }
+            SerialCmd::Transact { target, .. } => (Mutating, o(target)),
+            SerialCmd::Log { target, .. }
+            | SerialCmd::Evidence { target, .. }
+            | SerialCmd::Wait { target, .. }
+            | SerialCmd::Status { target, .. }
+            | SerialCmd::Show { target } => (Read, a(target)),
+        },
+        Command::Netboot { cmd } => match cmd {
+            NetbootCmd::Set { .. } | NetbootCmd::Rm { .. } | NetbootCmd::Devices => none(),
+            NetbootCmd::Start { target } | NetbootCmd::Stop { target } => (Mutating, a(target)),
+            NetbootCmd::Status { target }
+            | NetbootCmd::Logs { target, .. }
+            | NetbootCmd::TftpRoot { target } => (Read, a(target)),
+        },
+        Command::Netif { cmd } => match cmd {
+            NetifCmd::Vlan { .. } => none(),
+            NetifCmd::Mode { target, .. } | NetifCmd::DownHard { target } => (Mutating, a(target)),
+            NetifCmd::Status { target } => (Read, a(target)),
+        },
+        Command::Power { cmd } => match cmd {
+            PowerCmd::Set { .. } | PowerCmd::Rm { .. } => none(),
+            PowerCmd::On { target, .. } | PowerCmd::Off { target, .. } => (Mutating, a(target)),
+        },
+        Command::Video { cmd } => match cmd {
+            VideoCmd::Set { .. } | VideoCmd::Rm { .. } | VideoCmd::Devices => none(),
+            VideoCmd::Watch { target, .. }
+            | VideoCmd::Stop { target }
+            | VideoCmd::Preview { target, .. } => (Mutating, a(target)),
+            VideoCmd::Shot { target, .. }
+            | VideoCmd::Read { target, .. }
+            | VideoCmd::Show { target } => (Read, a(target)),
+        },
+        Command::Hid { cmd } => match cmd {
+            HidCmd::Set { .. } | HidCmd::Rm { .. } => none(),
+            HidCmd::Send { target, .. } => (Mutating, o(target)),
+            HidCmd::Serve { target } | HidCmd::Stop { target } => (Mutating, a(target)),
+        },
+        Command::Usb { cmd } => match cmd {
+            UsbCmd::Set { .. } | UsbCmd::Rm { .. } => none(),
+            UsbCmd::AttachHost { target } | UsbCmd::AttachTarget { target } => {
+                (Mutating, o(target))
+            }
+            UsbCmd::State { target } => (Read, o(target)),
+        },
+        Command::Action { cmd } => match cmd {
+            ActionCmd::Set { .. } | ActionCmd::Rm { .. } => none(),
+            ActionCmd::Run { target, .. } => (Mutating, o(target)),
+            ActionCmd::List { target, .. } => (Read, o(target)),
+        },
+        Command::Adb { cmd } => match cmd {
+            AdbCmd::Set { .. } | AdbCmd::Rm { .. } | AdbCmd::Devices { .. } => none(),
+            AdbCmd::Shell { target } => (Mutating, a(target)),
+            AdbCmd::Run { target, .. } | AdbCmd::Input { target, .. } => (Mutating, o(target)),
+            AdbCmd::Show { target } | AdbCmd::Screencap { target, .. } => (Read, a(target)),
+        },
+        Command::Console { target, .. } | Command::PowerCycle { target, .. } => {
+            (Mutating, a(target))
+        }
+        Command::PowerState { target, .. } => (Read, a(target)),
+        Command::Doctor { target, .. } => (
+            Read,
+            target
+                .as_deref()
+                .map_or(LeaseScope::None, LeaseScope::Named),
+        ),
+    }
+}
+
+/// Run the lease check for the command about to execute, when this host is
+/// the one that executes it: the target's default host is local. On a
+/// control host the shipped lab slice has every `host` stripped, so the
+/// re-exec'd panio lands here and checks; on the dev machine a target whose
+/// default host is remote is checked over there instead. One call covers
+/// every handler, including the ones that bypass `maybe_dispatch`
+/// (`console`, `action run`, the `serial`/`adb` runtimes).
+///
+/// A lab that will not load or a target that does not resolve is left for
+/// the handler to report with its own error.
+fn lease_check(lab_flag: Option<&str>, access: lease::Access, scope: LeaseScope<'_>) -> Result<()> {
+    if access == lease::Access::Unchecked {
+        return Ok(());
+    }
+    let Ok(lab) = load_for_read(lab_flag) else {
+        return Ok(());
+    };
+    let name = match scope {
+        LeaseScope::None => return Ok(()),
+        LeaseScope::Named(n) => n.to_string(),
+        LeaseScope::Sole => match resolve_single_target(&lab, None) {
+            Ok(n) => n,
+            Err(_) => return Ok(()),
+        },
+    };
+    let Some(rt) = lab.resolved_target(&name) else {
+        return Ok(());
+    };
+    if !lab.host(&rt.default_host).is_local(&rt.default_host) {
+        return Ok(());
+    }
+    lease::enforce(&lab, &name)
+}
+
 fn run(cli: Cli) -> Result<()> {
     let lab_flag = cli.lab.as_deref();
+    let (access, scope) = lease_scope(&cli.command);
+    lease::set_access(access);
+    lease_check(lab_flag, access, scope)?;
     match cli.command {
         Command::Init { path } => cmd_init(lab_flag, path.as_deref()),
         Command::Config { cmd } => match cmd {
@@ -6386,6 +6555,102 @@ fn print_resolved_target(rt: &ResolvedTarget) {
 
 #[cfg(test)]
 mod tests {
+
+    /// The read/mutating split of the spec table, row by row.
+    #[test]
+    fn access_table_matches_spec() {
+        use lease::Access::{Mutating, Read, Unchecked};
+        let rows: &[(&str, lease::Access)] = &[
+            ("serial log t", Read),
+            ("serial evidence t", Read),
+            ("serial wait t --epoch e --since 0", Read),
+            ("serial status t", Read),
+            ("serial show t", Read),
+            ("serial connect t", Mutating),
+            ("serial watch t", Mutating),
+            ("serial stop t", Mutating),
+            ("serial send t hello", Mutating),
+            ("serial send -t t hello", Mutating),
+            ("serial transact -t t --until x hello", Mutating),
+            ("serial dtr t", Mutating),
+            ("serial reset t", Mutating),
+            ("serial devices", Unchecked),
+            ("serial add c -t t --device /dev/x", Unchecked),
+            ("video shot t", Read),
+            ("video read t", Read),
+            ("video show t", Read),
+            ("video watch t", Mutating),
+            ("video stop t", Mutating),
+            ("video preview t", Mutating),
+            ("video devices", Unchecked),
+            ("netboot status t", Read),
+            ("netboot logs t", Read),
+            ("netboot tftp-root t", Read),
+            ("netboot start t", Mutating),
+            ("netboot stop t", Mutating),
+            ("netboot devices", Unchecked),
+            ("netif status t", Read),
+            ("netif mode off t", Mutating),
+            ("netif down-hard t", Mutating),
+            ("power-state t", Read),
+            ("power on t", Mutating),
+            ("power off t", Mutating),
+            ("power-cycle t", Mutating),
+            ("usb state -t t", Read),
+            ("usb attach-host -t t", Mutating),
+            ("usb attach-target -t t", Mutating),
+            ("action list -t t", Read),
+            ("action run -t t x", Mutating),
+            ("adb show t", Read),
+            ("adb screencap t", Read),
+            ("adb shell t", Mutating),
+            ("adb run -t t devices", Mutating),
+            ("adb input -t t tap 1 1", Mutating),
+            ("adb devices", Unchecked),
+            ("doctor t", Read),
+            ("hid send -t t x", Mutating),
+            ("hid serve t", Mutating),
+            ("hid stop t", Mutating),
+            ("console t", Mutating),
+            ("daemons list", Unchecked),
+            ("daemons stop --all", Unchecked),
+            ("lease status t", Unchecked),
+            ("lease acquire t", Unchecked),
+            ("config show", Unchecked),
+            ("host list", Unchecked),
+            ("target list", Unchecked),
+            ("discover", Unchecked),
+            ("setup", Unchecked),
+            ("helper", Unchecked),
+            ("skill", Unchecked),
+            ("mcp", Unchecked),
+            ("power set -t t --on-cmd true", Unchecked),
+        ];
+        for (line, want) in rows {
+            let argv = std::iter::once("panio").chain(line.split_whitespace());
+            let cli = Cli::try_parse_from(argv).unwrap_or_else(|e| panic!("{line}: {e}"));
+            assert_eq!(lease_scope(&cli.command).0, *want, "{line}");
+        }
+    }
+
+    /// Where the target comes from: named either way, or the sole one.
+    #[test]
+    fn lease_scope_names_the_target() {
+        let scope = |line: &str| {
+            let argv = std::iter::once("panio").chain(line.split_whitespace());
+            let cli = Cli::try_parse_from(argv).unwrap();
+            match lease_scope(&cli.command).1 {
+                LeaseScope::Named(n) => Some(n.to_string()),
+                _ => None,
+            }
+        };
+        assert_eq!(scope("power on pi5").as_deref(), Some("pi5"));
+        assert_eq!(scope("power on -t pi5").as_deref(), Some("pi5"));
+        assert_eq!(scope("serial send pi5 hello").as_deref(), Some("pi5"));
+        assert_eq!(scope("serial send -t pi5 hello").as_deref(), Some("pi5"));
+        assert_eq!(scope("serial send hello"), None);
+        assert_eq!(scope("hid send -t pi5 x").as_deref(), Some("pi5"));
+    }
     use super::*;
 
     /// `power-cycle` waits for power to come back (#259): the reader is

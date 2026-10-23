@@ -43,7 +43,8 @@ fn scratch(name: &str, lab: &str) -> PathBuf {
 
 fn panio(dir: &Path, args: &[&str], token: Option<&str>) -> Output {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_panio"));
-    cmd.arg("--lab")
+    cmd.stdin(std::process::Stdio::null())
+        .arg("--lab")
         .arg(dir.join("lab.toml"))
         .args(args)
         .env("HOME", dir.join("home"))
@@ -158,7 +159,6 @@ fn acquire_wait_succeeds_after_release() {
 }
 
 #[test]
-#[ignore = "needs Task 7 enforcement"]
 fn preempt_takes_over_and_old_token_is_told() {
     let dir = scratch("preempt_takes_over", LAB);
     let old = acquire(&dir);
@@ -308,4 +308,243 @@ fn duration_cap() {
         Some(&tok),
     );
     assert_eq!(o.status.code(), Some(2), "{o:?}");
+}
+
+const FULL_LAB: &str = r#"
+[targets.dut]
+
+[[targets.dut.serial]]
+name = "console"
+device = "/dev/ttyUSB-test"
+baud = 115200
+power_button = true
+
+[targets.dut.power]
+cycle_cmd = "true"
+on_cmd = "true"
+off_cmd = "true"
+state_cmd = "echo on"
+
+[targets.dut.video]
+device = "0"
+
+[targets.dut.hid]
+cmd = "true"
+
+[targets.dut.usb]
+cmd = "true"
+
+[targets.dut.adb]
+serial = "ABC123"
+
+[targets.dut.actions.reflash]
+cmd = "true"
+
+[targets.dut.netboot]
+interface = "lo-test0"
+tftp_root = "/nonexistent-tftp"
+"#;
+
+const REQUIRED_LAB: &str = r#"
+[targets.dut]
+lease_required = true
+
+[targets.dut.power]
+cycle_cmd = "true"
+on_cmd = "true"
+off_cmd = "true"
+state_cmd = "echo on"
+"#;
+
+fn argv(line: &str) -> Vec<&str> {
+    line.split_whitespace().collect()
+}
+
+/// One argv per mutating row of the spec table (`notes/target-leases.md`).
+const MUTATING: &[&str] = &[
+    "serial connect dut",
+    "serial watch dut",
+    "serial stop dut",
+    "serial send dut hello",
+    "serial transact -t dut --until x hello",
+    "serial dtr dut",
+    "serial reset dut",
+    "video watch dut",
+    "video stop dut",
+    "video preview dut",
+    "netboot start dut",
+    "netboot stop dut",
+    "netif mode off dut",
+    "netif down-hard dut",
+    "power on dut",
+    "power off dut",
+    "power-cycle dut",
+    "usb attach-host -t dut",
+    "usb attach-target -t dut",
+    "action run -t dut reflash",
+    "adb shell dut",
+    "adb run -t dut devices",
+    "adb input -t dut tap 1 1",
+    "hid send -t dut x",
+    "hid serve dut",
+    "hid stop dut",
+    "console dut",
+];
+
+/// One argv per read row.
+const READS: &[&str] = &[
+    "serial log dut",
+    "serial evidence dut",
+    "serial status dut",
+    "serial show dut",
+    "video show dut",
+    "netboot status dut",
+    "netboot logs dut",
+    "netboot tftp-root dut",
+    "netif status dut",
+    "power-state dut",
+    "usb state -t dut",
+    "action list -t dut",
+    "adb show dut",
+    "doctor dut",
+];
+
+fn lease_path(dir: &Path) -> PathBuf {
+    dir.join("home/.local/share/panio/dut/lease.json")
+}
+
+fn history(dir: &Path) -> String {
+    std::fs::read_to_string(dir.join("home/.local/share/panio/dut/lease-history.jsonl"))
+        .unwrap_or_default()
+}
+
+fn write_lease(dir: &Path, token: &str, expires_at: u64, last_used_at: u64) {
+    let p = lease_path(dir);
+    std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+    let rec = serde_json::json!({
+        "owner": "alice@bench1",
+        "token": token,
+        "acquired_at": 1000,
+        "expires_at": expires_at,
+        "duration_secs": 7200,
+        "idle_secs": 1800,
+        "last_used_at": last_used_at,
+        "procs": [],
+    });
+    std::fs::write(p, rec.to_string()).unwrap();
+}
+
+fn now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+}
+
+#[test]
+fn every_mutating_command_is_refused() {
+    let dir = scratch("every_mutating_refused", FULL_LAB);
+    write_lease(&dir, "someone-elses-token", now() + 3600, now());
+    let mut bad = Vec::new();
+    for line in MUTATING {
+        let o = panio(&dir, &argv(line), Some("not-the-token"));
+        if o.status.code() != Some(23) {
+            bad.push(format!("{line}: {:?} {}", o.status.code(), stderr(&o)));
+        }
+        let o = panio(&dir, &argv(line), None);
+        if o.status.code() != Some(23) {
+            bad.push(format!("{line} (no token): {:?}", o.status.code()));
+        }
+    }
+    assert!(bad.is_empty(), "not refused with 23:\n{}", bad.join("\n"));
+}
+
+#[test]
+fn reads_run_on_a_leased_target() {
+    let dir = scratch("reads_run_on_leased", FULL_LAB);
+    write_lease(&dir, "someone-elses-token", now() + 3600, now());
+    let mut bad = Vec::new();
+    for line in READS {
+        let o = panio(&dir, &argv(line), None);
+        if o.status.code() == Some(23) {
+            bad.push(format!("{line}: {}", stderr(&o)));
+        }
+    }
+    assert!(bad.is_empty(), "refused reads:\n{}", bad.join("\n"));
+}
+
+#[test]
+fn holder_runs_mutating() {
+    let dir = scratch("holder_runs_mutating", FULL_LAB);
+    write_lease(&dir, "mine", now() + 3600, now() - 600);
+    let before = now() - 600;
+    let o = panio(&dir, &["power", "on", "dut"], Some("mine"));
+    assert_eq!(o.status.code(), Some(0), "{o:?}");
+    let v: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(lease_path(&dir)).unwrap()).unwrap();
+    assert!(v["last_used_at"].as_u64().unwrap() > before + 300, "{v}");
+    assert_eq!(v["procs"].as_array().unwrap().len(), 1, "{v}");
+}
+
+#[test]
+fn read_with_holder_token_touches_but_does_not_register() {
+    let dir = scratch("read_touches", FULL_LAB);
+    write_lease(&dir, "mine", now() + 3600, now() - 600);
+    let o = panio(&dir, &["power-state", "dut"], Some("mine"));
+    assert_eq!(o.status.code(), Some(0), "{o:?}");
+    let v: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(lease_path(&dir)).unwrap()).unwrap();
+    assert!(v["last_used_at"].as_u64().unwrap() > now() - 300, "{v}");
+    assert!(v["procs"].as_array().unwrap().is_empty(), "{v}");
+}
+
+#[test]
+fn unleased_lab_unchanged() {
+    let dir = scratch("unleased_unchanged", FULL_LAB);
+    let o = panio(&dir, &["power", "on", "dut"], None);
+    assert_eq!(o.status.code(), Some(0), "{o:?}");
+    assert!(!lease_path(&dir).exists());
+}
+
+#[test]
+fn lease_required_refuses_unleased() {
+    let dir = scratch("lease_required_refuses", REQUIRED_LAB);
+    let o = panio(&dir, &["power", "on", "dut"], None);
+    assert_eq!(o.status.code(), Some(23), "{o:?}");
+    assert!(stderr(&o).contains("lease_required"), "{}", stderr(&o));
+    let o = panio(&dir, &["power-state", "dut"], None);
+    assert_eq!(o.status.code(), Some(0), "{o:?}");
+    let tok = acquire(&dir);
+    let o = panio(&dir, &["power", "on", "dut"], Some(&tok));
+    assert_eq!(o.status.code(), Some(0), "{o:?}");
+}
+
+#[test]
+fn expired_lease_cleaned_by_mutating_not_by_read() {
+    let dir = scratch("expired_cleaned_by_mutating", FULL_LAB);
+    write_lease(&dir, "old", now() - 10, now() - 20);
+    let o = panio(&dir, &["power-state", "dut"], None);
+    assert_eq!(o.status.code(), Some(0), "{o:?}");
+    assert!(lease_path(&dir).exists(), "a read must not clean up");
+    assert!(history(&dir).is_empty());
+    let o = panio(&dir, &["power", "on", "dut"], None);
+    assert_eq!(o.status.code(), Some(0), "{o:?}");
+    assert!(!lease_path(&dir).exists());
+    assert!(history(&dir).contains("\"expired\""), "{}", history(&dir));
+}
+
+#[test]
+fn forced_release_message_when_no_new_owner() {
+    let dir = scratch("forced_release_message", FULL_LAB);
+    let old = acquire(&dir);
+    let o = panio(&dir, &["lease", "release", "dut", "--preempt"], None);
+    assert_eq!(o.status.code(), Some(0), "{o:?}");
+    let _ = panio(
+        &dir,
+        &["lease", "acquire", "dut", "--owner", "bob@bench1"],
+        None,
+    );
+    let o = panio(&dir, &["power", "on", "dut"], Some(&old));
+    assert_eq!(o.status.code(), Some(23), "{o:?}");
+    assert!(stderr(&o).contains("forced release"), "{}", stderr(&o));
 }
