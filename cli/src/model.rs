@@ -128,6 +128,22 @@ pub fn validate_name(what: &str, name: &str) -> Result<(), LabError> {
     }
 }
 
+/// A fault rule needs a path-safe name and a nonempty pattern of at most
+/// [`MAX_FAULT_PATTERN`] bytes.
+pub fn validate_fault_rule(name: &str, pattern: &str) -> Result<(), LabError> {
+    validate_name("fault rule", name)?;
+    if pattern.is_empty() {
+        return lab_err(format!("fault rule '{name}': pattern is empty"));
+    }
+    if pattern.len() > MAX_FAULT_PATTERN {
+        return lab_err(format!(
+            "fault rule '{name}': pattern is {} bytes (at most {MAX_FAULT_PATTERN})",
+            pattern.len()
+        ));
+    }
+    Ok(())
+}
+
 fn default_baud() -> i64 {
     115200
 }
@@ -271,7 +287,17 @@ pub struct SerialChannel {
     /// interface — so set it on any one interface; two interfaces naming
     /// different ports is a validation error. Unset or 0 = OS-assigned.
     pub port: Option<u16>,
+    /// Named fault rules: rule name -> literal byte pattern. `serial wait`
+    /// ends with `status: "fault"` naming the rule when one appears in the
+    /// newly acquired bytes. Literal substrings only, no regex.
+    #[serde(default)]
+    pub faults: BTreeMap<String, String>,
 }
+
+/// Most fault rules one serial interface may carry.
+pub const MAX_FAULT_RULES: usize = 32;
+/// Longest fault pattern, in bytes.
+pub const MAX_FAULT_PATTERN: usize = 1024;
 
 #[derive(Debug, Default, Clone, Deserialize)]
 pub struct PowerChannel {
@@ -653,6 +679,11 @@ impl Lab {
                 f.push(("power_button", "true".to_string()));
             }
             push_opt(&mut f, "port", &s.port.map(|n| n.to_string()));
+            if !s.faults.is_empty() {
+                let rules: Vec<String> =
+                    s.faults.iter().map(|(n, p)| format!("{n}={p:?}")).collect();
+                f.push(("faults", rules.join(", ")));
+            }
             channels.push(ResolvedChannel {
                 kind: ChannelKind::Serial,
                 name: s.name.clone(),
@@ -1035,6 +1066,18 @@ pub fn validate(lab: &Lab) -> Result<(), LabError> {
                         VALID_SENSE_SIGNALS.join(", ")
                     ));
                 }
+            }
+            if s.faults.len() > MAX_FAULT_RULES {
+                return lab_err(format!(
+                    "target '{name}' serial '{}': {} fault rules (at most {MAX_FAULT_RULES})",
+                    s.name,
+                    s.faults.len()
+                ));
+            }
+            for (rule, pattern) in &s.faults {
+                validate_fault_rule(rule, pattern).map_err(|e| {
+                    LabError(format!("target '{name}' serial '{}': {}", s.name, e.0))
+                })?;
             }
             let h = s.host.as_deref().unwrap_or(default_host);
             check_host_ref(
@@ -1512,6 +1555,34 @@ mod tests {
         )
         .unwrap_err();
         assert!(e.0.contains("different ports"), "{}", e.0);
+    }
+
+    #[test]
+    fn validate_checks_serial_fault_rules_and_config_show_lists_them() {
+        let with = |faults: &str| {
+            format!("[[targets.t.serial]]\nname = \"a\"\ndevice = \"/da\"\nfaults = {faults}\n")
+        };
+        let lab = parse(&with("{ oops = \"Oops:\", panic = \"Kernel panic\" }")).unwrap();
+        let rt = lab.resolved_target("t").unwrap();
+        let faults = rt.channels[0]
+            .fields
+            .iter()
+            .find(|(k, _)| *k == "faults")
+            .unwrap();
+        assert_eq!(faults.1, "oops=\"Oops:\", panic=\"Kernel panic\"");
+        let e = parse(&with("{ \"bad name\" = \"x\" }")).unwrap_err();
+        assert!(e.0.contains("target 't' serial 'a'"), "{}", e.0);
+        assert!(e.0.contains("invalid fault rule name"), "{}", e.0);
+        let e = parse(&with("{ a = \"\" }")).unwrap_err();
+        assert!(e.0.contains("empty"), "{}", e.0);
+        let long = "x".repeat(MAX_FAULT_PATTERN + 1);
+        let e = parse(&with(&format!("{{ a = \"{long}\" }}"))).unwrap_err();
+        assert!(e.0.contains("at most 1024"), "{}", e.0);
+        let many: Vec<String> = (0..=MAX_FAULT_RULES)
+            .map(|i| format!("r{i} = \"x\""))
+            .collect();
+        let e = parse(&with(&format!("{{ {} }}", many.join(", ")))).unwrap_err();
+        assert!(e.0.contains("at most 32"), "{}", e.0);
     }
 
     #[test]

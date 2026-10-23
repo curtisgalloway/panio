@@ -127,6 +127,7 @@ async fn transact(handle: SerialHandle, body: Bytes, params: Params) -> Result<V
         max_output_bytes: wait::MAX_OUTPUT_BYTES,
         follow: false,
         pattern: Some(params.until),
+        faults: vec![],
         include_pending: true,
     };
     let dir = handle.capture_dir().to_path_buf();

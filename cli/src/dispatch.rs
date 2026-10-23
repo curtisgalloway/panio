@@ -75,6 +75,9 @@ pub fn build_slice(lab: &Lab, target: &str, host: &str) -> Result<String, LabErr
                 None,
                 s.port,
             )?;
+            for (rule, pattern) in &s.faults {
+                lf.set_serial_fault(target, &s.name, rule, pattern)?;
+            }
         }
     }
     if let Some(p) = &t.power {
@@ -903,6 +906,7 @@ mod tests {
             name = "console"
             device = "/dev/ttyUSB0"
             port = 8724
+            faults = { oops = "Oops:", panic = "Kernel panic" }
             [targets.fortune.video]
             device = "/dev/video0"
             ocr_mode = "gui"
@@ -937,6 +941,18 @@ mod tests {
         assert!(t.host.is_none());
         assert!(t.serial[0].host.is_none());
         assert!(usb.host.is_none());
+    }
+
+    /// The control host re-execs panio against the slice, so a dropped fault
+    /// rule would silently stop ending remote `serial wait`s.
+    #[test]
+    fn slice_carries_serial_fault_rules() {
+        let s = build_slice(&lab(), "fortune", "bench1").unwrap();
+        let reparsed = model::parse(&s).unwrap();
+        let faults = &reparsed.targets["fortune"].serial[0].faults;
+        assert_eq!(faults.len(), 2);
+        assert_eq!(faults["oops"], "Oops:");
+        assert_eq!(faults["panic"], "Kernel panic");
     }
 
     #[test]

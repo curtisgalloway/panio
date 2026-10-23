@@ -182,7 +182,9 @@ cli/src/
                 `serial wait` (bounded, opens no devices), `serial transact` (POST
                 /transact; write tool; -t only), read-only health_snapshot
                 (`serial status`), offline read_evidence (`serial evidence`); each
-                has an MCP twin
+                has an MCP twin. `serial wait` passes the interface's lab
+                `faults` as `--fault NAME=PATTERN` (`serial fault set|rm` edit
+                them; `build_slice` carries them to remote hosts)
   video.rs      hdmicap orchestration (daemon start/stop, client passthrough)
   adb.rs        adb transport (argv, shell exec, run/input passthrough, exec-out
                 screencap → PNG); generic transport in core, no helper
