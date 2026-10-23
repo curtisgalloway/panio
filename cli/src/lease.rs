@@ -143,6 +143,11 @@ impl Store {
         Store { dir }
     }
 
+    /// Whether a lease record file exists, without creating anything.
+    pub fn record_exists(&self) -> bool {
+        self.dir.join("lease.json").exists()
+    }
+
     /// Block until this process holds the store's exclusive lock.
     pub fn lock(&self) -> std::io::Result<StoreLock> {
         std::fs::create_dir_all(&self.dir)?;
@@ -483,13 +488,6 @@ pub fn cleanup(lab: &crate::model::Lab, target: &str, lease: &Lease) -> Vec<Stri
     run_steps(steps)
 }
 
-static ACCESS: std::sync::OnceLock<Access> = std::sync::OnceLock::new();
-
-/// Record how the running command is classified. Called once, by `run()`.
-pub fn set_access(a: Access) {
-    let _ = ACCESS.set(a);
-}
-
 /// The caller's lease token, from `PANIO_LEASE` (trimmed; empty is none).
 pub fn caller_token() -> Option<String> {
     std::env::var("PANIO_LEASE")
@@ -515,7 +513,7 @@ fn lost_lease_message(lock: &StoreLock, token: Option<&str>, target: &str) -> Op
             ),
         }),
         "expired" => Some(format!(
-            "your lease on '{target}' expired at {at}; \
+            "your lease on '{target}' expired (found expired at {at}); \
              run `panio lease acquire {target}` to take a new one"
         )),
         _ => None,
@@ -525,14 +523,19 @@ fn lost_lease_message(lock: &StoreLock, token: Option<&str>, target: &str) -> Op
 /// The lease check for the running command against `target`, on the host
 /// where it executes. Takes the store lock, decides, and releases the lock
 /// before returning: it is never held while the command runs.
-pub fn enforce(lab: &crate::model::Lab, target: &str) -> anyhow::Result<()> {
+pub fn enforce(lab: &crate::model::Lab, target: &str, access: Access) -> anyhow::Result<()> {
     use anyhow::Context;
-    let access = ACCESS.get().copied().unwrap_or(Access::Unchecked);
     if access == Access::Unchecked {
         return Ok(());
     }
     let lease_required = lab.targets.get(target).is_some_and(|t| t.lease_required());
     let token = caller_token();
+    if access == Access::Read && token.is_none() {
+        return Ok(());
+    }
+    if !lease_required && !Store::for_target(target).record_exists() {
+        return Ok(());
+    }
     let lock = Store::for_target(target)
         .lock()
         .with_context(|| format!("locking the lease store for '{target}'"))?;

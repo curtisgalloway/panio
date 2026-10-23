@@ -1589,13 +1589,12 @@ fn lease_check(lab_flag: Option<&str>, access: lease::Access, scope: LeaseScope<
     if !lab.host(&rt.default_host).is_local(&rt.default_host) {
         return Ok(());
     }
-    lease::enforce(&lab, &name)
+    lease::enforce(&lab, &name, access)
 }
 
 fn run(cli: Cli) -> Result<()> {
     let lab_flag = cli.lab.as_deref();
     let (access, scope) = lease_scope(&cli.command);
-    lease::set_access(access);
     lease_check(lab_flag, access, scope)?;
     match cli.command {
         Command::Init { path } => cmd_init(lab_flag, path.as_deref()),
@@ -3889,6 +3888,13 @@ fn cmd_console(
     Ok(())
 }
 
+/// A remote leg's non-zero exit as a typed error, so a refusal such as
+/// `target_leased` (23) keeps its exit code on the dev machine.
+fn remote_failure(status: i32, target: &str, message: String) -> anyhow::Error {
+    let kind = error::Kind::from_exit_code(status).unwrap_or(error::Kind::Internal);
+    error::PanioError::new(kind, message).target(target).into()
+}
+
 fn remote_console(
     lab: &Lab,
     target: &str,
@@ -3911,11 +3917,14 @@ fn remote_console(
             } else {
                 out.stderr.trim().to_string()
             };
-            bail!(
-                "failed to start '{} {}' on {host_name}: {msg}",
-                sub[0],
-                sub[1]
-            );
+            return Err(remote_failure(
+                out.status,
+                target,
+                format!(
+                    "failed to start '{} {}' on {host_name}: {msg}",
+                    sub[0], sub[1]
+                ),
+            ));
         }
     }
     let video =
@@ -3967,6 +3976,13 @@ fn remote_console(
     let mut _fwd_hid = None;
     let hid_ws: Option<String> = if hid_on_host {
         match dispatch::run_subcommand(lab, target, host_name, &["hid", "serve", target]) {
+            Ok(out) if out.status == error::Kind::TargetLeased.exit_code() => {
+                return Err(remote_failure(
+                    out.status,
+                    target,
+                    out.stderr.trim().to_string(),
+                ));
+            }
             Ok(out) if out.status == 0 => dispatch::remote_daemon_endpoint(
                 &host,
                 &daemons::runtime_rel(HID_DAEMON, Some(target)),
@@ -6631,6 +6647,14 @@ mod tests {
             let cli = Cli::try_parse_from(argv).unwrap_or_else(|e| panic!("{line}: {e}"));
             assert_eq!(lease_scope(&cli.command).0, *want, "{line}");
         }
+    }
+
+    #[test]
+    fn remote_failure_keeps_the_lease_refusal_code() {
+        let e = remote_failure(23, "pi5", "leased".into());
+        assert_eq!(error::classify(&e).kind.exit_code(), 23);
+        let e = remote_failure(77, "pi5", "x".into());
+        assert_eq!(error::classify(&e).kind.exit_code(), 109);
     }
 
     /// Where the target comes from: named either way, or the sole one.

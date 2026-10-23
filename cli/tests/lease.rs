@@ -504,6 +504,14 @@ fn unleased_lab_unchanged() {
     let o = panio(&dir, &["power", "on", "dut"], None);
     assert_eq!(o.status.code(), Some(0), "{o:?}");
     assert!(!lease_path(&dir).exists());
+    let state = dir.join("home/.local/share/panio/dut");
+    assert!(
+        !state.join("lease.lock").exists(),
+        "no lock file for an unleased target"
+    );
+    let o = panio(&dir, &["power-state", "dut"], None);
+    assert_eq!(o.status.code(), Some(0), "{o:?}");
+    assert!(!state.join("lease.lock").exists());
 }
 
 #[test]
