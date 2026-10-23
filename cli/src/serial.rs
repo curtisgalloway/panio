@@ -23,6 +23,8 @@
 //! `daemons::Endpoint`). An interface is passed to the daemon as
 //! `NAME=DEVICE@BAUD[:SENSE]`.
 
+use std::collections::BTreeMap;
+use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
@@ -92,13 +94,15 @@ pub struct WaitOptions<'a> {
     pub max_bytes: u64,
     pub max_output_bytes: u64,
     pub pattern: Option<&'a str>,
+    /// The interface's lab fault rules (name -> literal pattern), passed to
+    /// the helper as repeated `--fault NAME=PATTERN`.
+    pub faults: &'a BTreeMap<String, String>,
     pub include_pending: bool,
     pub follow: bool,
 }
 
-pub fn wait_for_evidence(target: &str, interface: &str, options: WaitOptions<'_>) -> Result<()> {
-    let binary =
-        daemons::find_binary(DAEMON).ok_or_else(|| crate::error::helper_missing(DAEMON))?;
+/// The `serialcap wait` invocation (minus the daemon environment).
+fn wait_command(binary: &Path, interface: &str, options: &WaitOptions<'_>) -> Command {
     let mut cmd = Command::new(binary);
     cmd.args([
         "wait",
@@ -118,13 +122,22 @@ pub fn wait_for_evidence(target: &str, interface: &str, options: WaitOptions<'_>
     if let Some(pattern) = options.pattern {
         cmd.args(["--pattern", pattern]);
     }
+    for (name, pattern) in options.faults {
+        cmd.args(["--fault", &format!("{name}={pattern}")]);
+    }
     if options.include_pending {
         cmd.arg("--include-pending");
     }
     if options.follow {
         cmd.arg("--follow");
     }
-    let status = cmd
+    cmd
+}
+
+pub fn wait_for_evidence(target: &str, interface: &str, options: WaitOptions<'_>) -> Result<()> {
+    let binary =
+        daemons::find_binary(DAEMON).ok_or_else(|| crate::error::helper_missing(DAEMON))?;
+    let status = wait_command(&binary, interface, &options)
         .envs(daemons::helper_env(DAEMON, Some(target)))
         .stdin(Stdio::null())
         .status()?;
@@ -454,6 +467,7 @@ mod tests {
             power_button: false,
             port: None,
             host: None,
+            faults: BTreeMap::new(),
         }
     }
 
@@ -533,6 +547,42 @@ mod tests {
             ),
             "{req}"
         );
+    }
+
+    /// The interface's fault rules reach the helper as repeated
+    /// `--fault NAME=PATTERN`, in map order, after `--pattern`.
+    #[test]
+    fn wait_command_passes_fault_rules() {
+        let mut faults = BTreeMap::new();
+        faults.insert("panic".to_string(), "Kernel panic = fatal".to_string());
+        faults.insert("oops".to_string(), "Oops:".to_string());
+        let options = WaitOptions {
+            epoch: "e1",
+            since: 7,
+            timeout_ms: 1000,
+            max_bytes: 64,
+            max_output_bytes: 4096,
+            pattern: Some("login:"),
+            faults: &faults,
+            include_pending: false,
+            follow: false,
+        };
+        let cmd = wait_command(Path::new("serialcap"), "console", &options);
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        let at = args.iter().position(|a| a == "--fault").unwrap();
+        assert_eq!(
+            &args[at..],
+            [
+                "--fault",
+                "oops=Oops:",
+                "--fault",
+                "panic=Kernel panic = fatal"
+            ]
+        );
+        assert!(args.windows(2).any(|w| w == ["--pattern", "login:"]));
     }
 
     // `preferred_alias` serves the /dev/serial enumeration, which does not

@@ -475,7 +475,10 @@ that channel's host. The helper reads its immutable journal and authenticated
 status, preserving accepted chunks on timeout/disconnect/cap. It delivers
 optional completed-row NDJSON and a final evidence object; the total encoded
 stdout budget covers both. No wait path opens the serial port or changes the
-daemon. MCP returns the collected result through its normal command adapter.
+daemon. The interface's lab fault rules ride along as repeated `--fault NAME=PATTERN`;
+the earliest literal hit among the pattern and the rules decides the status
+(`fault` names the rule). MCP returns the collected result through its normal
+command adapter.
 
 ## Capabilities
 

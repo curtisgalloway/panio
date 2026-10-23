@@ -512,6 +512,41 @@ enum TargetCmd {
 }
 
 #[derive(Subcommand)]
+enum FaultCmd {
+    /// Add or replace a fault rule on a serial interface.
+    ///
+    /// PATTERN is a literal byte string (no regex, 1..=1024 bytes). `serial
+    /// wait` and the MCP `serial_wait` tool end with status `fault` naming the
+    /// rule when it appears in fresh bytes before `--pattern` does; a fault
+    /// is an observation, so the command still exits 0. `serial transact`
+    /// does not apply fault rules. At most 32 rules per interface.
+    Set {
+        /// Rule name (letters, digits, `.`, `_`, `-`); setting an existing
+        /// name replaces its pattern.
+        name: String,
+        /// Literal text to look for in received serial bytes.
+        pattern: String,
+        /// Target the interface belongs to.
+        #[arg(long, short)]
+        target: String,
+        /// Interface name (optional when the target has only one).
+        #[arg(long, short)]
+        interface: Option<String>,
+    },
+    /// Remove a fault rule from a serial interface (an error if absent).
+    Rm {
+        /// Name of the rule to remove.
+        name: String,
+        /// Target the interface belongs to.
+        #[arg(long, short)]
+        target: String,
+        /// Interface name (optional when the target has only one).
+        #[arg(long, short)]
+        interface: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
 enum SerialCmd {
     /// Add a named serial console to a target.
     Add {
@@ -562,6 +597,15 @@ enum SerialCmd {
         name: String,
         #[arg(long, short)]
         target: String,
+    },
+    /// Manage serial fault rules (set, rm).
+    ///
+    /// A fault rule is a named literal pattern on a serial interface. When it
+    /// appears in the bytes `serial wait` acquires, the wait ends with status
+    /// `fault` naming the rule.
+    Fault {
+        #[command(subcommand)]
+        cmd: FaultCmd,
     },
     /// Open an interactive serial console (via tio) on the channel's host.
     Connect {
@@ -656,9 +700,11 @@ enum SerialCmd {
         #[arg(long, default_value_t = serial::DEFAULT_EVIDENCE_BYTES, value_parser = clap::value_parser!(u64).range(1..=serial::MAX_EVIDENCE_BYTES))]
         max_bytes: u64,
     },
-    /// Acquire fresh serial evidence until a pattern, deadline or byte cap.
-    /// Returns JSON with timing, raw records and explicit stop status;
-    /// never sends input, resets hardware or restarts a daemon.
+    /// Acquire fresh serial evidence until a pattern, a lab fault rule,
+    /// deadline or byte cap. Returns JSON with timing, raw records and
+    /// explicit stop status; never sends input, resets hardware or restarts a
+    /// daemon. Fault rules (`serial fault set`) apply automatically: status
+    /// `fault` names the rule, and still exits 0.
     Wait {
         #[command(flatten)]
         target: TargetArg,
@@ -2772,6 +2818,45 @@ fn serial_cmd(lab_flag: Option<&str>, cmd: SerialCmd) -> Result<()> {
             println!("Serial '{name}' removed from '{target}'.");
             Ok(())
         }
+        SerialCmd::Fault { cmd } => {
+            let (target, interface, rule, pattern) = match cmd {
+                FaultCmd::Set {
+                    name,
+                    pattern,
+                    target,
+                    interface,
+                } => (target, interface, name, Some(pattern)),
+                FaultCmd::Rm {
+                    name,
+                    target,
+                    interface,
+                } => (target, interface, name, None),
+            };
+            let lab = load_for_read(lab_flag)?;
+            let serials = lab
+                .targets
+                .get(&target)
+                .map(|t| t.serial.as_slice())
+                .ok_or_else(|| error::target_not_found(&target))?;
+            let interface = pick_serial(&target, serials, interface.as_deref())?
+                .name
+                .clone();
+            match pattern {
+                Some(pattern) => {
+                    edit_lab(lab_flag, |lf| {
+                        lf.set_serial_fault(&target, &interface, &rule, &pattern)
+                    })?;
+                    println!("Fault rule '{rule}' set on '{target}' serial '{interface}'.");
+                }
+                None => {
+                    edit_lab(lab_flag, |lf| {
+                        lf.remove_serial_fault(&target, &interface, &rule)
+                    })?;
+                    println!("Fault rule '{rule}' removed from '{target}' serial '{interface}'.");
+                }
+            }
+            Ok(())
+        }
         SerialCmd::Connect { target, interface } => {
             cmd_serial_connect(lab_flag, target.name(), interface.as_deref())
         }
@@ -2908,6 +2993,7 @@ fn serial_cmd(lab_flag: Option<&str>, cmd: SerialCmd) -> Result<()> {
                     max_bytes,
                     max_output_bytes,
                     pattern: pattern.as_deref(),
+                    faults: &channel.faults,
                     include_pending,
                     follow,
                 },

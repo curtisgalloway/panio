@@ -515,6 +515,7 @@ to replay retained journal fault details with a larger cap.
 | Status | Meaning |
 |---|---|
 | `matched` | The literal pattern appeared in newly acquired bytes. |
+| `fault` | A [fault rule](#fault-rules) pattern appeared first; `fault.name` says which. |
 | `timeout` | The finite deadline ended; accepted bytes remain in the result. |
 | `cap` | The raw or total-output cap stopped acquisition; the cursor can resume. |
 | `disconnected`, `reconnected` | The port is disconnected or its connection generation changed. |
@@ -535,6 +536,48 @@ mid-line. Later complete rows need no partial-row merging. The final pending
 bytes are included only with `--include-pending`. The MCP server returns its
 collected follow objects after the tool call finishes; it does not stream them
 as protocol notifications.
+
+### Fault rules
+
+A fault rule is a named literal pattern on a serial interface, for output that
+means a run is already lost: a kernel panic, an oops, a watchdog banner. Without
+one, a caller waiting for `login:` sits out the whole deadline after the target
+has crashed. Declare rules once in the lab file and every `serial wait` (and MCP
+`serial_wait`) on that interface applies them:
+
+```toml
+[[targets.pi5.serial]]
+name = "console"
+device = "/dev/ttyUSB0"
+faults = { kernel_panic = "Kernel panic - not syncing", oops = "Oops:" }
+```
+
+Edit them with the CLI instead of by hand:
+
+```bash
+panio serial fault set -t pi5 -i console kernel_panic 'Kernel panic - not syncing'
+panio serial fault rm -t pi5 -i console oops
+```
+
+`-i` is optional when the target has one serial interface. Setting an existing
+name replaces its pattern. A rule name follows the usual name rule (letters,
+digits, `.`, `_`, `-`); a pattern is a literal byte string, 1 to 1024 bytes
+(no regex); an interface carries at most 32 rules. `panio config show` lists
+them. On a remote target the rules travel with the lab slice sent to the
+control host.
+
+During a wait, the earliest hit among `--pattern` and every rule in the newly
+acquired bytes decides the status. On a tie at the same byte offset, `--pattern`
+wins (it is the caller's explicit request), then the rules in name order. A rule
+that wins ends the wait with `status: "fault"`; the result then carries
+`"fault": {"name", "pattern", "offset"}`, where `offset` is a byte index into
+the bytes received after the boundary. Every result carries `fault_rules`, the
+names that were checked (an empty list when none), so a caller can tell a wait
+with no rules from one whose rules never fired. Like every other status, `fault`
+exits 0: it is an observation of bytes, not proof about the target. A rule that
+does not fire proves nothing either.
+
+`serial transact` does not apply fault rules.
 
 ## Request/response transactions
 
