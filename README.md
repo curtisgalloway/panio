@@ -228,6 +228,8 @@ Full documentation:
 (source in [`docs/`](docs/README.md)).
 
 - **User guides:** linked in the [capabilities table](#capabilities).
+- **[Recommended hardware](https://panio.dev/recommended-hardware/):** what to
+  buy to get started.
 - **[Demos](https://panio.dev/demos/)** and
   **[tested hardware](https://panio.dev/hardware/)**.
 - **[Glossary](https://panio.dev/glossary/):** the

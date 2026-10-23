@@ -602,12 +602,18 @@ dsdrelay -s <usb-serial> state <ch>            # select the port by USB serial n
   another port, which renames the `/dev` node (macOS names CP2102N nodes by
   USB topology). It prefers the `/dev/cu.*` node over `/dev/tty.*` and fails
   when zero or several ports match. **`-s` is the right choice for the
-  SH-UR01A (CP2102N, unique serial). The SH-UR04A reports the factory serial
-  `0001`, which every such board shares, so use `-d` for it:** on Linux
-  prefer `/dev/serial/by-path/…`, which is tied to the physical USB port (a
-  `/dev/serial/by-id/…` path embeds the non-unique serial); on macOS the node
-  (`/dev/cu.usbserial-0001`, or another name when several boards collide)
-  depends on the serial and USB topology, so re-check `list` after re-plugging.
+  SH-UR01A (CP2102N, unique serial). The SH-UR04A ships with the factory
+  serial `0001`, which every such board shares, so it has two options:**
+  - **Use `-d`.** On Linux prefer `/dev/serial/by-path/…`, which is tied to
+    the physical USB port (a `/dev/serial/by-id/…` path embeds the non-unique
+    serial); on macOS the node (`/dev/cu.usbserial-0001`, or another name when
+    several boards collide) depends on the serial and USB topology, so
+    re-check `list` after re-plugging.
+  - **Give the board a unique serial, then use `-s`.** The CP2102 keeps its
+    serial in a configuration EEPROM that can be rewritten over USB; see
+    [Giving an SH-UR04A a unique serial](#giving-an-sh-ur04a-a-unique-serial).
+    This has worked on one board, but it is at your own risk.
+
   `list` prints one line per device (the macOS `/dev/tty.*` twin is dropped)
   and warns on stderr when serials are shared or `0001`.
 - **Channels** are numbered from 1 with no fixed upper bound. A channel the
@@ -631,11 +637,65 @@ dsdrelay -s <usb-serial> state <ch>            # select the port by USB serial n
   `device`, `responds` and `channel` (channel 1 unless given), always
   exiting 0 with the report. Opt a channel in with `--doctor`.
 
+### Giving an SH-UR04A a unique serial
+
+**At your own risk.** This rewrites the board's USB configuration with a
+third-party tool, not with panio. It has worked once: an SH-UR04A went from
+`0001` to a chosen serial, re-enumerated under the new name on macOS, and
+then switched and read back all four channels with `-s`. Reports elsewhere
+describe CP2102 boards that stopped enumerating after a bad write, some
+older CP210x tools describe these writes as one-time, and cheap boards can
+carry counterfeit chips that behave differently. If it goes wrong, the board
+may be stuck with a bad serial or unusable; keep using `-d` if that is not
+a risk you want to take.
+
+What is known about the board that worked: its CP2102 reported its part
+number as a CP2102 over Silicon Labs' vendor configuration request, its lock
+byte read `0xff` (unlocked) before and after the write, and the write changed
+only the serial descriptor in the EEPROM.
+
+1. **Unplug every other CP210x device** (a Zigbee dongle, other relays). The
+   tool picks the first matching device it finds.
+2. Build [`cp210x-cfg`](https://github.com/ZolibraBond/cp210x-cfg) (C, needs
+   `libusb-1.0` and `pkg-config`; `make`). It works on macOS and Linux
+   without detaching the serial driver.
+3. Read the current configuration. With no programming options the tool only
+   reads; check that it reports `Model: CP2102` and `Serial: 0001`:
+
+   ```bash
+   ./cp210x-cfg -l
+   ./cp210x-cfg -m 10c4:ea60
+   ```
+
+4. Write the new serial (short ASCII; the example name is arbitrary). The
+   `Serial:` line it prints is the value *before* the write:
+
+   ```bash
+   ./cp210x-cfg -m 10c4:ea60 -S UR04A-1
+   ```
+
+5. Unplug and replug the board (the chip reads its EEPROM only at power-up),
+   then confirm the new serial and drive every channel by it:
+
+   ```bash
+   dsdrelay list
+   dsdrelay -s UR04A-1 state 1
+   ```
+
+`cp210x-cfg -H` does not back up a CP2102: its hex dump covers only the
+CP2102N's layout and prints zeros on the older chip. To keep a copy of the
+original EEPROM, read it with a vendor control IN transfer (request type
+`0xC0`, request `0xFF`, value `0x3709`, length 1024), which needs no driver
+detach. `cp210x-program --read-cp210x` reads the same data but fails on macOS
+with "Access denied", because it reconfigures the device first.
+
 ### Wiring into panio power hooks
 
 Example: a Raspberry Pi 5 on relay channel 1 of an SH-UR01A, selected by the
 board's USB serial number (a placeholder here; use the value `list` prints).
-For an SH-UR04A use `-d <path>` instead (see Device selection):
+An SH-UR04A with a [unique serial](#giving-an-sh-ur04a-a-unique-serial) is
+wired the same way; one still on the factory serial `0001` uses `-d <path>`
+instead (see Device selection):
 
 ```bash
 panio power set -t pi5 \

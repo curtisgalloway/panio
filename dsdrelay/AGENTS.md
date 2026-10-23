@@ -35,7 +35,11 @@ change relay state. Measured on hardware:
   back exactly (all four verified; switching through a wired load not yet). Its USB
   serial number is the factory default `0001`, shared by every such board, so macOS
   names the node `/dev/cu.usbserial-0001` for all of them. Every reply ends `\n\0`
-  (a NUL after the newline).
+  (a NUL after the newline). The serial can be rewritten (`cp210x-cfg -S`, then a
+  replug): done once on a genuine CP2102 (lock byte `0xff`, unlocked, before and
+  after), which then worked with `-s` on all four channels. It is user-run and at
+  their own risk; the procedure is in docs/power.md, "Giving an SH-UR04A a unique
+  serial". dsdrelay itself never writes the EEPROM.
 - **SH-UR01A (1-channel, CP2102N, unique serial)**: accepts `\r\n`-terminated
   commands (`AT\r\n` -> `OK\n`), replies without the NUL, in about 55 ms.
 - **Commands must end in `\r\n`.** An unterminated command gets no reply and its
@@ -63,7 +67,8 @@ change relay state. Measured on hardware:
   `--serial` matching enumerates only; it opens the one port it selected.
 - **`list` shows one line per device** (macOS `/dev/tty.X` twin dropped via
   `prefer_cu`) and warns on stderr when USB serials are shared or `0001`
-  (`serial_warning`). `-s` is for the SH-UR01A; use `-d` for the SH-UR04A (Linux:
+  (`serial_warning`). `-s` is for the SH-UR01A and for an SH-UR04A whose serial
+  was rewritten; use `-d` for an SH-UR04A still on `0001` (Linux:
   `/dev/serial/by-path/...`).
 - **`state` maps only 0 and 1.** Any other reply is an error carrying the raw reply.
 - **on/off confirm twice** (the command echo, then a fresh `AT+CHn=?`), and `cycle`

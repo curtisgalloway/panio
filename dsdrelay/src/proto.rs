@@ -384,7 +384,9 @@ pub fn serial_warning(ports: &[&Candidate]) -> Option<String> {
         "warning: the USB serial number is not unique here ({}); --serial \
          (-s) cannot reliably pick a board, use --device (-d). On Linux, \
          /dev/serial/by-path/... names the physical USB port and survives \
-         re-plugging into the same port.",
+         re-plugging into the same port. Or give each board a unique serial, \
+         at your own risk (docs/power.md, \"Giving an SH-UR04A a unique \
+         serial\").",
         if shared {
             "two or more listed relays share one"
         } else {

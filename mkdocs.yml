@@ -67,6 +67,7 @@ markdown_extensions:
 nav:
   - Home: README.md
   - Demos: demos.md
+  - Recommended hardware: recommended-hardware.md
   - Tested hardware: hardware.md
   - Subsystem guides:
       - Netboot: netboot.md
