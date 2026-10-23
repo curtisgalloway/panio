@@ -117,6 +117,48 @@ the physical press may have happened.
 > reboot" without naming DTR or the power button, use the console `reboot` (or
 > `panio power-cycle`), not DTR.
 
+### DTR driving a DC power switch (DFRobot DFR0643)
+
+The same DTR line can cut a target's DC supply instead of pressing a button.
+Measured 2026-10-23 with a DFRobot Gravity Easy Relay Module (DFR0643) and a
+DSD TECH SH-U09C5 (FT232R) adapter. **Not yet run through `panio serial
+dtr`**: the measurements below drove DTR from a script.
+
+The DFR0643 is a solid-state (MOSFET) switch, not a mechanical relay: VIN
+5–30 V DC, up to 2.5 A, passed through to VOUT. Its signal input takes 3.3–5.5 V
+logic, and an on-board switch picks NC (output on while the signal is idle) or
+NO. It switches the **positive** side; a continuity meter cannot test it
+unpowered, so measure VOUT+ against VIN− with VIN powered.
+
+```
+SH-U09C5 DTR#  →  DFR0643 D (green)
+SH-U09C5 VCC   →  DFR0643 + (red)      adapter VCC jumper on 5 V
+SH-U09C5 GND   →  DFR0643 − (black)
+```
+
+Use DTR#: on the SH-U09C5's second row, DSR#, RI#, and DCD# are inputs and
+RESET# is the FT232R's own reset. The `#` means active-low, so asserting DTR
+drives the pin **low**.
+
+Measured with the switch on **NC**, 5.0 V on VIN, VOUT+ read with a Bus Pirate:
+
+| State | VOUT+ |
+|---|---|
+| Port closed, or open with DTR deasserted (pin high) | 5.0 V (target powered) |
+| DTR asserted (pin low) | 0.0 V (target off) |
+| DTR released | 5.0 V |
+| Adapter unplugged from USB | **0.0 V** |
+
+So a DTR pulse is a power cycle of exactly the pulse length. Two gotchas:
+
+- **Losing the adapter cuts the target's power.** The module's logic is
+  powered from the adapter's VCC pin, so a control-host reboot or USB drop
+  turns the target off. Powering the module's logic from VIN instead (≤ 5.5 V)
+  is untested; an unpowered FT232R may still pull the signal low.
+- **Opening the port can assert DTR.** Many serial libraries (pyserial
+  included) assert DTR on open, which would briefly cut power. Don't open this
+  adapter with `screen` or `tio`.
+
 ---
 
 ## Generic power hooks
