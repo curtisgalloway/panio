@@ -313,6 +313,12 @@ pub fn dispatch(
     sub_argv: &[String],
 ) -> anyhow::Result<i32> {
     let host = lab.host(host_name);
+    // Before anything is shipped, so a value that cannot be forwarded fails
+    // without leaving a file on the control host.
+    let env = match mode {
+        Mode::Reexec => ssh::forwarded_env()?,
+        Mode::Interactive => Vec::new(),
+    };
     let slice = build_slice(lab, target, host_name)?;
     let remote_path = ship_slice(&host, host_name, target, &slice)?;
 
@@ -336,7 +342,7 @@ pub fn dispatch(
         // the user is typing into (see `ssh::run_interactive`'s doc comment
         // for why that rules out a forwarding channel).
         Mode::Interactive => ssh::run_interactive(&host, &argv),
-        Mode::Reexec => ssh::run_passthrough(&host, &argv, &ssh::forwarded_env()?),
+        Mode::Reexec => ssh::run_passthrough(&host, &argv, &env),
     };
 
     // Best-effort cleanup of the shipped slice (also when the run itself

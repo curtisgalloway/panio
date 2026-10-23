@@ -606,7 +606,8 @@ fn lease_file_token_reaches_hooks_and_empty_file_is_refused() {
         None,
     );
     assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
-    assert_eq!(std::fs::read_to_string(&out).unwrap(), tok);
+    let got = std::fs::read_to_string(&out).unwrap();
+    assert!(got == tok, "hook did not see the lease token");
 
     std::fs::write(&file, "  \n").unwrap();
     let o = panio(
