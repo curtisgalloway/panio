@@ -111,9 +111,11 @@ pub fn now() -> u64 {
 }
 
 /// True while the registered process is still the same process: its pid
-/// exists *and* carries the recorded start time. A Linux zombie keeps a start
-/// time, so the pid probe alone is not enough, and a recycled pid fails the
-/// start-time comparison.
+/// exists *and* carries the recorded start time, so a recycled pid fails the
+/// comparison. On Linux a zombie (exited, not yet reaped) passes the pid probe
+/// but has no start time (`platform::process_start_time` reads it as gone), so
+/// it counts as dead there; elsewhere a zombie reads as alive until its parent
+/// reaps it.
 pub fn proc_is_live(p: &Proc) -> bool {
     platform::pid_alive(p.pid) && platform::process_start_time(p.pid) == Some(p.start_time)
 }
@@ -602,7 +604,11 @@ fn ended_message(target: &str, at: u64, reason: &str) -> String {
 }
 
 /// Why the caller's token stopped working, if the history knows.
-fn lost_lease_message(lock: &StoreLock, token: Option<&str>, target: &str) -> Option<String> {
+pub(crate) fn lost_lease_message(
+    lock: &StoreLock,
+    token: Option<&str>,
+    target: &str,
+) -> Option<String> {
     let e = lock.history_for_token(token?)?;
     let reason = match (e.how.as_str(), &e.new_owner) {
         ("preempted", Some(o)) => format!("preempted by {o}"),
@@ -702,7 +708,19 @@ pub fn enforce(lab: &crate::model::Lab, target: &str, access: Access) -> anyhow:
             State::Expired(l) => {
                 note_no_lease(Some(&lock), access, token.as_deref(), target, Some(l))
             }
-            State::Held(_) => Ok(()),
+            State::Held(l) => {
+                // A read that carries a token which is not the holder's runs,
+                // but never silently: the caller most likely lost its lease.
+                let msg =
+                    lost_lease_message(&lock, token.as_deref(), target).unwrap_or_else(|| {
+                        format!(
+                            "PANIO_LEASE does not match the current holder ({}) of '{target}'",
+                            l.owner
+                        )
+                    });
+                eprintln!("warning: {msg}");
+                Ok(())
+            }
         },
         Verdict::RunAndTouch => {
             let State::Held(mut l) = st else {

@@ -715,3 +715,119 @@ fn ended_token_can_reacquire() {
     assert_eq!(new.len(), 32);
     assert_ne!(new, tok);
 }
+
+#[test]
+fn preempted_holders_read_warns_and_runs() {
+    let dir = scratch("preempted_read_warns", FULL_LAB);
+    let old = acquire(&dir);
+    let o = panio(
+        &dir,
+        &[
+            "lease",
+            "acquire",
+            "dut",
+            "--preempt",
+            "--owner",
+            "bob@bench1",
+        ],
+        None,
+    );
+    assert_eq!(o.status.code(), Some(0), "{o:?}");
+    let o = panio(&dir, &["power-state", "dut"], Some(&old));
+    assert_eq!(o.status.code(), Some(0), "{o:?}");
+    let err = stderr(&o);
+    assert!(err.contains("warning:"), "{err}");
+    assert!(err.contains("preempted by bob@bench1"), "{err}");
+    assert!(!err.contains(&old), "{err}");
+    assert!(!stdout(&o).contains("warning:"), "{}", stdout(&o));
+}
+
+#[test]
+fn foreign_token_read_names_the_holder() {
+    let dir = scratch("foreign_token_read", FULL_LAB);
+    write_lease(&dir, "alices-token", now() + 3600, now());
+    let o = panio(&dir, &["power-state", "dut"], Some("some-other-token"));
+    assert_eq!(o.status.code(), Some(0), "{o:?}");
+    let err = stderr(&o);
+    assert!(
+        err.contains("warning: PANIO_LEASE does not match the current holder (alice@bench1)"),
+        "{err}"
+    );
+    assert!(!err.contains("some-other-token"), "{err}");
+    let o = panio(&dir, &["power-state", "dut"], None);
+    assert!(!stderr(&o).contains("warning:"), "{}", stderr(&o));
+}
+
+#[test]
+fn release_after_release_succeeds_with_the_history() {
+    let dir = scratch("release_twice", FULL_LAB);
+    let tok = acquire(&dir);
+    let o = panio(&dir, &["lease", "release", "dut"], Some(&tok));
+    assert_eq!(o.status.code(), Some(0), "{o:?}");
+    let o = panio(&dir, &["lease", "release", "dut"], Some(&tok));
+    assert_eq!(o.status.code(), Some(0), "{o:?}");
+    assert!(stderr(&o).contains("released"), "{}", stderr(&o));
+    assert!(!stderr(&o).contains(&tok), "{}", stderr(&o));
+}
+
+#[test]
+fn release_by_a_preempted_holder_leaves_the_new_holder() {
+    let dir = scratch("release_preempted", FULL_LAB);
+    let old = acquire(&dir);
+    let o = panio(
+        &dir,
+        &[
+            "lease",
+            "acquire",
+            "dut",
+            "--preempt",
+            "--owner",
+            "bob@bench1",
+        ],
+        None,
+    );
+    assert_eq!(o.status.code(), Some(0), "{o:?}");
+    let o = panio(&dir, &["lease", "release", "dut"], Some(&old));
+    assert_eq!(o.status.code(), Some(0), "{o:?}");
+    assert!(
+        stderr(&o).contains("preempted by bob@bench1"),
+        "{}",
+        stderr(&o)
+    );
+    let s = panio(&dir, &["lease", "status", "dut", "--json"], None);
+    let v: serde_json::Value = serde_json::from_str(&stdout(&s)).unwrap();
+    assert_eq!(v["held"], true, "bob's lease must survive: {v}");
+    assert_eq!(v["owner"], "bob@bench1", "{v}");
+}
+
+#[test]
+fn release_of_an_unleased_target_is_not_an_error() {
+    let dir = scratch("release_unleased", FULL_LAB);
+    let o = panio(&dir, &["lease", "release", "dut"], None);
+    assert_eq!(o.status.code(), Some(0), "{o:?}");
+    assert!(stdout(&o).contains("'dut' is not leased"), "{}", stdout(&o));
+    let o = panio(&dir, &["lease", "release", "dut"], Some("never-a-lease"));
+    assert_eq!(o.status.code(), Some(23), "{o:?}");
+}
+
+#[test]
+fn renew_of_an_expired_lease_retires_it() {
+    let dir = scratch("renew_expired", FULL_LAB);
+    write_lease(&dir, "old-token", now() - 10, now() - 20);
+    let o = panio(&dir, &["lease", "renew", "dut"], Some("old-token"));
+    assert_eq!(o.status.code(), Some(23), "{o:?}");
+    let err = stderr(&o);
+    assert!(err.contains("found expired"), "{err}");
+    assert!(!err.contains("old-token"), "{err}");
+    assert!(!lease_path(&dir).exists(), "the expired lease is retired");
+    assert!(history(&dir).contains("\"expired\""), "{}", history(&dir));
+}
+
+#[test]
+fn status_json_carries_the_idle_timeout() {
+    let dir = scratch("status_idle_secs", FULL_LAB);
+    acquire(&dir);
+    let s = panio(&dir, &["lease", "status", "dut", "--json"], None);
+    let v: serde_json::Value = serde_json::from_str(&stdout(&s)).unwrap();
+    assert_eq!(v["idle_secs"], 1800, "{v}");
+}

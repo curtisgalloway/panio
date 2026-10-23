@@ -39,8 +39,12 @@ pub struct StatusRow {
     pub held: Option<bool>,
     pub owner: Option<String>,
     pub expires_in_secs: Option<u64>,
+    /// `None` while a live registered process keeps the lease from idling out.
     pub idle_left_secs: Option<u64>,
     pub procs: u64,
+    /// The lease's idle timeout in seconds (a keepalive paces itself by it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idle_secs: Option<u64>,
     /// Epoch seconds of the last change: the acquisition of a held lease, else
     /// the newest history line.
     pub last_change: Option<u64>,
@@ -72,6 +76,7 @@ fn parse_opt(flag: &str, text: &Option<String>) -> Result<Option<u64>> {
 fn default_owner() -> String {
     let user = std::env::var("USER")
         .or_else(|_| std::env::var("LOGNAME"))
+        .or_else(|_| std::env::var("USERNAME"))
         .unwrap_or_else(|_| "unknown".to_string());
     let host = crate::model::local_fqdn()
         .map(|f| f.split('.').next().unwrap_or(f).to_string())
@@ -335,11 +340,14 @@ pub fn renew(lab: &Lab, target: &str, duration: &Option<String>) -> Result<()> {
             Ok(())
         }
         State::Held(_) => Err(not_holder_error(&lock, target, token.as_deref(), what)),
-        State::Expired(_) => Err(error::target_leased(
-            target,
-            format!("{what}: the lease on '{target}' has expired; acquire a new one"),
-        )
-        .into()),
+        State::Expired(l) => {
+            // Retire it now so the history can say what happened to this token.
+            retire(lab, target, &lock, &l, "expired", None)?;
+            lock.remove().context("removing the expired lease")?;
+            let msg = lease::lost_lease_message(&lock, token.as_deref(), target)
+                .unwrap_or_else(|| format!("the lease on '{target}' has expired"));
+            Err(error::target_leased(target, format!("{what}: {msg}")).into())
+        }
         State::Unleased => Err(not_holder_error(&lock, target, token.as_deref(), what)),
     }
 }
@@ -356,6 +364,12 @@ pub fn release(lab: &Lab, target: &str, preempt: bool) -> Result<()> {
                 retire(lab, target, &lock, &l, "released", None)?;
             } else if preempt {
                 retire(lab, target, &lock, &l, "preempted", None)?;
+            } else if let Some(msg) = lease::lost_lease_message(&lock, token.as_deref(), target) {
+                // The caller's own lease already ended and someone else holds
+                // the target now: nothing of theirs is left to release, and
+                // the new holder's lease is not theirs to end.
+                eprintln!("note: {msg}");
+                return Ok(());
             } else {
                 return Err(not_holder_error(&lock, target, token.as_deref(), what));
             }
@@ -374,8 +388,40 @@ pub fn release(lab: &Lab, target: &str, preempt: bool) -> Result<()> {
             println!("'{target}' is not leased");
             Ok(())
         }
-        State::Unleased => Err(not_holder_error(&lock, target, token.as_deref(), what)),
+        State::Unleased => match token.as_deref() {
+            None => {
+                println!("'{target}' is not leased");
+                Ok(())
+            }
+            Some(t) => match lease::lost_lease_message(&lock, Some(t), target) {
+                Some(msg) => {
+                    eprintln!("note: {msg}");
+                    Ok(())
+                }
+                None => Err(not_holder_error(&lock, target, token.as_deref(), what)),
+            },
+        },
     }
+}
+
+/// Fill `row` from a live lease. While a registered process is alive the lease
+/// cannot idle out, so there is no idle countdown to report.
+fn fill_held(row: &mut StatusRow, l: Lease, now: u64) {
+    row.held = Some(true);
+    row.expires_in_secs = Some(l.expires_at.saturating_sub(now));
+    row.idle_left_secs = if l.procs.is_empty() {
+        Some(
+            l.last_used_at
+                .saturating_add(l.idle_secs)
+                .saturating_sub(now),
+        )
+    } else {
+        None
+    };
+    row.procs = l.procs.len() as u64;
+    row.idle_secs = Some(l.idle_secs);
+    row.last_change = Some(l.acquired_at);
+    row.owner = Some(l.owner);
 }
 
 /// This host's view of one target, cleaning up an expired lease first.
@@ -388,23 +434,13 @@ fn local_row(lab: &Lab, target: &str) -> Result<StatusRow> {
         expires_in_secs: None,
         idle_left_secs: None,
         procs: 0,
+        idle_secs: None,
         last_change: None,
         error: None,
     };
     let now = lease::now();
     match read_state(&lock, target)? {
-        State::Held(l) => {
-            row.held = Some(true);
-            row.expires_in_secs = Some(l.expires_at.saturating_sub(now));
-            row.idle_left_secs = Some(
-                l.last_used_at
-                    .saturating_add(l.idle_secs)
-                    .saturating_sub(now),
-            );
-            row.procs = l.procs.len() as u64;
-            row.last_change = Some(l.acquired_at);
-            row.owner = Some(l.owner);
-        }
+        State::Held(l) => fill_held(&mut row, l, now),
         State::Expired(l) => {
             retire(lab, target, &lock, &l, "expired", None)?;
             lock.remove().context("removing the lease record")?;
@@ -418,14 +454,18 @@ fn local_row(lab: &Lab, target: &str) -> Result<StatusRow> {
 fn row_text(r: &StatusRow) -> String {
     match (&r.error, r.held) {
         (Some(e), _) => format!("{}: unknown ({e})", r.target),
-        (None, Some(true)) => format!(
-            "{}: leased to {}, expires in {} min, idle timeout in {} min, {} live process(es)",
-            r.target,
-            r.owner.as_deref().unwrap_or("?"),
-            mins(r.expires_in_secs.unwrap_or(0)),
-            mins(r.idle_left_secs.unwrap_or(0)),
-            r.procs
-        ),
+        (None, Some(true)) => {
+            let idle = match r.idle_left_secs {
+                Some(left) => format!("idle timeout in {} min", mins(left)),
+                None => format!("kept alive by {} live process(es)", r.procs),
+            };
+            format!(
+                "{}: leased to {}, expires in {} min, {idle}",
+                r.target,
+                r.owner.as_deref().unwrap_or("?"),
+                mins(r.expires_in_secs.unwrap_or(0)),
+            )
+        }
         _ => format!("{}: unleased", r.target),
     }
 }
@@ -452,6 +492,7 @@ fn row_for(lab: &Lab, target: &str) -> StatusRow {
         expires_in_secs: None,
         idle_left_secs: None,
         procs: 0,
+        idle_secs: None,
         last_change: None,
         error: Some(msg),
     };
@@ -491,4 +532,67 @@ pub fn status_all(lab: &Lab, json: bool) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lease::Proc;
+
+    fn lease(procs: Vec<Proc>) -> Lease {
+        Lease {
+            owner: "alice@bench1".into(),
+            token: "tok".into(),
+            acquired_at: 100,
+            expires_at: 7300,
+            duration_secs: 7200,
+            idle_secs: 1800,
+            last_used_at: 100,
+            procs,
+        }
+    }
+
+    fn row(l: Lease, now: u64) -> StatusRow {
+        let mut r = StatusRow {
+            target: "dut".into(),
+            held: Some(false),
+            owner: None,
+            expires_in_secs: None,
+            idle_left_secs: None,
+            procs: 0,
+            idle_secs: None,
+            last_change: None,
+            error: None,
+        };
+        fill_held(&mut r, l, now);
+        r
+    }
+
+    #[test]
+    fn idle_countdown_shown_without_live_processes() {
+        let r = row(lease(vec![]), 400);
+        assert_eq!(r.idle_left_secs, Some(1500));
+        assert_eq!(r.idle_secs, Some(1800));
+        assert!(
+            row_text(&r).contains("idle timeout in 25 min"),
+            "{}",
+            row_text(&r)
+        );
+    }
+
+    #[test]
+    fn live_processes_replace_the_idle_countdown() {
+        let p = Proc {
+            pid: 42,
+            start_time: 7,
+        };
+        let r = row(lease(vec![p]), 400);
+        assert_eq!(r.idle_left_secs, None);
+        assert_eq!(r.procs, 1);
+        let text = row_text(&r);
+        assert!(text.contains("kept alive by 1 live process(es)"), "{text}");
+        assert!(!text.contains("idle timeout"), "{text}");
+        let json = serde_json::to_value(&r).unwrap();
+        assert!(json["idle_left_secs"].is_null(), "{json}");
+    }
 }
