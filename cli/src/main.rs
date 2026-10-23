@@ -1878,6 +1878,87 @@ fn cmd_daemons_list() -> Result<()> {
     Ok(())
 }
 
+/// The per-target daemons a target lease covers. Host singletons (zigplug,
+/// cambrionix, netbootd) serve every target and are never checked.
+const LEASED_DAEMONS: [&str; 3] = ["serialcap", "hdmicap", "hid"];
+
+/// A daemon left alone because its target is leased to someone else.
+struct LeaseSkip {
+    daemon: String,
+    target: String,
+    block: lease::Block,
+}
+
+impl LeaseSkip {
+    fn label(&self) -> String {
+        format!("{}/{}", self.daemon, self.target)
+    }
+
+    /// The stderr line `--all` prints for a daemon it skipped.
+    fn line(&self) -> String {
+        format!(
+            "skipped {}: leased to {} until {}",
+            self.label(),
+            self.block.owner,
+            self.block.until
+        )
+    }
+}
+
+/// The refusal for a daemon the caller named explicitly (exit 23).
+fn leased_refusal(skip: &LeaseSkip) -> anyhow::Error {
+    error::target_leased(&skip.target, skip.block.message.clone()).into()
+}
+
+/// Split `items` into those the caller may stop and those whose target is
+/// leased to someone else. `id_of` gives an item's daemon name and instance
+/// (its target); `blocked` answers for one target.
+fn partition_leased<T>(
+    items: Vec<T>,
+    id_of: impl Fn(&T) -> (String, Option<String>),
+    blocked: impl Fn(&str) -> Option<lease::Block>,
+) -> (Vec<T>, Vec<LeaseSkip>) {
+    let mut allowed = Vec::new();
+    let mut skipped = Vec::new();
+    for item in items {
+        let (daemon, instance) = id_of(&item);
+        let block = match instance {
+            Some(target) if LEASED_DAEMONS.contains(&daemon.as_str()) => {
+                blocked(&target).map(|block| (target, block))
+            }
+            _ => None,
+        };
+        match block {
+            Some((target, block)) => skipped.push(LeaseSkip {
+                daemon,
+                target,
+                block,
+            }),
+            None => allowed.push(item),
+        }
+    }
+    (allowed, skipped)
+}
+
+/// Apply the lease check to a daemon selection: with `skip_leased` (`--all`,
+/// `--stale`) leased daemons are dropped with one stderr line each; otherwise
+/// the first one is a refusal and nothing is stopped.
+fn apply_lease_check<T>(
+    items: Vec<T>,
+    id_of: impl Fn(&T) -> (String, Option<String>),
+    skip_leased: bool,
+) -> Result<Vec<T>> {
+    let (allowed, skipped) = partition_leased(items, id_of, lease::foreign_holder);
+    if skip_leased {
+        for s in &skipped {
+            eprintln!("{}", s.line());
+        }
+    } else if let Some(first) = skipped.first() {
+        return Err(leased_refusal(first));
+    }
+    Ok(allowed)
+}
+
 /// Stop daemons by name or wholesale: netbootd via its proper teardown
 /// (interface cleanup), everything else via SIGTERM, with an optional
 /// SIGKILL escalation after a grace period. A pid from a discovery file is
@@ -1902,6 +1983,17 @@ fn cmd_daemons_stop(names: &[String], all: bool, force: bool) -> Result<()> {
     }
 
     let discovered = daemons::list_discovered();
+    let (selected, rest): (Vec<_>, Vec<_>) = discovered
+        .into_iter()
+        .partition(|d| wanted(&d.name, d.instance.as_deref()));
+    let leased_pids: Vec<i32> = selected.iter().map(|d| d.pid).collect();
+    let selected = apply_lease_check(selected, |d| (d.name.clone(), d.instance.clone()), all)?;
+    let allowed_pids: Vec<i32> = selected.iter().map(|d| d.pid).collect();
+    let skipped_pids: Vec<i32> = leased_pids
+        .into_iter()
+        .filter(|p| !allowed_pids.contains(p))
+        .collect();
+    let discovered: Vec<_> = selected.into_iter().chain(rest).collect();
     for spec in &specs {
         let running = if spec.name == "netbootd" {
             netboots
@@ -1923,7 +2015,8 @@ fn cmd_daemons_stop(names: &[String], all: bool, force: bool) -> Result<()> {
         .filter(|d| wanted(&d.name, d.instance.as_deref()))
         .map(|d| (daemon_label(d), d.pid, daemon_process_needles(&d.name)))
         .collect();
-    let known: Vec<i32> = victims.iter().map(|(_, pid, _)| *pid).collect();
+    let mut known: Vec<i32> = victims.iter().map(|(_, pid, _)| *pid).collect();
+    known.extend(skipped_pids);
     if all {
         for (pid, args) in daemons::list_stray_helpers(&known) {
             let short = args
@@ -2033,6 +2126,11 @@ fn cmd_daemons_restart(
         .filter(|d| !stale_only || d.binary_status.is_stale() == Some(true))
         .filter_map(|d| d.instance.map(|inst| (d.name, inst)))
         .collect();
+    let selected = apply_lease_check(
+        selected,
+        |(name, inst)| (name.clone(), Some(inst.clone())),
+        all || stale_only,
+    )?;
     if selected.is_empty() {
         println!("No matching capture daemons to restart.");
         return Ok(());
@@ -6583,6 +6681,91 @@ fn print_resolved_target(rt: &ResolvedTarget) {
 
 #[cfg(test)]
 mod tests {
+
+    fn held_by(owner: &str) -> lease::Block {
+        lease::Block {
+            owner: owner.into(),
+            until: "10:30 local".into(),
+            message: format!("target is leased to {owner}"),
+        }
+    }
+
+    /// Daemon `(name, instance)` pairs; `blocked` leases only target `pi5`
+    /// to someone else.
+    fn lease_split(
+        items: &[(&str, Option<&str>)],
+        caller_holds: bool,
+    ) -> (Vec<(String, Option<String>)>, Vec<LeaseSkip>) {
+        let items = items
+            .iter()
+            .map(|(n, i)| (n.to_string(), i.map(str::to_string)))
+            .collect();
+        partition_leased(
+            items,
+            |d: &(String, Option<String>)| (d.0.clone(), d.1.clone()),
+            |t| (t == "pi5" && !caller_holds).then(|| held_by("alice")),
+        )
+    }
+
+    #[test]
+    fn named_leased_daemon_refused() {
+        let (allowed, skipped) = lease_split(&[("serialcap", Some("pi5"))], false);
+        assert!(allowed.is_empty());
+        assert_eq!(skipped.len(), 1);
+        assert_eq!(skipped[0].label(), "serialcap/pi5");
+        let err = leased_refusal(&skipped[0]);
+        let pe = err.downcast_ref::<error::PanioError>().unwrap();
+        assert_eq!(pe.kind, error::Kind::TargetLeased);
+    }
+
+    #[test]
+    fn all_skips_leased() {
+        let (allowed, skipped) = lease_split(
+            &[
+                ("serialcap", Some("pi5")),
+                ("hdmicap", Some("nuc")),
+                ("hid", Some("pi5")),
+            ],
+            false,
+        );
+        assert_eq!(
+            allowed,
+            vec![("hdmicap".to_string(), Some("nuc".to_string()))]
+        );
+        assert_eq!(skipped.len(), 2);
+        assert_eq!(
+            skipped[0].line(),
+            "skipped serialcap/pi5: leased to alice until 10:30 local"
+        );
+    }
+
+    #[test]
+    fn holder_can_stop() {
+        let (allowed, skipped) = lease_split(&[("serialcap", Some("pi5"))], true);
+        assert_eq!(allowed.len(), 1);
+        assert!(skipped.is_empty());
+    }
+
+    #[test]
+    fn unleased_unchanged() {
+        let (allowed, skipped) = lease_split(
+            &[
+                ("serialcap", Some("nuc")),
+                ("zigplug", None),
+                ("cambrionix", None),
+            ],
+            false,
+        );
+        assert_eq!(allowed.len(), 3);
+        assert!(skipped.is_empty());
+    }
+
+    #[test]
+    fn host_singletons_never_checked() {
+        let (allowed, skipped) = lease_split(&[("zigplug", Some("pi5"))], false);
+        assert_eq!(allowed.len(), 1);
+        assert!(skipped.is_empty());
+    }
 
     /// The read/mutating split of the spec table, row by row.
     #[test]

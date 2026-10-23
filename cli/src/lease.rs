@@ -363,6 +363,65 @@ pub fn decide(
     }
 }
 
+/// Why a lease stops this caller from touching a target's daemons.
+#[derive(Debug, PartialEq)]
+pub struct Block {
+    pub owner: String,
+    /// `HH:MM local` when the lease ends.
+    pub until: String,
+    /// The full refusal text, the same wording the central check uses.
+    pub message: String,
+}
+
+/// `Some` only when `state` is a live lease held by someone other than the
+/// holder of `token`. An unleased or expired target blocks no one.
+pub fn block_for(state: &State, token: Option<&str>, target: &str, now: u64) -> Option<Block> {
+    let State::Held(lease) = state else {
+        return None;
+    };
+    match decide(state, Access::Mutating, token, false, target, now) {
+        Verdict::Refuse(message) => Some(Block {
+            owner: lease.owner.clone(),
+            until: clock(lease.expires_at),
+            message,
+        }),
+        _ => None,
+    }
+}
+
+/// [`block_for`] against the lease on disk for `target`, for callers that run
+/// without a lab (`daemons stop|restart`). Reads only: it never creates the
+/// state directory, cleans up an expired lease, or touches a held one. A
+/// target with no `lease.json` is not blocked; an unreadable record is
+/// reported on stderr and not treated as a block.
+pub fn foreign_holder(target: &str) -> Option<Block> {
+    let store = Store::for_target(target);
+    if !store.record_exists() {
+        return None;
+    }
+    let lock = match store.lock() {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("warning: {target}: cannot read its lease: {e}");
+            return None;
+        }
+    };
+    let rec = match lock.read() {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("warning: {target}: cannot read its lease: {e}");
+            return None;
+        }
+    };
+    let now = now();
+    block_for(
+        &state(rec, now, proc_is_live),
+        caller_token().as_deref(),
+        target,
+        now,
+    )
+}
+
 /// One cleanup step: a label for the failure message and the work itself.
 type Step<'a> = (&'static str, Box<dyn FnOnce() -> Result<(), String> + 'a>);
 
@@ -905,6 +964,18 @@ mod tests {
         let mut busy = lease();
         busy.last_used_at = 8000;
         assert!(matches!(state(Some(busy), 8200, |_| false), State::Held(_)));
+    }
+
+    #[test]
+    fn block_for_only_a_held_lease_of_someone_else() {
+        let held = State::Held(lease());
+        let other = block_for(&held, Some("not-it"), "pi5", 1500).expect("blocked");
+        assert_eq!(other.owner, lease().owner);
+        assert!(other.message.contains("lease status pi5"));
+        assert!(block_for(&held, None, "pi5", 1500).is_some());
+        assert!(block_for(&held, Some(&lease().token), "pi5", 1500).is_none());
+        assert!(block_for(&State::Unleased, None, "pi5", 1500).is_none());
+        assert!(block_for(&State::Expired(lease()), None, "pi5", 1500).is_none());
     }
 
     #[test]
