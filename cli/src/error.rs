@@ -31,6 +31,8 @@ Exit status:
                          a hook or helper missing or not executable
   4    unreachable       control host not reachable over SSH
   22   timeout           no answer within a deadline; outcome unknown
+  23   target_leased     the target is leased to someone else, or the lab requires
+                         a lease and none is held
   100  daemon_down       the channel's daemon is not running
   101  helper_failed     a hook, helper or daemon ran and failed
   109  internal          not yet classified
@@ -54,6 +56,9 @@ pub enum Kind {
     Unreachable,
     /// No answer within a deadline; the outcome is unknown.
     Timeout,
+    /// The target is leased to someone else, or the lab requires a lease and
+    /// none is held.
+    TargetLeased,
     /// The channel's daemon is not running and the command needs it.
     DaemonDown,
     /// A hook or helper ran and exited non-zero.
@@ -65,11 +70,12 @@ pub enum Kind {
 impl Kind {
     /// Every kind, for the tests that pin the help text and the bands.
     #[cfg(test)]
-    pub const ALL: [Kind; 7] = [
+    pub const ALL: [Kind; 8] = [
         Kind::Usage,
         Kind::NotConfigured,
         Kind::Unreachable,
         Kind::Timeout,
+        Kind::TargetLeased,
         Kind::DaemonDown,
         Kind::HelperFailed,
         Kind::Internal,
@@ -86,6 +92,7 @@ impl Kind {
             | Kind::NotConfigured
             | Kind::Unreachable
             | Kind::Timeout
+            | Kind::TargetLeased
             | Kind::DaemonDown
             | Kind::HelperFailed
             | Kind::Internal => {}
@@ -99,6 +106,7 @@ impl Kind {
             Kind::NotConfigured => 3,
             Kind::Unreachable => 4,
             Kind::Timeout => 22,
+            Kind::TargetLeased => 23,
             Kind::DaemonDown => 100,
             Kind::HelperFailed => 101,
             Kind::Internal => 109,
@@ -113,6 +121,7 @@ impl Kind {
             3 => Kind::NotConfigured,
             4 => Kind::Unreachable,
             22 => Kind::Timeout,
+            23 => Kind::TargetLeased,
             100 => Kind::DaemonDown,
             101 => Kind::HelperFailed,
             109 => Kind::Internal,
@@ -127,6 +136,7 @@ impl Kind {
             Kind::NotConfigured => "not_configured",
             Kind::Unreachable => "unreachable",
             Kind::Timeout => "timeout",
+            Kind::TargetLeased => "target_leased",
             Kind::DaemonDown => "daemon_down",
             Kind::HelperFailed => "helper_failed",
             Kind::Internal => "internal",
@@ -357,6 +367,15 @@ pub fn unreachable_host(host: &str, message: String) -> PanioError {
     PanioError::new(Kind::Unreachable, message).host(host)
 }
 
+/// `target` is leased to someone else (or the lab requires a lease and none
+/// is held). The message names the holder and when the lease ends.
+///
+/// Unused until the lease commands land; remove the `allow` with the first caller.
+#[allow(dead_code)]
+pub fn target_leased(target: &str, message: String) -> PanioError {
+    PanioError::new(Kind::TargetLeased, message).target(target)
+}
+
 impl fmt::Display for PanioError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.message)
@@ -550,6 +569,15 @@ mod tests {
             let c = k.exit_code();
             assert!((2..125).contains(&c), "{k:?} -> {c}");
         }
+    }
+
+    #[test]
+    fn target_leased_round_trips() {
+        assert_eq!(Kind::from_exit_code(23), Some(Kind::TargetLeased));
+        assert_eq!(Kind::TargetLeased.as_str(), "target_leased");
+        let e = target_leased("pi5", "leased".into());
+        assert_eq!(e.kind, Kind::TargetLeased);
+        assert_eq!(e.target.as_deref(), Some("pi5"));
     }
 
     #[test]

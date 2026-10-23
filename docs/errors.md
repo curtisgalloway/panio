@@ -22,6 +22,7 @@ program's status ([below](#passthrough-commands)).
 | 3 | `not_configured` | No lab file, an invalid one, or an unknown target, channel, interface or host; a required channel field missing (such as `tftp_root`); a hook or helper missing or not executable. Retrying will not help. |
 | 4 | `unreachable` | SSH to the control host failed. The command may not have run, or may have been killed part way. |
 | 22 | `timeout` | No answer within a deadline (daemon startup, a daemon request, an SSH port forward). The outcome is unknown: check state before repeating a change such as a power cycle. |
+| 23 | `target_leased` | The target is leased to someone else, or the lab requires a lease and none is held. The message names the holder and when the lease ends. Wait (`panio lease acquire --wait`) and retry. |
 | 100 | `daemon_down` | The channel's daemon is not running and the command needs it, or its record is stale. Start it with `panio serial watch` or `panio video watch`; `panio daemons` lists what is running. |
 | 101 | `helper_failed` | A hook or helper ran and failed: it exited non-zero (its code is in `child_exit`), a daemon exited during startup, or a running daemon refused the request (its reason is the message). |
 | 109 | `internal` | An unclassified failure; likely a bug. The message says what went wrong. |

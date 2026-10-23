@@ -61,6 +61,7 @@ text. `panio --help` prints the table.
 | 3 | `not_configured` | Wrong target/channel/interface name, required configuration missing, or a hook/helper missing. Don't retry; check `panio config show`, and don't edit the lab to fix it — report it |
 | 4 | `unreachable` | The control host did not answer over SSH; the command may or may not have run |
 | 22 | `timeout` | Outcome unknown: check state (`power-state`, `serial log`, `video shot`) before repeating a power cycle or other mutation |
+| 23 | `target_leased` | The target is leased to someone else, or the lab requires a lease and none is held; the message names the holder and when it ends. Wait (`panio lease acquire --wait`) and retry |
 | 100 | `daemon_down` | Start the daemon (`serial watch`, `video watch`); `panio daemons` lists what is running |
 | 101 | `helper_failed` | The hook/helper/daemon ran and failed; its message (and its own code in `child_exit`) says why. On Windows a *missing* hook also lands here (`cmd.exe` exits 1 for it) |
 | 109 | `internal` | Unclassified; read the message |
