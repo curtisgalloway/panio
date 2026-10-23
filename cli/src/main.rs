@@ -1164,6 +1164,9 @@ enum LeaseCmd {
         json: bool,
     },
     /// Extend your lease (needs PANIO_LEASE).
+    ///
+    /// A lease that has already expired is retired (cleaned up) and the
+    /// command exits 23 saying so.
     Renew {
         #[command(flatten)]
         target: TargetArg,
@@ -1172,6 +1175,11 @@ enum LeaseCmd {
         duration: Option<String>,
     },
     /// End your lease and clean the target up (needs PANIO_LEASE, or --preempt).
+    ///
+    /// Releasing a lease that is already over is not an error: with a token
+    /// that names an ended lease it exits 0 and says how it ended (a new
+    /// holder is left alone); on a target nobody holds, with no token, it
+    /// exits 0 ("not leased").
     Release {
         #[command(flatten)]
         target: TargetArg,
@@ -1182,12 +1190,16 @@ enum LeaseCmd {
     /// Show who holds a target and for how long; never prints the token.
     ///
     /// With no target in a lab that has several, lists them all; a host that
-    /// cannot be reached is reported in its row.
+    /// cannot be reached is reported in its row. Not read-only: it cleans up
+    /// a lease that has expired. While a registered process is alive the
+    /// lease cannot idle out, so the idle countdown is replaced by
+    /// "kept alive by N process(es)" (`idle_left_secs` is null in JSON).
     Status {
         #[command(flatten)]
         target: TargetArg,
         /// Print JSON ({target, held, owner, expires_in_secs, idle_left_secs,
-        /// procs, last_change}; an array when listing every target).
+        /// procs, idle_secs, last_change}; an array when listing every
+        /// target).
         #[arg(long)]
         json: bool,
     },
@@ -1671,7 +1683,9 @@ fn run(cli: Cli) -> Result<()> {
         Command::Skill { name, path } => skills::run(name.as_deref(), path),
         Command::Daemons { cmd } => match cmd.unwrap_or(DaemonsCmd::List) {
             DaemonsCmd::List => cmd_daemons_list(),
-            DaemonsCmd::Stop { names, all, force } => cmd_daemons_stop(&names, all, force),
+            DaemonsCmd::Stop { names, all, force } => {
+                cmd_daemons_stop(lab_flag, &names, all, force)
+            }
             DaemonsCmd::Restart { names, all, stale } => {
                 cmd_daemons_restart(lab_flag, &names, all, stale)
             }
@@ -1878,9 +1892,10 @@ fn cmd_daemons_list() -> Result<()> {
     Ok(())
 }
 
-/// The per-target daemons a target lease covers. Host singletons (zigplug,
-/// cambrionix, netbootd) serve every target and are never checked.
-const LEASED_DAEMONS: [&str; 3] = ["serialcap", "hdmicap", "hid"];
+/// The per-target daemons a target lease covers: the capture daemons, hid, and
+/// a target's netboot session (netbootd's instance is its target). Host
+/// singletons (zigplug, cambrionix) serve every target and are never checked.
+const LEASED_DAEMONS: [&str; 4] = ["serialcap", "hdmicap", "hid", "netbootd"];
 
 /// A daemon left alone because its target is leased to someone else.
 struct LeaseSkip {
@@ -1959,13 +1974,88 @@ fn apply_lease_check<T>(
     Ok(allowed)
 }
 
+/// The target whose channel devices the untracked daemon `u` holds, if the
+/// lab names one. A serialcap orphan is matched on a serial channel's device,
+/// an hdmicap orphan on the video channel's.
+fn orphan_target(lab: &Lab, u: &daemons::Untracked) -> Option<String> {
+    lab.targets.iter().find_map(|(name, t)| {
+        let devices: Vec<&str> = if u.name == serial::DAEMON {
+            t.serial.iter().map(|ch| ch.device.as_str()).collect()
+        } else if u.name == video::DAEMON {
+            t.video
+                .as_ref()
+                .and_then(|v| v.device.as_deref())
+                .into_iter()
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let holds = u
+            .devices
+            .iter()
+            .any(|held| devices.iter().any(|want| daemons::same_device(held, want)));
+        holds.then(|| name.clone())
+    })
+}
+
+/// Drop the untracked capture daemons (orphans) of a target leased to someone
+/// else from a `daemons stop --all` stray sweep, one stderr line each, like the
+/// tracked daemons. Without a readable lab an orphan cannot be tied to a
+/// target, so the sweep warns and treats it as before.
+fn skip_leased_orphans(lab_flag: Option<&str>, strays: Vec<(i32, String)>) -> Vec<(i32, String)> {
+    let lab = load_for_read(lab_flag).ok();
+    let (kept, skipped) = partition_orphans(strays, lab.as_ref(), lease::foreign_holder);
+    for s in &skipped {
+        eprintln!("{}", s.line());
+    }
+    kept
+}
+
+/// [`skip_leased_orphans`] with the lease lookup passed in.
+fn partition_orphans(
+    strays: Vec<(i32, String)>,
+    lab: Option<&Lab>,
+    blocked: impl Fn(&str) -> Option<lease::Block>,
+) -> (Vec<(i32, String)>, Vec<LeaseSkip>) {
+    let Some(lab) = lab else {
+        for (pid, args) in &strays {
+            if let Some(u) = daemons::untracked_of(*pid, args) {
+                if LEASED_DAEMONS.contains(&u.name.as_str()) {
+                    eprintln!(
+                        "warning: no readable lab, so {} (pid {pid}) cannot be tied to a \
+                         target; stopping it without a lease check",
+                        u.name
+                    );
+                }
+            }
+        }
+        return (strays, Vec::new());
+    };
+    partition_leased(
+        strays,
+        |(pid, args)| match daemons::untracked_of(*pid, args) {
+            Some(u) => {
+                let target = orphan_target(lab, &u);
+                (u.name, target)
+            }
+            None => (String::new(), None),
+        },
+        blocked,
+    )
+}
+
 /// Stop daemons by name or wholesale: netbootd via its proper teardown
 /// (interface cleanup), everything else via SIGTERM, with an optional
 /// SIGKILL escalation after a grace period. A pid from a discovery file is
 /// signalled only while its command line still names the daemon (a recycled
 /// pid is skipped with a message), and a signal the OS refuses is reported
 /// and fails the command instead of being printed as if it had landed.
-fn cmd_daemons_stop(names: &[String], all: bool, force: bool) -> Result<()> {
+fn cmd_daemons_stop(
+    lab_flag: Option<&str>,
+    names: &[String],
+    all: bool,
+    force: bool,
+) -> Result<()> {
     if !all && names.is_empty() {
         bail!("name one or more daemons (see `panio daemons`), or pass --all");
     }
@@ -1973,14 +2063,20 @@ fn cmd_daemons_stop(names: &[String], all: bool, force: bool) -> Result<()> {
     let wanted =
         |name: &str, instance: Option<&str>| all || specs.iter().any(|s| s.matches(name, instance));
 
-    // netbootd first — its stop also restores the interface.
+    // Every lease check runs before anything is stopped, so a refusal leaves
+    // the host exactly as it was. The netboot sessions are checked per target
+    // like the capture daemons.
     let netboots = running_netboots();
-    for (target, _) in &netboots {
-        if wanted("netbootd", Some(target)) {
-            netboot::stop(target)?;
-            println!("netbootd stopped (target {target}).");
-        }
-    }
+    let netboot_targets: Vec<String> = netboots
+        .iter()
+        .filter(|(target, _)| wanted("netbootd", Some(target)))
+        .map(|(target, _)| target.clone())
+        .collect();
+    let netboot_targets = apply_lease_check(
+        netboot_targets,
+        |t| ("netbootd".to_string(), Some(t.clone())),
+        all,
+    )?;
 
     let discovered = daemons::list_discovered();
     let (selected, rest): (Vec<_>, Vec<_>) = discovered
@@ -2009,6 +2105,13 @@ fn cmd_daemons_stop(names: &[String], all: bool, force: bool) -> Result<()> {
         }
     }
 
+    // netbootd first: its stop also restores the interface. Every lease check
+    // above has passed by now.
+    for target in &netboot_targets {
+        netboot::stop(target)?;
+        println!("netbootd stopped (target {target}).");
+    }
+
     // (label, pid, command-line needles that prove the pid is still it)
     let mut victims: Vec<(String, i32, Vec<String>)> = discovered
         .iter()
@@ -2018,7 +2121,9 @@ fn cmd_daemons_stop(names: &[String], all: bool, force: bool) -> Result<()> {
     let mut known: Vec<i32> = victims.iter().map(|(_, pid, _)| *pid).collect();
     known.extend(skipped_pids);
     if all {
-        for (pid, args) in daemons::list_stray_helpers(&known) {
+        let strays = daemons::list_stray_helpers(&known);
+        let strays = skip_leased_orphans(lab_flag, strays);
+        for (pid, args) in strays {
             let short = args
                 .split_whitespace()
                 .take(4)
@@ -2195,7 +2300,7 @@ fn stop_capture_daemon_and_wait(name: &str, target: &str) -> Result<Option<i32>>
     let Some(pid) = old_pid else {
         return Ok(None);
     };
-    wait_for_daemon_exit(name, target, pid)?;
+    wait_for_daemon_exit(name, target, pid, true)?;
     Ok(Some(pid))
 }
 
@@ -2219,7 +2324,7 @@ pub(crate) fn serial_stop_local(target: &str, serials: &[model::SerialChannel]) 
     // set, and its own stop is the clean shutdown.
     if serial::daemon(target).is_none() {
         if let Some(orphan) = serial::untracked(serials) {
-            reap_untracked(&orphan)?;
+            reap_untracked(&orphan, false)?;
             return Ok(Stopped::Orphan(orphan));
         }
     }
@@ -2227,7 +2332,7 @@ pub(crate) fn serial_stop_local(target: &str, serials: &[model::SerialChannel]) 
     let status = serial::stop_daemon(target)?;
     if status.success() {
         if let Some(pid) = old_pid {
-            wait_for_daemon_exit(serial::DAEMON, target, pid)?;
+            wait_for_daemon_exit(serial::DAEMON, target, pid, false)?;
         }
     }
     Ok(Stopped::Daemon(status))
@@ -2238,7 +2343,7 @@ pub(crate) fn serial_stop_local(target: &str, serials: &[model::SerialChannel]) 
 pub(crate) fn video_stop_local(target: &str, device: Option<&str>) -> Result<Stopped> {
     if video::daemon(target).is_none() {
         if let Some(orphan) = device.and_then(video::untracked) {
-            reap_untracked(&orphan)?;
+            reap_untracked(&orphan, false)?;
             return Ok(Stopped::Orphan(orphan));
         }
     }
@@ -2246,7 +2351,7 @@ pub(crate) fn video_stop_local(target: &str, device: Option<&str>) -> Result<Sto
     let status = video::stop_daemon(target)?;
     if status.success() {
         if let Some(pid) = old_pid {
-            wait_for_daemon_exit(video::DAEMON, target, pid)?;
+            wait_for_daemon_exit(video::DAEMON, target, pid, false)?;
         }
     }
     Ok(Stopped::Daemon(status))
@@ -2254,7 +2359,9 @@ pub(crate) fn video_stop_local(target: &str, device: Option<&str>) -> Result<Sto
 
 /// Wait until a stopped daemon releases its device, then clean up its discovery
 /// file. HID uses a shared runtime name but several possible helper binaries.
-fn wait_for_daemon_exit(name: &str, target: &str, pid: i32) -> Result<()> {
+/// `replacing` says a new daemon is about to take the device, which only
+/// changes the wording of the failure.
+fn wait_for_daemon_exit(name: &str, target: &str, pid: i32, replacing: bool) -> Result<()> {
     let needles = daemon_process_needles(name);
     let pending = || {
         needles
@@ -2279,8 +2386,12 @@ fn wait_for_daemon_exit(name: &str, target: &str, pid: i32) -> Result<()> {
         }
         if pending() {
             bail!(
-                "old {name} daemon (pid {pid}) is still running after SIGKILL; not starting a \
-                 replacement that would race it for the device"
+                "old {name} daemon (pid {pid}) is still running after SIGKILL{}",
+                if replacing {
+                    "; not starting a replacement that would race it for the device"
+                } else {
+                    ""
+                }
             );
         }
     }
@@ -2297,7 +2408,7 @@ fn wait_for_daemon_exit(name: &str, target: &str, pid: i32) -> Result<()> {
 /// only that file recorded) is not available and a signal is the only handle
 /// left. See the "untracked daemons" note in daemons.rs for how a daemon ends
 /// up in this state.
-fn reap_untracked(u: &daemons::Untracked) -> Result<()> {
+fn reap_untracked(u: &daemons::Untracked, replacing: bool) -> Result<()> {
     let (pid, name) = (u.pid, u.name.clone());
     let still_it = || state::is_named_child_alive(pid, &name);
     if !still_it() {
@@ -2323,8 +2434,12 @@ fn reap_untracked(u: &daemons::Untracked) -> Result<()> {
     }
     if still_it() {
         bail!(
-            "untracked {name} daemon (pid {pid}) is still running after SIGKILL; not starting \
-             a replacement that would race it for the device"
+            "untracked {name} daemon (pid {pid}) is still running after SIGKILL{}",
+            if replacing {
+                "; not starting a replacement that would race it for the device"
+            } else {
+                ""
+            }
         );
     }
     Ok(())
@@ -2709,7 +2824,7 @@ fn cmd_setup(lab_flag: Option<&str>, host: Option<&str>, rust_only: bool) -> Res
     }
 }
 
-/// Resolve a runtime command's target: the given name, or the sole target.
+/// `panio lease acquire|renew|release|status`.
 fn lease_command(lab_flag: Option<&str>, cmd: LeaseCmd) -> Result<()> {
     let lab = load_for_read(lab_flag)?;
     match cmd {
@@ -2751,6 +2866,7 @@ fn lease_command(lab_flag: Option<&str>, cmd: LeaseCmd) -> Result<()> {
     }
 }
 
+/// Resolve a runtime command's target: the given name, or the sole target.
 fn resolve_single_target(lab: &Lab, name: Option<&str>) -> Result<String> {
     if let Some(n) = name {
         return Ok(n.to_string());
@@ -3995,6 +4111,11 @@ fn cmd_console(
         },
     );
     show_console(&target, &video, &url, &ports, view);
+    // This command returns as soon as the page is handed off, so it is not a
+    // live registered process: dashboard use does not hold the lease open.
+    if lease::caller_token().is_some() {
+        eprintln!("note: {DASHBOARD_IDLE_NOTE}");
+    }
     Ok(())
 }
 
@@ -4003,6 +4124,92 @@ fn cmd_console(
 fn remote_failure(status: i32, target: &str, message: String) -> anyhow::Error {
     let kind = error::Kind::from_exit_code(status).unwrap_or(error::Kind::Internal);
     error::PanioError::new(kind, message).target(target).into()
+}
+
+/// Said when a command hands the user a dashboard that panio then stops
+/// watching: its use does not count as lease activity.
+const DASHBOARD_IDLE_NOTE: &str = "the lease's idle timer is not refreshed by dashboard use; \
+     run `panio lease renew` or keep a panio command going";
+
+/// How often a remote console refreshes the lease: half the idle timeout, at
+/// most every 5 minutes, and never faster than every 10 seconds.
+fn keepalive_interval(idle_secs: u64) -> std::time::Duration {
+    std::time::Duration::from_secs((idle_secs / 2).clamp(10, 300))
+}
+
+/// A background thread that calls `touch` every `interval` until dropped.
+/// `touch` returns a refusal message when the lease no longer lets this caller
+/// in; the first one is printed on stderr, loudly, and the thread keeps going
+/// (the user may re-acquire).
+struct Keepalive {
+    stop: Option<std::sync::mpsc::Sender<()>>,
+}
+
+impl Keepalive {
+    fn spawn(
+        interval: std::time::Duration,
+        mut touch: impl FnMut() -> Option<String> + Send + 'static,
+    ) -> Keepalive {
+        let (stop, rx) = std::sync::mpsc::channel::<()>();
+        std::thread::spawn(move || {
+            let mut warned = false;
+            // A timeout is the tick; a message or a dropped sender is the stop.
+            while let Err(std::sync::mpsc::RecvTimeoutError::Timeout) = rx.recv_timeout(interval) {
+                if let Some(msg) = touch() {
+                    if !warned {
+                        warned = true;
+                        eprintln!(
+                            "warning: the lease keepalive was refused ({msg}); the console is \
+                             no longer holding the lease open"
+                        );
+                    }
+                }
+            }
+        });
+        Keepalive { stop: Some(stop) }
+    }
+}
+
+impl Drop for Keepalive {
+    fn drop(&mut self) {
+        // Dropping the sender wakes the thread out of its wait.
+        self.stop.take();
+    }
+}
+
+/// Keep the caller's lease on `target` alive while a remote console runs: one
+/// holder read (`video show`, which touches `last_used_at`) every
+/// [`keepalive_interval`]. `None` when the caller has no token or the target is
+/// not leased to anyone.
+fn lease_keepalive(lab: &Lab, target: &str, host_name: &str) -> Option<Keepalive> {
+    lease::caller_token()?;
+    let out = dispatch::run_subcommand(
+        lab,
+        target,
+        host_name,
+        &["lease", "status", "--json", "-t", target],
+    )
+    .ok()?;
+    let row: lease_cmd::StatusRow = serde_json::from_str(out.stdout.trim()).ok()?;
+    if out.status != 0 || row.held != Some(true) {
+        return None;
+    }
+    let interval = keepalive_interval(row.idle_secs.unwrap_or(lease::DEFAULT_IDLE));
+    let (lab, target, host_name) = (lab.clone(), target.to_string(), host_name.to_string());
+    Some(Keepalive::spawn(
+        interval,
+        move || match dispatch::run_subcommand(
+            &lab,
+            &target,
+            &host_name,
+            &["video", "show", &target],
+        ) {
+            Ok(out) if out.status == error::Kind::TargetLeased.exit_code() => {
+                Some(out.stderr.trim().to_string())
+            }
+            _ => None,
+        },
+    ))
 }
 
 fn remote_console(
@@ -4127,6 +4334,9 @@ fn remote_console(
         },
     );
     show_console(target, &video, &url, &ports, view);
+    // Dashboard input goes straight to the daemons and never touches panio on
+    // the host, so without this the lease would idle out under an active user.
+    let _keepalive = lease_keepalive(lab, target, host_name);
     println!("Tunnels to {host_name} open. Press Ctrl-C to close.");
     loop {
         std::thread::sleep(std::time::Duration::from_secs(1));
@@ -4714,7 +4924,7 @@ fn cmd_serial_watch(lab_flag: Option<&str>, target: Option<&str>, port: u16) -> 
     // keeps calling the channel stopped (#187).
     if replaced.is_none() {
         if let Some(orphan) = serial::untracked(&serials) {
-            reap_untracked(&orphan)?;
+            reap_untracked(&orphan, true)?;
         }
     }
     // `--port` wins; without it, the lab's fixed port (or OS-assigned).
@@ -5078,7 +5288,7 @@ fn video_cmd(lab_flag: Option<&str>, cmd: VideoCmd) -> Result<()> {
             // lock ("another hdmicap daemon is already running") while every
             // other command keeps calling the channel stopped (#187).
             else if let Some(orphan) = video::untracked(&device) {
-                reap_untracked(&orphan)?;
+                reap_untracked(&orphan, true)?;
             }
             let hid_input = ensure_video_source(&load_for_read(lab_flag)?, &target, &device)?;
             eprintln!("Starting video daemon for '{target}' ('{device}')…");
@@ -5224,6 +5434,9 @@ fn video_cmd(lab_flag: Option<&str>, cmd: VideoCmd) -> Result<()> {
                 refuse_remote_open(lab_flag, target.name())?;
             }
             let (target, _v) = video_runtime(lab_flag, target.name())?;
+            if lease::caller_token().is_some() {
+                eprintln!("note: {DASHBOARD_IDLE_NOTE}");
+            }
             let Some(daemon) = video::daemon(&target) else {
                 return Err(error::daemon_down(
                     video::DAEMON,
@@ -6362,7 +6575,7 @@ pub(crate) fn hid_stop_local(lab: &Lab, target: &str) -> Result<()> {
         .into());
     }
     if let Some(pid) = old_pid {
-        wait_for_daemon_exit(HID_DAEMON, target, pid)?;
+        wait_for_daemon_exit(HID_DAEMON, target, pid, false)?;
     }
     Ok(())
 }
@@ -6765,6 +6978,128 @@ mod tests {
         let (allowed, skipped) = lease_split(&[("zigplug", Some("pi5"))], false);
         assert_eq!(allowed.len(), 1);
         assert!(skipped.is_empty());
+    }
+
+    #[test]
+    fn a_leased_netboot_session_is_refused_by_name_and_skipped_by_all() {
+        let named = lease_split(&[("netbootd", Some("pi5"))], false);
+        assert!(named.0.is_empty());
+        assert_eq!(named.1[0].label(), "netbootd/pi5");
+        assert_eq!(
+            named.1[0].line(),
+            "skipped netbootd/pi5: leased to alice until 10:30 local"
+        );
+        let err = leased_refusal(&named.1[0]);
+        let pe = err.downcast_ref::<error::PanioError>().unwrap();
+        assert_eq!(pe.kind, error::Kind::TargetLeased);
+
+        let (allowed, skipped) = lease_split(
+            &[("netbootd", Some("nuc")), ("netbootd", Some("pi5"))],
+            false,
+        );
+        assert_eq!(
+            allowed,
+            vec![("netbootd".to_string(), Some("nuc".to_string()))]
+        );
+        assert_eq!(skipped.len(), 1);
+    }
+
+    fn orphan_lab() -> Lab {
+        toml::from_str(
+            r#"
+[targets.pi5]
+[[targets.pi5.serial]]
+name = "console"
+device = "/dev/ttyUSB-pi5"
+baud = 115200
+
+[targets.nuc]
+[targets.nuc.video]
+device = "/dev/video-nuc"
+"#,
+        )
+        .expect("lab parses")
+    }
+
+    const SERIAL_ORPHAN: &str = "/home/u/.local/libexec/panio/bin/serialcap daemon \
+        --interface console=/dev/ttyUSB-pi5@115200";
+    const VIDEO_ORPHAN: &str =
+        "/home/u/.local/libexec/panio/bin/hdmicap daemon --device /dev/video-nuc";
+
+    #[test]
+    fn orphans_are_matched_to_their_target_by_device() {
+        let lab = orphan_lab();
+        let s = daemons::untracked_of(10, SERIAL_ORPHAN).unwrap();
+        let v = daemons::untracked_of(11, VIDEO_ORPHAN).unwrap();
+        assert_eq!(orphan_target(&lab, &s).as_deref(), Some("pi5"));
+        assert_eq!(orphan_target(&lab, &v).as_deref(), Some("nuc"));
+        let other =
+            daemons::untracked_of(12, "/x/serialcap daemon --interface c=/dev/else@9600").unwrap();
+        assert_eq!(orphan_target(&lab, &other), None);
+    }
+
+    #[test]
+    fn stop_all_leaves_an_orphan_of_a_leased_target() {
+        let lab = orphan_lab();
+        let strays = vec![
+            (10, SERIAL_ORPHAN.to_string()),
+            (11, VIDEO_ORPHAN.to_string()),
+            (12, "/x/zigplug on 1".to_string()),
+        ];
+        let (kept, skipped) = partition_orphans(strays, Some(&lab), |t| {
+            (t == "pi5").then(|| held_by("alice"))
+        });
+        let pids: Vec<i32> = kept.iter().map(|(p, _)| *p).collect();
+        assert_eq!(pids, vec![11, 12]);
+        assert_eq!(skipped.len(), 1);
+        assert_eq!(
+            skipped[0].line(),
+            "skipped serialcap/pi5: leased to alice until 10:30 local"
+        );
+    }
+
+    #[test]
+    fn stop_all_without_a_lab_keeps_every_stray() {
+        let strays = vec![(10, SERIAL_ORPHAN.to_string())];
+        let (kept, skipped) = partition_orphans(strays, None, |_| Some(held_by("alice")));
+        assert_eq!(kept.len(), 1);
+        assert!(skipped.is_empty());
+    }
+
+    #[test]
+    fn keepalive_interval_is_half_the_idle_timeout_capped_at_five_minutes() {
+        let secs = |idle| keepalive_interval(idle).as_secs();
+        assert_eq!(secs(1800), 300);
+        assert_eq!(secs(400), 200);
+        assert_eq!(secs(60), 30);
+        assert_eq!(secs(2), 10);
+        assert_eq!(secs(86_400), 300);
+    }
+
+    #[test]
+    fn keepalive_ticks_until_dropped() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        let n = Arc::new(AtomicUsize::new(0));
+        let seen = n.clone();
+        let k = Keepalive::spawn(std::time::Duration::from_millis(20), move || {
+            seen.fetch_add(1, Ordering::SeqCst);
+            None
+        });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while n.load(Ordering::SeqCst) < 3 && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(n.load(Ordering::SeqCst) >= 3, "the keepalive never ticked");
+        drop(k);
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let after = n.load(Ordering::SeqCst);
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert_eq!(
+            n.load(Ordering::SeqCst),
+            after,
+            "it kept ticking after drop"
+        );
     }
 
     /// The read/mutating split of the spec table, row by row.

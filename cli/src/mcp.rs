@@ -727,6 +727,17 @@ fn cli_call(tool: &str, args: &Value) -> Result<CliCall, String> {
                     if v.is_empty() || v.starts_with('-') {
                         return Err(format!("{tool}: {name} must be a value, got {v:?}"));
                     }
+                    if *name == "wait" {
+                        // The call blocks the agent for the whole wait.
+                        let secs = crate::lease::parse_duration(&v)
+                            .map_err(|e| format!("{tool}: wait: {e}"))?;
+                        if secs > MAX_WAIT_SECS {
+                            return Err(format!(
+                                "{tool}: wait is limited to 5m here (got {v:?}); call it again \
+                                 to keep waiting"
+                            ));
+                        }
+                    }
                     argv.extend([s(flag), v]);
                 }
             }
@@ -749,6 +760,9 @@ fn cli_call(tool: &str, args: &Value) -> Result<CliCall, String> {
         other => Err(format!("unknown tool: {other}")),
     }
 }
+
+/// The longest `lease_acquire` may wait, in seconds: the call blocks the agent.
+const MAX_WAIT_SECS: u64 = 300;
 
 /// Validated `video_shot` arguments.
 #[derive(Debug, PartialEq)]
@@ -1046,7 +1060,7 @@ fn tool_list() -> Value {
                 ("owner", json!({ "type": "string", "description": "Display name for the holder (default: user@host of the machine running panio)." })),
                 ("duration", json!({ "type": "string", "description": "Total lease length (default 2h)." })),
                 ("idle", json!({ "type": "string", "description": "End the lease after this long with no command and no live process (default 30m)." })),
-                ("wait", json!({ "type": "string", "description": "If the target is held, keep trying for this long." })),
+                ("wait", json!({ "type": "string", "description": "If the target is held, keep trying for this long (at most 5m; call again to keep waiting)." })),
                 ("preempt", json!({ "type": "boolean", "description": "Take the target from its current holder; their leftovers are cleaned up first." })),
             ]),
             "annotations": { "readOnlyHint": false, "destructiveHint": false, "idempotentHint": true },
@@ -1075,14 +1089,16 @@ fn tool_list() -> Value {
         {
             "name": "lease_status",
             "description": "Show who holds a target and for how long, as JSON; never \
-                shows a token. Omit target to list every target's lease.",
+                shows a token. Omit target to list every target's lease. Not read-only: \
+                it cleans up a lease that has expired, stopping the old holder's \
+                leftovers.",
             "inputSchema": {
                 "type": "object",
                 "properties": { "target": { "type": "string", "description": "Target name, as listed by target_list. Omit to list all." } },
                 "required": [],
                 "additionalProperties": false,
             },
-            "annotations": { "readOnlyHint": true },
+            "annotations": { "readOnlyHint": false, "destructiveHint": false, "idempotentHint": true },
         },
     ])
 }
@@ -1336,6 +1352,7 @@ mod tests {
                 "lease_acquire",
                 "lease_renew",
                 "lease_release",
+                "lease_status",
             ]
             .contains(&name);
             assert_eq!(t["annotations"]["readOnlyHint"], !writes, "{name}");
@@ -1966,6 +1983,19 @@ echo 'warning: serialcap is not running; the log may be stale' >&2"#,
     }
 
     #[cfg(unix)]
+    #[test]
+    fn lease_acquire_wait_is_capped_at_five_minutes() {
+        let call =
+            |wait: &str| cli_call("lease_acquire", &json!({ "target": "pi5", "wait": wait }));
+        assert!(call("5m").is_ok());
+        assert!(call("300").is_ok());
+        for bad in ["6m", "301s", "1h", "soon"] {
+            assert!(call(bad).is_err(), "{bad} must be rejected");
+        }
+        let err = call("1h").unwrap_err();
+        assert!(err.contains("5m"), "{err}");
+    }
+
     #[test]
     fn lease_acquire_result_hides_token() {
         let dir = tempfile::tempdir().unwrap();

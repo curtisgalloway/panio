@@ -1164,7 +1164,7 @@ pub fn list_untracked() -> Vec<Untracked> {
 /// first, then through `canonicalize`: the lab names a capture device by its
 /// stable `/dev/v4l/by-path/…` symlink, and an orphan could have been started
 /// from a different spelling of the same device.
-fn same_device(a: &str, b: &str) -> bool {
+pub fn same_device(a: &str, b: &str) -> bool {
     if a == b {
         return true;
     }
