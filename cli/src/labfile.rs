@@ -387,6 +387,9 @@ impl LabFile {
                 ))
             })?;
         faults.insert(name, toml_edit::Value::from(pattern));
+        // A parsed `{ a = "x" }` keeps the space before `}` on its last
+        // value, so an appended rule would print as `"x" , b = …`.
+        faults.fmt();
         Ok(())
     }
 
@@ -1569,6 +1572,26 @@ mod tests {
         assert!(model::parse(&text).unwrap().targets["t"].serial[0]
             .faults
             .is_empty());
+    }
+
+    /// Appending to a `faults` table read back from disk keeps it tidy.
+    #[test]
+    fn serial_fault_appends_cleanly_to_a_loaded_table() {
+        let (_d, path) = tmp();
+        std::fs::write(
+            &path,
+            "[targets.t]\n[[targets.t.serial]]\nname = \"console\"\ndevice = \"/dev/a\"\n\
+             faults = { kp = \"Kernel panic\" }\n",
+        )
+        .unwrap();
+        let mut lf = LabFile::load(&path).unwrap();
+        lf.set_serial_fault("t", "console", "oops", "Oops:")
+            .unwrap();
+        let text = lf.doc.to_string();
+        assert!(
+            text.contains("faults = { kp = \"Kernel panic\", oops = \"Oops:\" }"),
+            "{text}"
+        );
     }
 
     #[test]
