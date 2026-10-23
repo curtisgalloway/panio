@@ -392,11 +392,23 @@ pub fn process_start_time(pid: i32) -> Option<u64> {
         return None;
     }
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    start_time_from_stat(&stat)
+}
+
+/// The start time in a Linux `/proc/<pid>/stat` line, or `None` for a zombie
+/// (state `Z`) or dead (`X`) process: it has exited and only waits for its
+/// parent to reap it, so it is not "the same running process" any more.
+#[cfg(any(target_os = "linux", test))]
+fn start_time_from_stat(stat: &str) -> Option<u64> {
     // The command name (field 2) may contain spaces and parentheses, so
     // parse from the last `)`. Fields after it start at field 3 (state);
     // starttime is field 22, i.e. index 19 of the remainder.
     let rest = &stat[stat.rfind(')')? + 1..];
-    rest.split_whitespace().nth(19)?.parse().ok()
+    let mut fields = rest.split_whitespace();
+    if matches!(fields.next()?, "Z" | "X") {
+        return None;
+    }
+    fields.nth(18)?.parse().ok()
 }
 
 #[cfg(target_os = "macos")]
@@ -690,7 +702,8 @@ pub fn kill_process_tree(pid: i32) {
 /// no `exec`, so we spawn, wait, and exit with the child's status. The
 /// observable difference is that this process stays alive as a parent while the
 /// child runs; stdio is inherited either way, so an interactive session behaves
-/// the same.
+/// the same. The child runs in a kill-on-close job object, so ending this
+/// process (as a lease cleanup does, by pid) ends the child too.
 #[cfg(unix)]
 pub fn exec_replace(cmd: &mut Command) -> std::io::Error {
     std::os::unix::process::CommandExt::exec(cmd)
@@ -698,10 +711,120 @@ pub fn exec_replace(cmd: &mut Command) -> std::io::Error {
 
 #[cfg(windows)]
 pub fn exec_replace(cmd: &mut Command) -> std::io::Error {
-    match cmd.status() {
+    // The child goes into a job object that kills its members when the last
+    // handle closes. The handle is held by this process until it exits, so
+    // when something terminates this panio (a lease cleanup does, by pid) the
+    // console tool dies with it instead of keeping the port open.
+    let job = job::Job::kill_on_close();
+    let mut child = match cmd.spawn() {
+        Ok(child) => child,
+        Err(e) => return e,
+    };
+    match job.and_then(|j| j.assign(&child).map(|()| j)) {
+        // Kept alive until `exit` below; the OS closes it with the process.
+        Ok(j) => std::mem::forget(j),
+        Err(e) => eprintln!(
+            "warning: could not put the console tool in a job object ({e}); \
+             ending this panio will not stop it"
+        ),
+    }
+    match child.wait() {
         // A passthrough (design D3): the console's own status.
         Ok(status) => std::process::exit(crate::error::shell_code(status)),
         Err(e) => e,
+    }
+}
+
+/// A Windows job object that kills every process in it when its last handle
+/// closes.
+#[cfg(windows)]
+mod job {
+    use std::os::windows::io::AsRawHandle;
+
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+        SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+
+    pub struct Job(HANDLE);
+
+    impl Job {
+        pub fn kill_on_close() -> std::io::Result<Job> {
+            // Safe: a null name and default security make an anonymous job; a
+            // null return is checked. The info struct is plain data, zeroed
+            // then given the one limit flag, with the size passed alongside.
+            unsafe {
+                let h = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+                if h.is_null() {
+                    return Err(std::io::Error::last_os_error());
+                }
+                let job = Job(h);
+                let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+                info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+                let ok = SetInformationJobObject(
+                    h,
+                    JobObjectExtendedLimitInformation,
+                    &info as *const _ as *const core::ffi::c_void,
+                    std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+                );
+                if ok == 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(job)
+            }
+        }
+
+        pub fn assign(&self, child: &std::process::Child) -> std::io::Result<()> {
+            // Safe: both handles are live (the child's is owned by `child`).
+            let ok = unsafe { AssignProcessToJobObject(self.0, child.as_raw_handle() as HANDLE) };
+            if ok == 0 {
+                Err(std::io::Error::last_os_error())
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    impl Drop for Job {
+        fn drop(&mut self) {
+            // Safe: the handle is owned here and closed once.
+            unsafe { CloseHandle(self.0) };
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        /// Closing the job's last handle (what the OS does when the owning
+        /// process dies) takes the assigned child with it.
+        #[test]
+        fn closing_the_job_kills_the_child() {
+            let mut child = std::process::Command::new("cmd")
+                .args(["/C", "ping -n 60 127.0.0.1 > NUL"])
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .expect("spawn a long child");
+            let job = Job::kill_on_close().expect("create the job");
+            job.assign(&child).expect("assign the child");
+            assert!(child.try_wait().unwrap().is_none(), "child must be running");
+            drop(job);
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            loop {
+                if child.try_wait().unwrap().is_some() {
+                    break;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "the child outlived its job"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+        }
     }
 }
 
@@ -731,10 +854,6 @@ mod tests {
         .expect("spawn sleeper")
     }
 
-    /// The daemon machinery lives or dies on these two: every `discover()`
-    /// asks whether a recorded pid is alive, and every `stop` terminates one.
-    /// Both are hand-written per platform — on Windows they are raw Win32
-    /// calls — so they get an actual process rather than a mocked one.
     #[test]
     fn local_hhmm_returns_clock_shape() {
         let s = local_hhmm(1_800_000_000).expect("local time");
@@ -746,6 +865,10 @@ mod tests {
         assert!(h < 24 && m < 60, "{s}");
     }
 
+    /// The daemon machinery lives or dies on these two: every `discover()`
+    /// asks whether a recorded pid is alive, and every `stop` terminates one.
+    /// Both are hand-written per platform — on Windows they are raw Win32
+    /// calls — so they get an actual process rather than a mocked one.
     #[test]
     fn pid_alive_tracks_a_real_process() {
         let mut child = spawn_sleeper();
@@ -934,6 +1057,37 @@ mod tests {
         let _ = child.wait();
         assert!(theirs.is_some());
         assert_ne!(theirs, ours);
+    }
+
+    fn stat_line(state: &str) -> String {
+        format!(
+            "42 (a (b) c) {state} 1 42 42 0 -1 4194560 100 0 0 0 1 2 0 0 20 0 1 0 987654 \
+             1000 10 18446744073709551615"
+        )
+    }
+
+    #[test]
+    fn linux_stat_start_time_is_none_for_zombies() {
+        assert_eq!(start_time_from_stat(&stat_line("S")), Some(987654));
+        assert_eq!(start_time_from_stat(&stat_line("R")), Some(987654));
+        assert_eq!(start_time_from_stat(&stat_line("Z")), None);
+        assert_eq!(start_time_from_stat(&stat_line("X")), None);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_real_zombie_has_no_start_time() {
+        let mut child = spawn_sleeper();
+        let pid = child.id() as i32;
+        assert!(process_start_time(pid).is_some());
+        try_signal_pid(pid, Signal::Kill).expect("kill our child");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        // Not yet waited on: the kernel keeps it as a zombie.
+        while process_start_time(pid).is_some() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert_eq!(process_start_time(pid), None);
+        let _ = child.wait();
     }
 
     #[test]
