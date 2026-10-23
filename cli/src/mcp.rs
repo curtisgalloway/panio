@@ -16,9 +16,11 @@
 //! The server holds no state of its own: the daemons hold the real state, so
 //! a restart loses nothing.
 
+use std::collections::HashMap;
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::Mutex;
 
 use anyhow::Result;
 
@@ -43,10 +45,11 @@ const INVALID_PARAMS: i64 = -32602;
 
 /// Run the server on this process's stdin/stdout until stdin closes.
 pub fn serve(lab_flag: Option<&str>) -> Result<()> {
-    let server = Server {
-        exe: std::env::current_exe()?,
-        lab: lab_flag.map(str::to_string),
-    };
+    let server = Server::with_env_token(
+        std::env::current_exe()?,
+        lab_flag.map(str::to_string),
+        std::env::var("PANIO_LEASE").ok().filter(|t| !t.is_empty()),
+    );
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
     server.run(stdin.lock(), stdout.lock())
@@ -57,9 +60,30 @@ struct Server {
     exe: PathBuf,
     /// The `--lab` the server was started with, passed on to every child.
     lab: Option<String>,
+    /// The `PANIO_LEASE` in the server's own environment when it started: a
+    /// token a harness handed in, used for every target that has no token
+    /// from `lease_acquire`.
+    env_token: Option<String>,
+    /// Lease tokens minted by `lease_acquire`, per target. One server is one
+    /// holder. Tokens never appear in a tool result.
+    tokens: Mutex<HashMap<String, String>>,
 }
 
 impl Server {
+    #[cfg(test)]
+    fn new(exe: PathBuf, lab: Option<String>) -> Self {
+        Self::with_env_token(exe, lab, None)
+    }
+
+    fn with_env_token(exe: PathBuf, lab: Option<String>, env_token: Option<String>) -> Self {
+        Self {
+            exe,
+            lab,
+            env_token,
+            tokens: Mutex::new(HashMap::new()),
+        }
+    }
+
     fn run(&self, input: impl BufRead, mut output: impl Write) -> Result<()> {
         for line in input.lines() {
             let line = line?;
@@ -129,6 +153,20 @@ impl Server {
                 let req = ShotRequest::from_args(&args)?;
                 Ok(self.video_shot(&req))
             }
+            "lease_acquire" => {
+                let call = cli_call(name, &args)?;
+                Ok(self.lease_acquire(&call))
+            }
+            "lease_release" => {
+                let call = cli_call(name, &args)?;
+                let result = self.run_cli_tool(&call);
+                if result["isError"] == false {
+                    if let Some(t) = &call.target {
+                        self.tokens.lock().unwrap().remove(t);
+                    }
+                }
+                Ok(result)
+            }
             other => {
                 let call = cli_call(other, &args)?;
                 Ok(self.run_cli_tool(&call))
@@ -168,7 +206,7 @@ impl Server {
             Err(e) => return tool_error(&format!("creating a temp dir for the shot: {e}")),
         };
         let png = dir.path().join("shot.png");
-        let out = match self.run_child(&req.argv(&png)) {
+        let out = match self.run_child(&req.argv(&png), Some(&req.target)) {
             Ok(out) => out,
             Err(e) => return tool_error(&format!("running panio video shot: {e}")),
         };
@@ -204,7 +242,7 @@ impl Server {
     /// as text. stderr rides along after stdout when there is any, because
     /// it carries warnings an agent should see (a stale serial log, say).
     fn run_cli_tool(&self, call: &CliCall) -> Value {
-        let out = match self.run_child(&call.argv) {
+        let out = match self.run_child(&call.argv, call.target.as_deref()) {
             Ok(out) => out,
             Err(e) => return tool_error(&format!("running panio: {e}")),
         };
@@ -212,25 +250,7 @@ impl Server {
         let stderr = String::from_utf8_lossy(&out.stderr);
         let verb = call.verb();
         if !out.status.success() {
-            let code = crate::error::shell_code(out.status);
-            let unknown = call.writes
-                && [Kind::Unreachable, Kind::Timeout]
-                    .iter()
-                    .any(|k| k.exit_code() == code);
-            let mut text = format!("panio {verb} exited {code}");
-            if unknown {
-                text.push_str(
-                    "\nOutcome unknown: the command may or may not have run. \
-                     Check the target's state before repeating it.",
-                );
-            }
-            for part in [stdout.trim_end(), stderr.trim_end()] {
-                if !part.is_empty() {
-                    text.push('\n');
-                    text.push_str(part);
-                }
-            }
-            return tool_error(&text);
+            return failure(call, &out);
         }
         let mut text = stdout.trim_end().to_string();
         if text.is_empty() {
@@ -243,10 +263,48 @@ impl Server {
         tool_text(&text)
     }
 
-    /// Run this binary with `args`, never letting it near the protocol
+    /// `lease_acquire`: run `panio lease acquire --json`, keep the token it
+    /// prints, and tell the agent the lease is held without the token. Output
+    /// that does not parse is an error and is never echoed, since it may be
+    /// the token.
+    fn lease_acquire(&self, call: &CliCall) -> Value {
+        let out = match self.run_child(&call.argv, call.target.as_deref()) {
+            Ok(out) => out,
+            Err(e) => return tool_error(&format!("running panio: {e}")),
+        };
+        if !out.status.success() {
+            return failure(call, &out);
+        }
+        let parsed: Option<(String, String, String)> = serde_json::from_slice::<Value>(&out.stdout)
+            .ok()
+            .and_then(|v| {
+                let get = |k: &str| v.get(k).and_then(Value::as_str).map(str::to_string);
+                Some((get("token")?, get("owner")?, get("expires_at")?))
+            })
+            .filter(|(token, _, _)| !token.is_empty());
+        let (Some(target), Some((token, owner, expires_at))) = (call.target.as_ref(), parsed)
+        else {
+            return tool_error(
+                "panio lease acquire succeeded but its output could not be read, so no \
+                 lease token was kept. Check lease_status, and release with lease_release \
+                 (preempt: true) if the lease is yours.",
+            );
+        };
+        self.tokens.lock().unwrap().insert(target.clone(), token);
+        tool_text(&format!(
+            "Lease held on {target} by {owner} until {expires_at}. This server keeps \
+             the lease token and applies it to this target's commands automatically; \
+             renew it with lease_renew and end it with lease_release."
+        ))
+    }
+
+    /// The child process for `args`, never letting it near the protocol
     /// stream: stdin closed (it must not read our requests), stdout and
-    /// stderr captured.
-    fn run_child(&self, args: &[String]) -> std::io::Result<std::process::Output> {
+    /// stderr captured. `PANIO_LEASE` is set for `target` from the tokens this
+    /// server holds, else from the server's own starting environment, else
+    /// removed, so the server's environment never leaks a token meant for
+    /// another target.
+    fn child_command(&self, args: &[String], target: Option<&str>) -> Command {
         let mut cmd = Command::new(&self.exe);
         if let Some(lab) = &self.lab {
             cmd.arg("--lab").arg(lab);
@@ -255,8 +313,21 @@ impl Server {
             .args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output()
+            .stderr(Stdio::piped());
+        let held = target.and_then(|t| self.tokens.lock().unwrap().get(t).cloned());
+        match held.or_else(|| self.env_token.clone()) {
+            Some(token) => cmd.env("PANIO_LEASE", token),
+            None => cmd.env_remove("PANIO_LEASE"),
+        };
+        cmd
+    }
+
+    fn run_child(
+        &self,
+        args: &[String],
+        target: Option<&str>,
+    ) -> std::io::Result<std::process::Output> {
+        self.child_command(args, target).output()
     }
 }
 
@@ -267,6 +338,34 @@ struct CliCall {
     /// The command changes the target (input, power). A write whose outcome
     /// is unknown must not be retried blindly, so its error says so.
     writes: bool,
+    /// The target the command acts on, for choosing its lease token.
+    target: Option<String>,
+}
+
+/// A child that exited nonzero, as a tool error: exit code, the unknown-outcome
+/// warning for a write that may have run, then its stdout and stderr.
+fn failure(call: &CliCall, out: &std::process::Output) -> Value {
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let code = crate::error::shell_code(out.status);
+    let unknown = call.writes
+        && [Kind::Unreachable, Kind::Timeout]
+            .iter()
+            .any(|k| k.exit_code() == code);
+    let mut text = format!("panio {} exited {code}", call.verb());
+    if unknown {
+        text.push_str(
+            "\nOutcome unknown: the command may or may not have run. \
+             Check the target's state before repeating it.",
+        );
+    }
+    for part in [stdout.trim_end(), stderr.trim_end()] {
+        if !part.is_empty() {
+            text.push('\n');
+            text.push_str(part);
+        }
+    }
+    tool_error(&text)
 }
 
 impl CliCall {
@@ -335,13 +434,21 @@ const MAX_PACE_MS: u64 = 10_000;
 fn cli_call(tool: &str, args: &Value) -> Result<CliCall, String> {
     let a = Args { tool, v: args };
     let s = |x: &str| x.to_string();
+    let target = a.target().ok();
     let read = |argv: Vec<String>| {
         Ok(CliCall {
             argv,
             writes: false,
+            target: target.clone(),
         })
     };
-    let write = |argv: Vec<String>| Ok(CliCall { argv, writes: true });
+    let write = |argv: Vec<String>| {
+        Ok(CliCall {
+            argv,
+            writes: true,
+            target: target.clone(),
+        })
+    };
     match tool {
         "video_read" => {
             let mut argv = vec![s("video"), s("read"), s("-t"), a.target()?];
@@ -579,6 +686,43 @@ fn cli_call(tool: &str, args: &Value) -> Result<CliCall, String> {
             } else {
                 write(argv)
             }
+        }
+        "lease_acquire" | "lease_renew" | "lease_release" => {
+            let verb = &tool["lease_".len()..];
+            let mut argv = vec![s("lease"), s(verb), s("-t"), a.target()?];
+            let flags: &[(&str, &str)] = match verb {
+                "acquire" => &[
+                    ("owner", "--owner"),
+                    ("duration", "--duration"),
+                    ("idle", "--idle"),
+                    ("wait", "--wait"),
+                ],
+                "renew" => &[("duration", "--duration")],
+                _ => &[],
+            };
+            for (name, flag) in flags {
+                if let Some(v) = a.opt_str(name)? {
+                    if v.is_empty() || v.starts_with('-') {
+                        return Err(format!("{tool}: {name} must be a value, got {v:?}"));
+                    }
+                    argv.extend([s(flag), v]);
+                }
+            }
+            if verb != "renew" && a.opt_bool("preempt")?.unwrap_or(false) {
+                argv.push(s("--preempt"));
+            }
+            if verb == "acquire" {
+                argv.push(s("--json"));
+            }
+            write(argv)
+        }
+        "lease_status" => {
+            let mut argv = vec![s("lease"), s("status")];
+            if args.get("target").is_some_and(|t| !t.is_null()) {
+                argv.extend([s("-t"), a.target()?]);
+            }
+            argv.push(s("--json"));
+            read(argv)
         }
         other => Err(format!("unknown tool: {other}")),
     }
@@ -866,6 +1010,58 @@ fn tool_list() -> Value {
             "inputSchema": schema(&[("level", level_schema())]),
             "annotations": { "readOnlyHint": false, "destructiveHint": true, "idempotentHint": false },
         },
+        {
+            "name": "lease_acquire",
+            "description": "Reserve a whole target for this MCP server so no other agent \
+                changes it while you work. One MCP server is one holder: the server keeps \
+                the lease token itself and applies it to this target's commands \
+                automatically; the result never shows the token. Fails (exit 23) when \
+                someone else holds the target: set wait to keep trying for a while, or \
+                preempt to take it from the holder, who is told on its next command. \
+                Durations look like 90s, 30m, 2h (at most 24h). Calling it again while \
+                you hold the lease renews it.",
+            "inputSchema": schema(&[
+                ("owner", json!({ "type": "string", "description": "Display name for the holder (default: user@host of the machine running panio)." })),
+                ("duration", json!({ "type": "string", "description": "Total lease length (default 2h)." })),
+                ("idle", json!({ "type": "string", "description": "End the lease after this long with no command and no live process (default 30m)." })),
+                ("wait", json!({ "type": "string", "description": "If the target is held, keep trying for this long." })),
+                ("preempt", json!({ "type": "boolean", "description": "Take the target from its current holder; their leftovers are cleaned up first." })),
+            ]),
+            "annotations": { "readOnlyHint": false, "destructiveHint": false, "idempotentHint": true },
+        },
+        {
+            "name": "lease_renew",
+            "description": "Extend the lease this server holds on a target. The server \
+                applies its stored token itself. Fails (exit 23) if the lease already \
+                ended or was taken; the message says why.",
+            "inputSchema": schema(&[
+                ("duration", json!({ "type": "string", "description": "New length from now (default: the lease's original duration)." })),
+            ]),
+            "annotations": { "readOnlyHint": false, "destructiveHint": false, "idempotentHint": true },
+        },
+        {
+            "name": "lease_release",
+            "description": "End the lease this server holds on a target and clean the \
+                target up (daemons the lease started are stopped). The server forgets \
+                its token for the target. Set preempt to end someone else's lease \
+                instead; use it only when the user said to.",
+            "inputSchema": schema(&[
+                ("preempt", json!({ "type": "boolean", "description": "End another holder's lease without its token." })),
+            ]),
+            "annotations": { "readOnlyHint": false, "destructiveHint": true, "idempotentHint": false },
+        },
+        {
+            "name": "lease_status",
+            "description": "Show who holds a target and for how long, as JSON; never \
+                shows a token. Omit target to list every target's lease.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "target": { "type": "string", "description": "Target name, as listed by target_list. Omit to list all." } },
+                "required": [],
+                "additionalProperties": false,
+            },
+            "annotations": { "readOnlyHint": true },
+        },
     ])
 }
 
@@ -944,7 +1140,7 @@ mod tests {
     use super::*;
 
     fn server(exe: PathBuf, lab: Option<String>) -> Server {
-        Server { exe, lab }
+        Server::new(exe, lab)
     }
 
     /// Drive the server over in-memory stdin/stdout, one request per line.
@@ -1086,13 +1282,17 @@ mod tests {
                 "power_state",
                 "power_on",
                 "power_off",
-                "power_cycle"
+                "power_cycle",
+                "lease_acquire",
+                "lease_renew",
+                "lease_release",
+                "lease_status"
             ]
         );
         for t in tools {
             let name = t["name"].as_str().unwrap();
             assert_eq!(t["inputSchema"]["type"], "object", "{name}");
-            if name != "target_list" {
+            if name != "target_list" && name != "lease_status" {
                 assert!(
                     t["inputSchema"]["required"]
                         .as_array()
@@ -1111,6 +1311,9 @@ mod tests {
                 "power_on",
                 "power_off",
                 "power_cycle",
+                "lease_acquire",
+                "lease_renew",
+                "lease_release",
             ]
             .contains(&name);
             assert_eq!(t["annotations"]["readOnlyHint"], !writes, "{name}");
@@ -1171,6 +1374,10 @@ mod tests {
             ("power_on", json!({ "target": "pi5", "level": "hard" })),
             ("power_off", json!({ "target": "pi5", "level": "default" })),
             ("power_cycle", json!({ "target": "pi5", "level": "hard" })),
+            ("lease_acquire", json!({ "target": "pi5" })),
+            ("lease_renew", json!({ "target": "pi5" })),
+            ("lease_release", json!({ "target": "pi5" })),
+            ("lease_status", json!({})),
         ]
     }
 
@@ -1616,5 +1823,173 @@ echo 'warning: serialcap is not running; the log may be stale' >&2"#,
         let text = result["content"][0]["text"].as_str().unwrap();
         assert!(text.contains("exited 6"), "{text}");
         assert!(text.contains("no video daemon running"), "{text}");
+    }
+
+    fn env_of(cmd: &Command, key: &str) -> Option<Option<String>> {
+        cmd.get_envs()
+            .find(|(k, _)| *k == std::ffi::OsStr::new(key))
+            .map(|(_, v)| v.map(|v| v.to_string_lossy().into_owned()))
+    }
+
+    #[test]
+    fn child_gets_token_for_its_target() {
+        let s = Server::with_env_token(PathBuf::from("/nonexistent"), None, None);
+        s.tokens
+            .lock()
+            .unwrap()
+            .insert("pi5".into(), "tok-pi5".into());
+        s.tokens
+            .lock()
+            .unwrap()
+            .insert("nuc".into(), "tok-nuc".into());
+        let args = vec!["power-state".to_string()];
+        let c = s.child_command(&args, Some("pi5"));
+        assert_eq!(env_of(&c, "PANIO_LEASE"), Some(Some("tok-pi5".into())));
+        let c = s.child_command(&args, Some("nuc"));
+        assert_eq!(env_of(&c, "PANIO_LEASE"), Some(Some("tok-nuc".into())));
+        let c = s.child_command(&args, Some("other"));
+        assert_eq!(env_of(&c, "PANIO_LEASE"), Some(None));
+        let c = s.child_command(&args, None);
+        assert_eq!(env_of(&c, "PANIO_LEASE"), Some(None));
+    }
+
+    #[test]
+    fn initial_env_token_used_when_none_acquired() {
+        let s = Server::with_env_token(PathBuf::from("/nonexistent"), None, Some("env-tok".into()));
+        s.tokens
+            .lock()
+            .unwrap()
+            .insert("pi5".into(), "tok-pi5".into());
+        let args = vec!["power-state".to_string()];
+        let c = s.child_command(&args, Some("pi5"));
+        assert_eq!(env_of(&c, "PANIO_LEASE"), Some(Some("tok-pi5".into())));
+        let c = s.child_command(&args, Some("nuc"));
+        assert_eq!(env_of(&c, "PANIO_LEASE"), Some(Some("env-tok".into())));
+        let c = s.child_command(&args, None);
+        assert_eq!(env_of(&c, "PANIO_LEASE"), Some(Some("env-tok".into())));
+    }
+
+    #[test]
+    fn tool_list_includes_lease_tools() {
+        let tools = tool_list();
+        let names: Vec<&str> = tools
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap())
+            .collect();
+        for n in [
+            "lease_acquire",
+            "lease_renew",
+            "lease_release",
+            "lease_status",
+        ] {
+            assert!(names.contains(&n), "{n} missing");
+        }
+        let status = tools
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == "lease_status")
+            .unwrap();
+        assert!(status["inputSchema"]["required"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn lease_tools_build_the_lease_cli_argv() {
+        use clap::Parser;
+        let acq = cli_call(
+            "lease_acquire",
+            &json!({ "target": "pi5", "owner": "agent", "duration": "1h", "idle": "10m", "wait": "30s", "preempt": true }),
+        )
+        .unwrap();
+        assert_eq!(
+            acq.argv,
+            [
+                "lease",
+                "acquire",
+                "-t",
+                "pi5",
+                "--owner",
+                "agent",
+                "--duration",
+                "1h",
+                "--idle",
+                "10m",
+                "--wait",
+                "30s",
+                "--preempt",
+                "--json"
+            ]
+        );
+        assert!(acq.writes);
+        assert_eq!(acq.target.as_deref(), Some("pi5"));
+        let st = cli_call("lease_status", &json!({})).unwrap();
+        assert_eq!(st.argv, ["lease", "status", "--json"]);
+        assert_eq!(st.target, None);
+        assert!(!st.writes);
+        for (tool, args) in [
+            ("lease_renew", json!({ "target": "pi5", "duration": "1h" })),
+            ("lease_release", json!({ "target": "pi5", "preempt": true })),
+            ("lease_status", json!({ "target": "pi5" })),
+        ] {
+            let call = cli_call(tool, &args).unwrap();
+            let mut argv = vec!["panio", "--lab", "/l.toml", "--json-errors"];
+            argv.extend(call.argv.iter().map(String::as_str));
+            crate::Cli::try_parse_from(&argv).unwrap_or_else(|e| panic!("{tool}: {e}"));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn lease_acquire_result_hides_token() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = fake_panio(
+            dir.path(),
+            r#"echo '{"token":"SECRET-TOKEN-123","owner":"agent@bench1","expires_at":"2026-10-23T12:00:00Z","expires_in_secs":7200}'"#,
+        );
+        let s = server(exe, None);
+        let result = call(&s, "lease_acquire", json!({ "target": "pi5" }));
+        assert_eq!(result["isError"], false);
+        let text = result["content"][0]["text"].as_str().unwrap();
+        assert!(!text.contains("SECRET-TOKEN-123"), "{text}");
+        assert!(text.contains("agent@bench1"), "{text}");
+        assert!(text.contains("2026-10-23T12:00:00Z"), "{text}");
+        assert_eq!(
+            s.tokens.lock().unwrap().get("pi5").map(String::as_str),
+            Some("SECRET-TOKEN-123")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn lease_acquire_unparseable_output_is_an_error_without_stdout() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = fake_panio(dir.path(), "echo SECRET-RAW-OUTPUT");
+        let s = server(exe, None);
+        let result = call(&s, "lease_acquire", json!({ "target": "pi5" }));
+        assert_eq!(result["isError"], true);
+        let text = result["content"][0]["text"].as_str().unwrap();
+        assert!(!text.contains("SECRET-RAW-OUTPUT"), "{text}");
+        assert!(s.tokens.lock().unwrap().is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn lease_release_drops_the_token_only_on_success() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = server(fake_panio(dir.path(), "exit 23"), None);
+        s.tokens.lock().unwrap().insert("pi5".into(), "t".into());
+        let result = call(&s, "lease_release", json!({ "target": "pi5" }));
+        assert_eq!(result["isError"], true);
+        assert!(s.tokens.lock().unwrap().contains_key("pi5"));
+        let s2 = server(fake_panio(dir.path(), "exit 0"), None);
+        s2.tokens.lock().unwrap().insert("pi5".into(), "t".into());
+        let result = call(&s2, "lease_release", json!({ "target": "pi5" }));
+        assert_eq!(result["isError"], false);
+        assert!(s2.tokens.lock().unwrap().is_empty());
     }
 }

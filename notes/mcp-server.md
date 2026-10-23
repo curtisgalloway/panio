@@ -309,6 +309,28 @@ Done 2026-10-02: `video_read`, `serial_log`, `serial_send`, `hid_send`,
   (helper missing, daemon down, no channel). Not yet run against real serial
   or HID hardware.
 
+### Lease tools (#360)
+
+`lease_acquire`, `lease_renew`, `lease_release` and `lease_status` wrap
+`panio lease acquire|renew|release|status` (see
+[target-leases.md](target-leases.md)) and run as children like every other
+tool, so remote dispatch is unchanged.
+
+- **One MCP server is one holder.** The server keeps the token `lease_acquire`
+  mints, per target, in memory, and sets `PANIO_LEASE` on every child it runs
+  for that target. The agent never sees the token: the result says the lease is
+  held, by whom and until when. `acquire` runs with `--json`; output that does
+  not parse is a tool error and is never echoed.
+- A child for a target with no stored token gets the `PANIO_LEASE` the server
+  itself started with (a harness can hand a server an existing lease), else the
+  variable is removed from the child's environment so a token never leaks to
+  another target.
+- A successful `lease_release` forgets the target's token. A refusal (exit 23,
+  "your lease ... ended") leaves the map alone for the agent to read and decide.
+  `renew` and `release` with no stored token still run the child, which refuses.
+- `acquire`, `renew` and `release` are write tools; `lease_status` is read-only
+  and its target is optional (omitted, it lists every target).
+
 ### 5. Measure against the skill
 
 Add an **MCP** condition beside Cold / Warm / Preloaded in
