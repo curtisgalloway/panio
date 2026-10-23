@@ -16,6 +16,7 @@ and power-cycle it, with no person at the bench.
 
 | Doc | What it covers |
 |---|---|
+| [**Recommended hardware**](recommended-hardware.md) | **What to buy:** a first choice and runners-up for video/HID, serial, network, power and USB Ethernet, by use case. |
 | [Tested hardware](hardware.md) | Bench hardware each subsystem is verified with, with purchase links. |
 | [Demos](demos.md) | Recorded runs from the CI rack, each capture beside the agent's transcript. |
 

@@ -1,5 +1,9 @@
 # Tested hardware
 
+> **Choosing what to buy?** Start with [Recommended hardware](recommended-hardware.md): a
+> short list of first choices by use case. This page is the full list of everything panio has
+> been tested with.
+
 Links go to the exact items purchased (not an endorsement). Equivalents should work if they
 meet the requirement in each subsystem guide: usually **UVC** (driverless USB video) for video,
 **FTDI** (USB-serial with DTR) for serial and DTR, **CC2652** (TI Zigbee chip) for Zigbee.
