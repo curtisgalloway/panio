@@ -617,3 +617,81 @@ fn lease_file_token_reaches_hooks_and_empty_file_is_refused() {
     );
     assert_eq!(o.status.code(), Some(109), "{}", stderr(&o));
 }
+
+#[test]
+fn ended_lease_token_refuses_mutating() {
+    let dir = scratch("ended_token_refuses", FULL_LAB);
+    let tok = acquire(&dir);
+    let o = panio(&dir, &["lease", "release", "dut"], Some(&tok));
+    assert_eq!(o.status.code(), Some(0), "{o:?}");
+    let o = panio(&dir, &["power", "on", "dut"], Some(&tok));
+    assert_eq!(o.status.code(), Some(23), "{o:?}");
+    let err = stderr(&o);
+    assert!(err.contains("released"), "{err}");
+    assert!(err.contains("PANIO_LEASE"), "{err}");
+    assert!(!err.contains(&tok), "token must not be printed: {err}");
+}
+
+#[test]
+fn expired_lease_token_refuses_after_cleanup() {
+    let dir = scratch("expired_token_refuses", FULL_LAB);
+    write_lease(&dir, "old-token", now() - 10, now() - 20);
+    let o = panio(&dir, &["power", "on", "dut"], Some("old-token"));
+    assert_eq!(o.status.code(), Some(23), "{o:?}");
+    assert!(stderr(&o).contains("expired"), "{}", stderr(&o));
+    assert!(!lease_path(&dir).exists());
+    assert!(history(&dir).contains("\"expired\""), "{}", history(&dir));
+}
+
+#[test]
+fn force_released_token_is_told() {
+    let dir = scratch("force_released_told", FULL_LAB);
+    let old = acquire(&dir);
+    let o = panio(&dir, &["lease", "release", "dut", "--preempt"], None);
+    assert_eq!(o.status.code(), Some(0), "{o:?}");
+    let o = panio(&dir, &["power", "on", "dut"], Some(&old));
+    assert_eq!(o.status.code(), Some(23), "{o:?}");
+    assert!(stderr(&o).contains("forced release"), "{}", stderr(&o));
+}
+
+#[test]
+fn ended_lease_token_warns_on_read() {
+    let dir = scratch("ended_token_warns_read", FULL_LAB);
+    let tok = acquire(&dir);
+    let o = panio(&dir, &["lease", "release", "dut"], Some(&tok));
+    assert_eq!(o.status.code(), Some(0), "{o:?}");
+    let o = panio(&dir, &["power-state", "dut"], Some(&tok));
+    assert_eq!(o.status.code(), Some(0), "{o:?}");
+    let err = stderr(&o);
+    assert!(err.contains("warning:"), "{err}");
+    assert!(err.contains("released"), "{err}");
+    assert!(!err.contains(&tok), "{err}");
+}
+
+#[test]
+fn unknown_token_warns_and_runs() {
+    let dir = scratch("unknown_token_warns", FULL_LAB);
+    for args in [&["power", "on", "dut"][..], &["power-state", "dut"][..]] {
+        let o = panio(&dir, args, Some("never-a-lease-here"));
+        assert_eq!(o.status.code(), Some(0), "{args:?} {o:?}");
+        assert!(
+            stderr(&o).contains("warning: PANIO_LEASE is set but 'dut' is not leased"),
+            "{}",
+            stderr(&o)
+        );
+    }
+    assert!(!lease_path(&dir).exists());
+}
+
+#[test]
+fn ended_token_can_reacquire() {
+    let dir = scratch("ended_token_reacquire", FULL_LAB);
+    let tok = acquire(&dir);
+    let o = panio(&dir, &["lease", "release", "dut"], Some(&tok));
+    assert_eq!(o.status.code(), Some(0), "{o:?}");
+    let o = panio(&dir, &["lease", "acquire", "dut"], Some(&tok));
+    assert_eq!(o.status.code(), Some(0), "{o:?}");
+    let new = stdout(&o).trim().to_string();
+    assert_eq!(new.len(), 32);
+    assert_ne!(new, tok);
+}

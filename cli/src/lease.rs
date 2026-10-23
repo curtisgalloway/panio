@@ -143,6 +143,11 @@ impl Store {
         Store { dir }
     }
 
+    /// Whether a history file exists, without creating anything.
+    pub fn history_exists(&self) -> bool {
+        self.dir.join("lease-history.jsonl").exists()
+    }
+
     /// Whether a lease record file exists, without creating anything.
     pub fn record_exists(&self) -> bool {
         self.dir.join("lease.json").exists()
@@ -528,27 +533,62 @@ pub fn caller_token() -> Option<String> {
         .filter(|t| !t.is_empty())
 }
 
-/// Why the caller's token stopped working, if the history knows: the message
-/// for a holder that was preempted, force-released or expired.
+/// The text for a lease that has ended, for a caller still carrying its token.
+fn ended_message(target: &str, at: u64, reason: &str) -> String {
+    format!(
+        "your lease on '{target}' ended at {} ({reason}); run `panio lease acquire {target}` \
+         to take it again, or unset PANIO_LEASE to run without a lease",
+        clock(at)
+    )
+}
+
+/// Why the caller's token stopped working, if the history knows.
 fn lost_lease_message(lock: &StoreLock, token: Option<&str>, target: &str) -> Option<String> {
     let e = lock.history_for_token(token?)?;
-    let at = clock(e.at);
-    match e.how.as_str() {
-        "preempted" => Some(match &e.new_owner {
-            Some(o) => format!(
-                "your lease on '{target}' was preempted by {o} at {at}; \
-                 run `panio lease acquire {target} --wait 30m` to get it back"
-            ),
-            None => format!(
-                "your lease on '{target}' was ended by a forced release at {at}; \
-                 run `panio lease acquire {target}` to take a new one"
-            ),
-        }),
-        "expired" => Some(format!(
-            "your lease on '{target}' expired (found expired at {at}); \
-             run `panio lease acquire {target}` to take a new one"
-        )),
-        _ => None,
+    let reason = match (e.how.as_str(), &e.new_owner) {
+        ("preempted", Some(o)) => format!("preempted by {o}"),
+        ("preempted", None) => "ended by a forced release".to_string(),
+        ("released", _) => "released".to_string(),
+        ("expired", _) => "found expired".to_string(),
+        _ => return None,
+    };
+    Some(ended_message(target, e.at, &reason))
+}
+
+/// The target has no lease now. Tell a caller whose token names one that
+/// ended: refuse a mutating command, warn on a read. Any other token only
+/// gets a warning, since a holder legitimately keeps its token while touching
+/// a different, unleased target.
+fn note_no_lease(
+    lock: Option<&StoreLock>,
+    access: Access,
+    token: Option<&str>,
+    target: &str,
+    expired: Option<&Lease>,
+) -> anyhow::Result<()> {
+    let Some(t) = token else {
+        return Ok(());
+    };
+    let msg = lock
+        .and_then(|l| lost_lease_message(l, Some(t), target))
+        .or_else(|| {
+            expired
+                .filter(|l| l.token == t)
+                .map(|l| ended_message(target, l.expires_at, "found expired"))
+        });
+    match msg {
+        Some(m) if access == Access::Mutating => Err(crate::error::target_leased(target, m).into()),
+        Some(m) => {
+            eprintln!("warning: {m}");
+            Ok(())
+        }
+        None => {
+            eprintln!(
+                "warning: PANIO_LEASE is set but '{target}' is not leased; \
+                 running without a lease"
+            );
+            Ok(())
+        }
     }
 }
 
@@ -565,10 +605,16 @@ pub fn enforce(lab: &crate::model::Lab, target: &str, access: Access) -> anyhow:
     if access == Access::Read && token.is_none() {
         return Ok(());
     }
-    if !lease_required && !Store::for_target(target).record_exists() {
-        return Ok(());
+    let store = Store::for_target(target);
+    if !lease_required && !store.record_exists() {
+        if token.is_none() {
+            return Ok(());
+        }
+        if !store.history_exists() {
+            return note_no_lease(None, access, token.as_deref(), target, None);
+        }
     }
-    let lock = Store::for_target(target)
+    let lock = store
         .lock()
         .with_context(|| format!("locking the lease store for '{target}'"))?;
     let rec = match lock.read() {
@@ -588,7 +634,13 @@ pub fn enforce(lab: &crate::model::Lab, target: &str, access: Access) -> anyhow:
         anyhow::Error::from(crate::error::target_leased(target, msg))
     };
     match decide(&st, access, token.as_deref(), lease_required, target, now) {
-        Verdict::Run => Ok(()),
+        Verdict::Run => match &st {
+            State::Unleased => note_no_lease(Some(&lock), access, token.as_deref(), target, None),
+            State::Expired(l) => {
+                note_no_lease(Some(&lock), access, token.as_deref(), target, Some(l))
+            }
+            State::Held(_) => Ok(()),
+        },
         Verdict::RunAndTouch => {
             let State::Held(mut l) = st else {
                 return Ok(());
@@ -608,7 +660,7 @@ pub fn enforce(lab: &crate::model::Lab, target: &str, access: Access) -> anyhow:
         Verdict::CleanupThenRun(old) => {
             crate::lease_cmd::retire(lab, target, &lock, &old, "expired", None)?;
             lock.remove().context("removing the expired lease")?;
-            Ok(())
+            note_no_lease(Some(&lock), access, token.as_deref(), target, None)
         }
         Verdict::CleanupThenRefuse(old, msg) => {
             crate::lease_cmd::retire(lab, target, &lock, &old, "expired", None)?;
