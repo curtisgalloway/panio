@@ -234,3 +234,13 @@ always present (null when unknown) so a consumer need not probe.
   dispatch/hook interaction this design does not yet name.
 - ~140 error sites: classifying all of them is out of scope for the first
   release. Unclassified ones exit 109 and are tracked, not guessed.
+
+## Addendum: categories (#361)
+
+Added 2026-10-23. The JSON object carries a `category` derived from the kind
+(`infrastructure`, `transient`, `device_state`, or null), so a log-watching
+workflow can group failures without matching every kind. It is a field, not
+new exit codes: the maintainer chose that so the code table above stays as
+approved and no caller branching on `$?` breaks. `PanioError` stores the
+category separately from the kind, so a site that knows better can set its
+own; none does yet. Table and meanings: `docs/errors.md#categories`.

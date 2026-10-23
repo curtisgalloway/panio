@@ -38,7 +38,9 @@ Passthroughs (helper, config edit, video shot/devices, adb run/input/devices,
 adb shell, serial connect, setup --host) exit with their program's own status.
 PANIO_JSON_ERRORS=1, or --json-errors before any trailing arguments, adds a
 one-line JSON object as the last line of stderr:
-{\"error\": {kind, code, message, target, channel, host, child_exit}}.";
+{\"error\": {kind, code, category, message, target, channel, host, child_exit}}.
+category: infrastructure (not_configured, unreachable, daemon_down),
+transient (timeout), device_state (helper_failed), or null (usage, internal).";
 
 /// What went wrong, in the house exit-code bands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -120,6 +122,20 @@ impl Kind {
         })
     }
 
+    /// The category a failure of this kind gets unless its site says
+    /// otherwise; `None` for a caller's mistake (`usage`) or an unclassified
+    /// failure (`internal`), which point at nothing in the setup.
+    pub fn category(self) -> Option<Category> {
+        match self {
+            Kind::NotConfigured | Kind::Unreachable | Kind::DaemonDown => {
+                Some(Category::Infrastructure)
+            }
+            Kind::Timeout => Some(Category::Transient),
+            Kind::HelperFailed => Some(Category::DeviceState),
+            Kind::Usage | Kind::Internal => None,
+        }
+    }
+
     /// The `kind` string in the JSON object.
     pub fn as_str(self) -> &'static str {
         match self {
@@ -134,11 +150,41 @@ impl Kind {
     }
 }
 
+/// Which part of the setup a failure points at, a coarser grouping of
+/// [`Kind`] for a workflow that only needs to know where to look. Carried as
+/// the JSON `category` field; exit codes do not change with it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Category {
+    /// The target or the hardware panio drives refused or failed: a hook or
+    /// helper ran and reported failure, a daemon rejected the request.
+    DeviceState,
+    /// panio's own plumbing: the lab file, a control host, a daemon that is
+    /// not running. Fix the setup; the target was not reached.
+    Infrastructure,
+    /// No answer in time. A retry may succeed, but the outcome of the first
+    /// attempt is unknown: check state before repeating a change.
+    Transient,
+}
+
+impl Category {
+    /// The `category` string in the JSON object.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Category::DeviceState => "device_state",
+            Category::Infrastructure => "infrastructure",
+            Category::Transient => "transient",
+        }
+    }
+}
+
 /// A classified failure. Its `Display` is just `message`, so wrapping an
 /// existing `anyhow!` site in one leaves the printed text unchanged.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PanioError {
     pub kind: Kind,
+    /// [`Kind::category`] of `kind`; a separate field so a site that knows
+    /// better can set its own.
+    pub category: Option<Category>,
     pub message: String,
     pub target: Option<String>,
     pub channel: Option<String>,
@@ -150,6 +196,7 @@ impl PanioError {
     pub fn new(kind: Kind, message: impl Into<String>) -> Self {
         PanioError {
             kind,
+            category: kind.category(),
             message: message.into(),
             target: None,
             channel: None,
@@ -455,6 +502,7 @@ pub fn to_json(e: &PanioError) -> String {
         "error": {
             "kind": e.kind.as_str(),
             "code": e.kind.exit_code(),
+            "category": e.category.map(Category::as_str),
             "message": e.message,
             "target": e.target,
             "channel": e.channel,
@@ -569,6 +617,26 @@ mod tests {
     }
 
     #[test]
+    fn every_kind_has_its_documented_category() {
+        let got: Vec<(&str, Option<&str>)> = Kind::ALL
+            .iter()
+            .map(|k| (k.as_str(), k.category().map(Category::as_str)))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("usage", None),
+                ("not_configured", Some("infrastructure")),
+                ("unreachable", Some("infrastructure")),
+                ("timeout", Some("transient")),
+                ("daemon_down", Some("infrastructure")),
+                ("helper_failed", Some("device_state")),
+                ("internal", None),
+            ]
+        );
+    }
+
+    #[test]
     fn classify_finds_a_wrapped_error_and_keeps_the_chain() {
         let inner: anyhow::Result<()> =
             Err(PanioError::not_configured("target 'x' not found in lab")
@@ -679,6 +747,7 @@ mod tests {
         assert_eq!(o["kind"], "not_configured");
         assert_eq!(o["code"], 3);
         assert_eq!(o["target"], "t");
+        assert_eq!(o["category"], "infrastructure");
         for f in ["channel", "host", "child_exit"] {
             assert!(o[f].is_null(), "{f}");
         }

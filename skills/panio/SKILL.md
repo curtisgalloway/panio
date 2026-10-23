@@ -72,8 +72,12 @@ helper failure.
 For a machine-readable reason, set `PANIO_JSON_ERRORS=1` (or put
 `--json-errors` right after `panio`, before any trailing arguments: after
 `hid send …` or `adb run …` it is taken as part of the payload): the **last line of stderr** is then one JSON object,
-`{"error": {"kind", "code", "message", "target", "channel", "host",
-"child_exit"}}`. Passthroughs (`helper`, `config edit`, `video shot`/`devices`,
+`{"error": {"kind", "code", "category", "message", "target", "channel",
+"host", "child_exit"}}`. `category` groups the kinds by where to look:
+`infrastructure` (3, 4, 100: fix the setup, the target was not reached),
+`transient` (22: a retry may work, but check state first), `device_state`
+(101: the target or its hardware refused), or null (2, 109). Exit codes do not
+change with it; a control host older than 0.13 omits the field. Passthroughs (`helper`, `config edit`, `video shot`/`devices`,
 `adb run`/`input`/`devices`, `setup --host`, and the consoles `serial connect`
 and `adb shell`) exit with their program's own status instead. `serial log` still reads a stopped daemon's file, with a
 `warning:` on stderr; add `--require-live` to get exit 100 instead of stale

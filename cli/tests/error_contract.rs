@@ -63,8 +63,18 @@ fn error_object(out: &Output) -> Value {
     v["error"].clone()
 }
 
-/// Run `args` with JSON errors on; assert the code, kind, target and channel,
-/// and that the message is the prose line printed above the object.
+/// The `category` docs/errors.md gives each kind by default.
+fn category_of(kind: &str) -> Value {
+    match kind {
+        "not_configured" | "unreachable" | "daemon_down" => "infrastructure".into(),
+        "timeout" => "transient".into(),
+        "helper_failed" => "device_state".into(),
+        _ => Value::Null,
+    }
+}
+
+/// Run `args` with JSON errors on; assert the code, kind, category, target
+/// and channel, and that the message is the prose line printed above the object.
 fn expect(
     name: &str,
     args: &[&str],
@@ -79,6 +89,7 @@ fn expect(
     let e = error_object(&out);
     assert_eq!(e["kind"], kind, "{e}");
     assert_eq!(e["code"], code, "{e}");
+    assert_eq!(e["category"], category_of(kind), "{e}");
     assert_eq!(e["target"].as_str(), target, "{e}");
     assert_eq!(e["channel"].as_str(), channel, "{e}");
     assert!(e["host"].is_null() && e["child_exit"].is_null(), "{e}");
@@ -252,6 +263,8 @@ fn clap_usage_errors_exit_2_with_a_usage_object() {
     let e = error_object(&out);
     assert_eq!(e["kind"], "usage");
     assert_eq!(e["message"], "unexpected argument '--bogus' found");
+    // Present and null: a caller's mistake points at nothing in the setup.
+    assert_eq!(e.get("category"), Some(&Value::Null), "{e}");
     // The flag form works too, though parsing (which reads it) failed.
     let out = panio(&dir, false, &["--json-errors", "power-cycle", "--bogus"]);
     assert_eq!(error_object(&out)["code"], 2);
@@ -433,6 +446,7 @@ fn a_failing_power_hook_is_helper_failed_with_its_code() {
     assert_eq!(out.status.code(), Some(101), "{out:?}");
     let e = error_object(&out);
     assert_eq!(e["kind"], "helper_failed");
+    assert_eq!(e["category"], "device_state");
     assert_eq!(e["child_exit"], 7);
     assert_eq!(e["target"], "nuc");
     assert_eq!(e["channel"], "power");
@@ -452,6 +466,7 @@ fn a_missing_power_hook_is_not_configured() {
     assert_eq!(out.status.code(), Some(3), "{out:?}");
     let e = error_object(&out);
     assert_eq!(e["kind"], "not_configured");
+    assert_eq!(e["category"], "infrastructure");
     assert_eq!(e["child_exit"], 127);
 }
 
