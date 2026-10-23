@@ -242,6 +242,53 @@ pub fn write_atomic(path: &Path, data: &[u8]) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Take an exclusive, blocking advisory lock on `file`. The lock is released
+/// when the file is closed (dropped), including when the process dies, so a
+/// crashed holder never wedges the next caller.
+///
+/// Unix uses `flock(LOCK_EX)`. Windows uses `LockFileEx` over the whole
+/// range with `LOCKFILE_EXCLUSIVE_LOCK` and no `FAIL_IMMEDIATELY`, which
+/// blocks the same way.
+#[cfg(unix)]
+pub fn lock_exclusive(file: &std::fs::File) -> std::io::Result<()> {
+    use std::os::unix::io::AsRawFd;
+    loop {
+        // Safe: flock on a descriptor we own for the duration of the call.
+        let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
+        if rc == 0 {
+            return Ok(());
+        }
+        let err = std::io::Error::last_os_error();
+        if err.kind() != std::io::ErrorKind::Interrupted {
+            return Err(err);
+        }
+    }
+}
+
+#[cfg(windows)]
+pub fn lock_exclusive(file: &std::fs::File) -> std::io::Result<()> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{LockFileEx, LOCKFILE_EXCLUSIVE_LOCK};
+    use windows_sys::Win32::System::IO::OVERLAPPED;
+    // Safe: a zeroed OVERLAPPED means offset 0 and no event, which is what a
+    // synchronous handle expects; the handle outlives the call.
+    let mut overlapped: OVERLAPPED = unsafe { std::mem::zeroed() };
+    let ok = unsafe {
+        LockFileEx(
+            file.as_raw_handle() as _,
+            LOCKFILE_EXCLUSIVE_LOCK,
+            0,
+            u32::MAX,
+            u32::MAX,
+            &mut overlapped,
+        )
+    };
+    if ok == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
 // ── process lifecycle ───────────────────────────────────────────────────────
 
 /// A pid that could not name a real process.
@@ -300,8 +347,6 @@ pub fn pid_alive(pid: i32) -> bool {
 /// process, different for a recycled pid. `None` when the process does not
 /// exist or cannot be queried. Units differ per platform and are not
 /// comparable across machines or boots.
-// Used by lease.rs (later task); nothing calls it yet.
-#[allow(dead_code)]
 #[cfg(target_os = "linux")]
 pub fn process_start_time(pid: i32) -> Option<u64> {
     if !is_real_pid(pid) {
@@ -315,7 +360,6 @@ pub fn process_start_time(pid: i32) -> Option<u64> {
     rest.split_whitespace().nth(19)?.parse().ok()
 }
 
-#[allow(dead_code)]
 #[cfg(target_os = "macos")]
 pub fn process_start_time(pid: i32) -> Option<u64> {
     if !is_real_pid(pid) {
@@ -340,7 +384,6 @@ pub fn process_start_time(pid: i32) -> Option<u64> {
     Some(info.pbi_start_tvsec * 1_000_000 + info.pbi_start_tvusec)
 }
 
-#[allow(dead_code)]
 #[cfg(windows)]
 pub fn process_start_time(pid: i32) -> Option<u64> {
     use windows_sys::Win32::Foundation::{CloseHandle, FILETIME, STILL_ACTIVE};

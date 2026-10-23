@@ -27,6 +27,7 @@ mod dispatch;
 mod doctor;
 mod error;
 mod labfile;
+mod lease;
 mod mcp;
 mod model;
 mod netboot;
