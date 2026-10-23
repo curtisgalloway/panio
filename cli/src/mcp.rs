@@ -275,26 +275,26 @@ impl Server {
         if !out.status.success() {
             return failure(call, &out);
         }
-        let parsed: Option<(String, String, String)> = serde_json::from_slice::<Value>(&out.stdout)
-            .ok()
-            .and_then(|v| {
-                let get = |k: &str| v.get(k).and_then(Value::as_str).map(str::to_string);
-                Some((get("token")?, get("owner")?, get("expires_at")?))
-            })
-            .filter(|(token, _, _)| !token.is_empty());
-        let (Some(target), Some((token, owner, expires_at))) = (call.target.as_ref(), parsed)
-        else {
+        let parsed = parse_acquire(&out.stdout);
+        let (Some(target), Some(acquired)) = (call.target.as_ref(), parsed) else {
             return tool_error(
                 "panio lease acquire succeeded but its output could not be read, so no \
-                 lease token was kept. Check lease_status, and release with lease_release \
-                 (preempt: true) if the lease is yours.",
+                 lease token was kept. Check lease_status. If the lease shown is your \
+                 own, lease_release with preempt: true ends it (it forcibly ends \
+                 whatever lease is there, so use it only for your own).",
             );
         };
+        let token = acquired.token.clone();
         self.tokens.lock().unwrap().insert(target.clone(), token);
+        let owner = acquired.owner.as_deref().unwrap_or("this server");
+        let expiry = match acquired.expires_in_secs {
+            Some(secs) => format!("expires in {} min", secs.div_ceil(60)),
+            None => "expiry unknown".to_string(),
+        };
         tool_text(&format!(
-            "Lease held on {target} by {owner} until {expires_at}. This server keeps \
-             the lease token and applies it to this target's commands automatically; \
-             renew it with lease_renew and end it with lease_release."
+            "Lease held on {target} by {owner}, {expiry}. This server keeps the lease \
+             token and applies it to this target's commands automatically; renew it \
+             with lease_renew and end it with lease_release."
         ))
     }
 
@@ -340,6 +340,28 @@ struct CliCall {
     writes: bool,
     /// The target the command acts on, for choosing its lease token.
     target: Option<String>,
+}
+
+/// What `panio lease acquire --json` printed. Only the token is required;
+/// the CLI emits `expires_at` and `expires_in_secs` as numbers.
+struct Acquired {
+    token: String,
+    owner: Option<String>,
+    expires_in_secs: Option<u64>,
+}
+
+fn parse_acquire(stdout: &[u8]) -> Option<Acquired> {
+    let v: Value = serde_json::from_slice(stdout).ok()?;
+    let token = v
+        .get("token")?
+        .as_str()
+        .filter(|t| !t.is_empty())?
+        .to_string();
+    Some(Acquired {
+        token,
+        owner: v.get("owner").and_then(Value::as_str).map(str::to_string),
+        expires_in_secs: v.get("expires_in_secs").and_then(Value::as_u64),
+    })
 }
 
 /// A child that exited nonzero, as a tool error: exit code, the unknown-outcome
@@ -1949,7 +1971,7 @@ echo 'warning: serialcap is not running; the log may be stale' >&2"#,
         let dir = tempfile::tempdir().unwrap();
         let exe = fake_panio(
             dir.path(),
-            r#"echo '{"token":"SECRET-TOKEN-123","owner":"agent@bench1","expires_at":"2026-10-23T12:00:00Z","expires_in_secs":7200}'"#,
+            r#"echo '{"token":"SECRET-TOKEN-123","owner":"agent@bench1","expires_at":1792756800,"expires_in_secs":7200}'"#,
         );
         let s = server(exe, None);
         let result = call(&s, "lease_acquire", json!({ "target": "pi5" }));
@@ -1957,7 +1979,7 @@ echo 'warning: serialcap is not running; the log may be stale' >&2"#,
         let text = result["content"][0]["text"].as_str().unwrap();
         assert!(!text.contains("SECRET-TOKEN-123"), "{text}");
         assert!(text.contains("agent@bench1"), "{text}");
-        assert!(text.contains("2026-10-23T12:00:00Z"), "{text}");
+        assert!(text.contains("expires in 120 min"), "{text}");
         assert_eq!(
             s.tokens.lock().unwrap().get("pi5").map(String::as_str),
             Some("SECRET-TOKEN-123")
@@ -1991,5 +2013,25 @@ echo 'warning: serialcap is not running; the log may be stale' >&2"#,
         let result = call(&s2, "lease_release", json!({ "target": "pi5" }));
         assert_eq!(result["isError"], false);
         assert!(s2.tokens.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn second_acquire_sends_the_stored_token() {
+        let s = Server::new(PathBuf::from("/nonexistent"), None);
+        s.tokens.lock().unwrap().insert("pi5".into(), "tok".into());
+        let call = cli_call("lease_acquire", &json!({ "target": "pi5" })).unwrap();
+        let c = s.child_command(&call.argv, call.target.as_deref());
+        assert_eq!(env_of(&c, "PANIO_LEASE"), Some(Some("tok".into())));
+    }
+
+    #[test]
+    fn parse_acquire_needs_only_the_token() {
+        let a = parse_acquire(br#"{"token":"abc"}"#).unwrap();
+        assert_eq!(
+            (a.token.as_str(), a.owner, a.expires_in_secs),
+            ("abc", None, None)
+        );
+        assert!(parse_acquire(br#"{"owner":"x"}"#).is_none());
+        assert!(parse_acquire(b"abc").is_none());
     }
 }
