@@ -831,3 +831,29 @@ fn status_json_carries_the_idle_timeout() {
     let v: serde_json::Value = serde_json::from_str(&stdout(&s)).unwrap();
     assert_eq!(v["idle_secs"], 1800, "{v}");
 }
+
+#[test]
+fn console_does_not_register_its_pid_under_the_lease() {
+    let dir = scratch("console_not_registered", LAB);
+    write_lease(&dir, "mine", now() + 3600, now());
+    // LAB has no video channel, so the console fails right after the check.
+    let o = panio(&dir, &["console", "dut"], Some("mine"));
+    assert_ne!(o.status.code(), Some(0), "{o:?}");
+    assert_ne!(
+        o.status.code(),
+        Some(23),
+        "the holder is not refused: {o:?}"
+    );
+    let v: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(lease_path(&dir)).unwrap()).unwrap();
+    assert!(v["procs"].as_array().unwrap().is_empty(), "{v}");
+    let o = panio(&dir, &["serial", "stop", "dut"], Some("mine"));
+    assert_ne!(o.status.code(), Some(23), "{o:?}");
+    let v: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(lease_path(&dir)).unwrap()).unwrap();
+    assert_eq!(
+        v["procs"].as_array().unwrap().len(),
+        1,
+        "other commands still register: {v}"
+    );
+}

@@ -347,10 +347,13 @@ Deviations from the design above, all deliberate. User guide: `docs/leases.md`.
 - **The dashboard does not refresh the idle timer.** A remote `console` runs a
   keepalive while it runs and the caller holds the lease: every
   min(idle/2, 5 min) a holder read (`video show`) on the control host; a
-  `warning:` on its stderr or a non-zero exit means the lease is lost, and the
-  loss is printed once, loudly, and ticking stops. A local `console` with a
-  token that holds the lease stays in the foreground and ticks in-process
-  (`lease::keepalive_tick`, reading the lease state directly). `video preview`
+  `warning:` on its stderr or a non-zero exit means the lease is lost: the
+  console prints the reason once and exits 23. A local `console` with a token
+  that holds the lease stays in the foreground, is not registered in
+  `lease.procs` (`enforce_with(.., register = false)`; it is still checked as
+  mutating), polls the lease state every 5 s (`lease::keepalive_tick`, reading
+  it directly), touches it at the keepalive interval, and on loss prints the
+  reason and exits 23 within about 5 s. `video preview`
   returns as soon as the page is handed off; with a token it prints a note to
   renew. The Windows job also sets SILENT_BREAKAWAY_OK, so a server the tool
   launches is not killed; the tool is assigned right after spawn (not by

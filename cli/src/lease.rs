@@ -665,6 +665,19 @@ fn note_no_lease(
 /// where it executes. Takes the store lock, decides, and releases the lock
 /// before returning: it is never held while the command runs.
 pub fn enforce(lab: &crate::model::Lab, target: &str, access: Access) -> anyhow::Result<()> {
+    enforce_with(lab, target, access, true)
+}
+
+/// [`enforce`], with a choice about registering this process under the lease
+/// when the holder runs a mutating command. A long-lived command that keeps the
+/// lease alive itself (the console) passes `false`: a registered pid would be
+/// terminated by the cleanup when the lease ends, with no reason printed.
+pub fn enforce_with(
+    lab: &crate::model::Lab,
+    target: &str,
+    access: Access,
+    register: bool,
+) -> anyhow::Result<()> {
     use anyhow::Context;
     if access == Access::Unchecked {
         return Ok(());
@@ -727,7 +740,7 @@ pub fn enforce(lab: &crate::model::Lab, target: &str, access: Access) -> anyhow:
                 return Ok(());
             };
             l.last_used_at = now;
-            if access == Access::Mutating {
+            if access == Access::Mutating && register {
                 let pid = std::process::id() as i32;
                 if let Some(start_time) = platform::process_start_time(pid) {
                     l.procs.retain(|p| p.pid != pid);
@@ -775,36 +788,47 @@ pub fn held_idle_secs(target: &str) -> Option<u64> {
     }
 }
 
-/// One in-process keepalive tick for a local console: if the caller still
-/// holds the lease, a holder read (`enforce` with [`Access::Read`], which
-/// touches `last_used_at`) and `None`; otherwise why it no longer does, from
-/// the lease state itself.
-pub fn keepalive_tick(lab: &crate::model::Lab, target: &str) -> Option<String> {
-    let token = caller_token()?;
-    let store = Store::for_target(target);
-    let lost = {
-        let lock = match store.lock() {
-            Ok(l) => l,
-            Err(e) => return Some(format!("cannot read the lease: {e}")),
-        };
-        let st = state(lock.read().ok().flatten(), now(), proc_is_live);
-        match st {
-            State::Held(l) if l.token == token => None,
-            State::Held(l) => Some(
-                lost_lease_message(&lock, Some(&token), target).unwrap_or_else(|| {
-                    format!(
-                        "PANIO_LEASE does not match the current holder ({}) of '{target}'",
-                        l.owner
-                    )
-                }),
-            ),
-            _ => Some(
-                lost_lease_message(&lock, Some(&token), target)
-                    .unwrap_or_else(|| format!("'{target}' is no longer leased to you")),
-            ),
-        }
+/// Why the caller's `token` no longer holds the lease in `store`, or `None`
+/// while it does. Read-only, and never includes the token.
+fn lost_reason(store: &Store, token: &str, target: &str, now: u64) -> Option<String> {
+    let lock = match store.lock() {
+        Ok(l) => l,
+        Err(e) => return Some(format!("cannot read the lease: {e}")),
     };
-    if lost.is_none() {
+    let rec = match lock.read() {
+        Ok(r) => r,
+        Err(e) => return Some(format!("cannot read the lease: {e}")),
+    };
+    match state(rec, now, proc_is_live) {
+        State::Held(l) if l.token == token => None,
+        State::Held(l) => Some(
+            lost_lease_message(&lock, Some(token), target).unwrap_or_else(|| {
+                format!(
+                    "PANIO_LEASE does not match the current holder ({}) of '{target}'",
+                    l.owner
+                )
+            }),
+        ),
+        State::Expired(l) if l.token == token => Some(ended_message(
+            target,
+            l.expires_at.min(l.last_used_at.saturating_add(l.idle_secs)),
+            "found expired",
+        )),
+        State::Expired(_) | State::Unleased => Some(
+            lost_lease_message(&lock, Some(token), target)
+                .unwrap_or_else(|| format!("'{target}' is no longer leased to you")),
+        ),
+    }
+}
+
+/// One in-process poll for a local console: why the caller no longer holds the
+/// lease on `target`, or, while it does, `None` after a holder read (`enforce`
+/// with [`Access::Read`], which touches `last_used_at`) when `touch` is set.
+/// Cheap without `touch`: one brief lock and a file read.
+pub fn keepalive_tick(lab: &crate::model::Lab, target: &str, touch: bool) -> Option<String> {
+    let token = caller_token()?;
+    let lost = lost_reason(&Store::for_target(target), &token, target, now());
+    if lost.is_none() && touch {
         if let Err(e) = enforce(lab, target, Access::Read) {
             return Some(format!("{e:#}"));
         }
@@ -880,6 +904,75 @@ mod tests {
             pid,
             start_time: platform::process_start_time(pid).expect("start time"),
         }
+    }
+
+    fn write_held(store: &Store, token: &str, expires_at: u64, last_used_at: u64) {
+        let l = Lease {
+            token: token.into(),
+            expires_at,
+            last_used_at,
+            ..lease()
+        };
+        store.lock().unwrap().write(&l).unwrap();
+    }
+
+    fn ended(store: &Store, token: &str, how: &str, new_owner: Option<&str>) {
+        store
+            .lock()
+            .unwrap()
+            .append_history(&HistoryEntry {
+                at: 5000,
+                previous_owner: "alice@bench1".into(),
+                previous_token: token.into(),
+                new_owner: new_owner.map(str::to_string),
+                how: how.into(),
+                cleanup_errors: vec![],
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn lost_reason_is_none_for_the_holder() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::at(dir.path().to_path_buf());
+        write_held(&store, "tok-a", now() + 3600, now());
+        assert_eq!(lost_reason(&store, "tok-a", "dut", now()), None);
+    }
+
+    #[test]
+    fn lost_reason_names_how_the_lease_ended() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::at(dir.path().to_path_buf());
+        // Preempted: a new holder, the old token in the history.
+        ended(&store, "tok-a", "preempted", Some("bob@bench1"));
+        write_held(&store, "tok-b", now() + 3600, now());
+        let r = lost_reason(&store, "tok-a", "dut", now()).expect("lost");
+        assert!(r.contains("preempted by bob@bench1"), "{r}");
+        assert!(!r.contains("tok-a"), "{r}");
+        // A token that never named a lease here, while someone holds it.
+        let r = lost_reason(&store, "tok-x", "dut", now()).expect("lost");
+        assert!(
+            r.contains("does not match the current holder (alice@bench1)"),
+            "{r}"
+        );
+        // Released: nobody holds it now.
+        let dir2 = tempfile::tempdir().unwrap();
+        let store2 = Store::at(dir2.path().to_path_buf());
+        ended(&store2, "tok-a", "released", None);
+        let r = lost_reason(&store2, "tok-a", "dut", now()).expect("lost");
+        assert!(r.contains("released"), "{r}");
+        // Expired but not yet cleaned up.
+        let dir3 = tempfile::tempdir().unwrap();
+        let store3 = Store::at(dir3.path().to_path_buf());
+        write_held(&store3, "tok-a", now() - 10, now() - 20);
+        let r = lost_reason(&store3, "tok-a", "dut", now()).expect("lost");
+        assert!(r.contains("found expired"), "{r}");
+        assert!(!r.contains("tok-a"), "{r}");
+    }
+
+    #[test]
+    fn a_lost_lease_exits_23() {
+        assert_eq!(crate::error::Kind::TargetLeased.exit_code(), 23);
     }
 
     #[test]

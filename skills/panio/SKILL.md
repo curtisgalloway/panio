@@ -1041,8 +1041,8 @@ panio lease release pi5                              # when done
 - **The dashboard does not keep a lease alive.** `console` and `video preview`
   hand you a web page whose use is not a panio command; with a token set they
   print a note. `console` refreshes the lease itself while it runs and you
-  hold the token (it stays in the foreground, Ctrl-C closes it, and it warns
-  loudly if the lease is lost); with no token a local `console` returns at
+  hold the token (it stays in the foreground and Ctrl-C closes it; if the lease
+  is released, taken or expires it prints why and exits 23); with no token a local `console` returns at
   once. For `video preview`, `lease renew` while you use the page.
 - Do not use `--preempt` (on `acquire` or `release`) unless the user told you
   to: it ends someone else's work.

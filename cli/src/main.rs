@@ -1592,7 +1592,12 @@ fn lease_scope(cmd: &Command) -> (lease::Access, LeaseScope<'_>) {
 ///
 /// A lab that will not load or a target that does not resolve is left for
 /// the handler to report with its own error.
-fn lease_check(lab_flag: Option<&str>, access: lease::Access, scope: LeaseScope<'_>) -> Result<()> {
+fn lease_check(
+    lab_flag: Option<&str>,
+    access: lease::Access,
+    scope: LeaseScope<'_>,
+    register: bool,
+) -> Result<()> {
     if access == lease::Access::Unchecked {
         return Ok(());
     }
@@ -1613,13 +1618,16 @@ fn lease_check(lab_flag: Option<&str>, access: lease::Access, scope: LeaseScope<
     if !lab.host(&rt.default_host).is_local(&rt.default_host) {
         return Ok(());
     }
-    lease::enforce(&lab, &name, access)
+    lease::enforce_with(&lab, &name, access, register)
 }
 
 fn run(cli: Cli) -> Result<()> {
     let lab_flag = cli.lab.as_deref();
     let (access, scope) = lease_scope(&cli.command);
-    lease_check(lab_flag, access, scope)?;
+    // The console keeps its lease alive itself and leaves on its own when the
+    // lease ends, so it is not registered as a process for cleanup to kill.
+    let register = !matches!(cli.command, Command::Console { .. });
+    lease_check(lab_flag, access, scope, register)?;
     match cli.command {
         Command::Init { path } => cmd_init(lab_flag, path.as_deref()),
         Command::Config { cmd } => match cmd {
@@ -4131,9 +4139,22 @@ fn cmd_console(
         match lease::held_idle_secs(&target) {
             Some(idle) => {
                 let (lab, t) = (lab.clone(), target.clone());
-                let _keepalive = Keepalive::spawn(keepalive_interval(idle), move || {
-                    lease::keepalive_tick(&lab, &t)
-                });
+                // Poll the lease state often (a cheap local read) so the
+                // console leaves promptly when the lease ends; touch it only
+                // at the keepalive interval.
+                let every = keepalive_interval(idle);
+                let mut last_touch = std::time::Instant::now();
+                let _keepalive = Keepalive::spawn(
+                    LOCAL_LEASE_POLL,
+                    move || {
+                        let touch = last_touch.elapsed() >= every;
+                        if touch {
+                            last_touch = std::time::Instant::now();
+                        }
+                        lease::keepalive_tick(&lab, &t, touch)
+                    },
+                    leave_on_lost_lease,
+                );
                 println!("Keeping the lease on '{target}' alive. Press Ctrl-C to close.");
                 loop {
                     std::thread::sleep(std::time::Duration::from_secs(1));
@@ -4160,15 +4181,29 @@ fn remote_failure(status: i32, target: &str, message: String) -> anyhow::Error {
 const DASHBOARD_IDLE_NOTE: &str = "the lease's idle timer is not refreshed by dashboard use; \
      run `panio lease renew` or keep a panio command going";
 
+/// How often a local console looks at its lease.
+const LOCAL_LEASE_POLL: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// How often a remote console refreshes the lease: half the idle timeout, at
 /// most every 5 minutes, and never faster than every 10 seconds.
 fn keepalive_interval(idle_secs: u64) -> std::time::Duration {
     std::time::Duration::from_secs((idle_secs / 2).clamp(10, 300))
 }
 
+/// What a console does when its lease is no longer the caller's: say why, once
+/// and loudly, and leave with `target_leased` (23). The cleanup that ended the
+/// lease has stopped the daemons, so the dashboard is dead anyway.
+fn leave_on_lost_lease(msg: String) {
+    eprintln!(
+        "error: the console no longer holds the lease ({msg}); \
+         its dashboard is going away, so the console is exiting"
+    );
+    std::process::exit(error::Kind::TargetLeased.exit_code());
+}
+
 /// A background thread that calls `touch` every `interval` until dropped.
 /// `touch` returns a message when the lease is no longer this caller's; the
-/// thread prints it once, loudly, on stderr and stops ticking.
+/// thread then calls `on_lost` with it once and stops ticking.
 struct Keepalive {
     stop: Option<std::sync::mpsc::Sender<()>>,
 }
@@ -4177,16 +4212,14 @@ impl Keepalive {
     fn spawn(
         interval: std::time::Duration,
         mut touch: impl FnMut() -> Option<String> + Send + 'static,
+        on_lost: impl FnOnce(String) + Send + 'static,
     ) -> Keepalive {
         let (stop, rx) = std::sync::mpsc::channel::<()>();
         std::thread::spawn(move || {
             // A timeout is the tick; a message or a dropped sender is the stop.
             while let Err(std::sync::mpsc::RecvTimeoutError::Timeout) = rx.recv_timeout(interval) {
                 if let Some(msg) = touch() {
-                    eprintln!(
-                        "warning: the console no longer holds the lease ({msg}); \
-                         it is not being kept alive any more"
-                    );
+                    on_lost(msg);
                     break;
                 }
             }
@@ -4271,9 +4304,11 @@ fn lease_keepalive(lab: &Lab, target: &str, host_name: &str) -> Option<Keepalive
     }
     let interval = keepalive_interval(row.idle_secs.unwrap_or(lease::DEFAULT_IDLE));
     let (lab, target, host_name) = (lab.clone(), target.to_string(), host_name.to_string());
-    Some(Keepalive::spawn(interval, move || {
-        remote_touch(&lab, &target, &host_name)
-    }))
+    Some(Keepalive::spawn(
+        interval,
+        move || remote_touch(&lab, &target, &host_name),
+        leave_on_lost_lease,
+    ))
 }
 
 fn remote_console(
@@ -7183,11 +7218,18 @@ device = "/dev/video-nuc"
         use std::sync::Arc;
         let n = Arc::new(AtomicUsize::new(0));
         let seen = n.clone();
-        let _k = Keepalive::spawn(std::time::Duration::from_millis(10), move || {
-            seen.fetch_add(1, Ordering::SeqCst);
-            Some("preempted".to_string())
-        });
+        let lost = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let told = lost.clone();
+        let _k = Keepalive::spawn(
+            std::time::Duration::from_millis(10),
+            move || {
+                seen.fetch_add(1, Ordering::SeqCst);
+                Some("preempted".to_string())
+            },
+            move |msg| told.lock().unwrap().push(msg),
+        );
         std::thread::sleep(std::time::Duration::from_millis(300));
+        assert_eq!(*lost.lock().unwrap(), vec!["preempted".to_string()]);
         assert_eq!(
             n.load(Ordering::SeqCst),
             1,
@@ -7201,10 +7243,14 @@ device = "/dev/video-nuc"
         use std::sync::Arc;
         let n = Arc::new(AtomicUsize::new(0));
         let seen = n.clone();
-        let k = Keepalive::spawn(std::time::Duration::from_millis(20), move || {
-            seen.fetch_add(1, Ordering::SeqCst);
-            None
-        });
+        let k = Keepalive::spawn(
+            std::time::Duration::from_millis(20),
+            move || {
+                seen.fetch_add(1, Ordering::SeqCst);
+                None
+            },
+            |_| panic!("the lease was not lost"),
+        );
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         while n.load(Ordering::SeqCst) < 3 && std::time::Instant::now() < deadline {
             std::thread::sleep(std::time::Duration::from_millis(10));

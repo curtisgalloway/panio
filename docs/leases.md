@@ -180,9 +180,12 @@ command, so it does not count as activity.
   the holder's token. It stays in the foreground (a local one prints "Press
   Ctrl-C to close", as a remote one does): every half idle timeout, at most
   every 5 minutes, it counts as holder activity (a remote console makes a read
-  of the target on the control host). If the lease is ever no longer yours
-  (ended, preempted, taken), it says why once on stderr, loudly, and stops
-  keeping it alive; the console itself keeps running. If your token is not the
+  of the target on the control host). A console is not registered as a process
+  under the lease, so ending the lease never kills it silently. If the lease
+  is ever no longer yours (released, preempted, expired), the console prints
+  why on stderr and exits with 23 (`target_leased`): a local one within about
+  5 seconds, a remote one at its next keep-alive tick. The cleanup that ended
+  the lease has stopped the daemons, so the dashboard is gone anyway. If your token is not the
   holder's when the console starts, it says the lease will not be kept alive
   (a local console then returns as before). Without a token, a local `console`
   returns as soon as the page is handed off, as always.
