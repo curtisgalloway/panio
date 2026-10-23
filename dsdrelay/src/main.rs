@@ -59,9 +59,12 @@ DEVICE
   --serial matches the chip's USB serial number, which survives re-plugging
   into another port (the /dev node name does not). Find it with `list`. Use it
   for the SH-UR01A, whose CP2102N has a unique serial. The SH-UR04A ships with
-  the same factory serial (0001) as every other one, so use --device for it:
-  on Linux a /dev/serial/by-path/... name is tied to the physical USB port; on
-  macOS the /dev/cu.usbserial-* node depends on the serial and USB topology.
+  the same factory serial (0001) as every other one, so either use --device
+  for it (on Linux a /dev/serial/by-path/... name is tied to the physical USB
+  port; on macOS the /dev/cu.usbserial-* node depends on the serial and USB
+  topology), or rewrite its serial and then use --serial. Rewriting has worked
+  but is at your own risk; see docs/power.md, \"Giving an SH-UR04A a unique
+  serial\".
 
 CHANNELS
   Channels are numbered from 1; a channel the board lacks is an error. A
@@ -78,8 +81,8 @@ struct Cli {
 
     /// USB serial number of the board's CP2102/CP2102N (see `list`); selects
     /// the port by identity instead of by path. Only for boards with a
-    /// unique serial (SH-UR01A); the SH-UR04A reports 0001, so use --device.
-    /// Give this or --device.
+    /// unique serial: the SH-UR01A, or an SH-UR04A whose factory 0001 was
+    /// rewritten (otherwise use --device). Give this or --device.
     #[arg(short = 's', long = "serial", value_name = "USB-SERIAL", global = true)]
     serial: Option<String>,
 
