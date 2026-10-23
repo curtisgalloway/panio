@@ -1921,6 +1921,59 @@ fn stop_capture_daemon_and_wait(name: &str, target: &str) -> Result<Option<i32>>
     Ok(Some(pid))
 }
 
+/// What a local capture-daemon stop did.
+pub(crate) enum Stopped {
+    /// An untracked orphan (no discovery file) was reaped.
+    Orphan(daemons::Untracked),
+    /// The tracked daemon's own `stop` ran; its exit status.
+    Daemon(std::process::ExitStatus),
+}
+
+/// Stop the target's serialcap on this host: reap an untracked orphan if
+/// nothing is tracked (#187), else run the daemon's own `stop` and wait for the
+/// process to exit. The part of `serial stop` below the dispatch decision;
+/// `lease::cleanup` calls it with the lease lock held, so it must never run
+/// the lease check.
+pub(crate) fn serial_stop_local(target: &str, serials: &[model::SerialChannel]) -> Result<Stopped> {
+    // An orphan has no discovery file, so `serialcap stop` cannot see it and
+    // the operator has nothing left but `ps` and `kill` (#187). Only
+    // consulted when nothing is tracked: a healthy daemon is never in this
+    // set, and its own stop is the clean shutdown.
+    if serial::daemon(target).is_none() {
+        if let Some(orphan) = serial::untracked(serials) {
+            reap_untracked(&orphan)?;
+            return Ok(Stopped::Orphan(orphan));
+        }
+    }
+    let old_pid = daemons::daemon_pid(serial::DAEMON, Some(target));
+    let status = serial::stop_daemon(target)?;
+    if status.success() {
+        if let Some(pid) = old_pid {
+            wait_for_daemon_exit(serial::DAEMON, target, pid)?;
+        }
+    }
+    Ok(Stopped::Daemon(status))
+}
+
+/// [`serial_stop_local`] for the target's hdmicap; `device` is the video
+/// channel's capture device, if it names one.
+pub(crate) fn video_stop_local(target: &str, device: Option<&str>) -> Result<Stopped> {
+    if video::daemon(target).is_none() {
+        if let Some(orphan) = device.and_then(video::untracked) {
+            reap_untracked(&orphan)?;
+            return Ok(Stopped::Orphan(orphan));
+        }
+    }
+    let old_pid = daemons::daemon_pid(video::DAEMON, Some(target));
+    let status = video::stop_daemon(target)?;
+    if status.success() {
+        if let Some(pid) = old_pid {
+            wait_for_daemon_exit(video::DAEMON, target, pid)?;
+        }
+    }
+    Ok(Stopped::Daemon(status))
+}
+
 /// Wait until a stopped daemon releases its device, then clean up its discovery
 /// file. HID uses a shared runtime name but several possible helper binaries.
 fn wait_for_daemon_exit(name: &str, target: &str, pid: i32) -> Result<()> {
@@ -2909,21 +2962,16 @@ fn serial_cmd(lab_flag: Option<&str>, cmd: SerialCmd) -> Result<()> {
             // remote) so we stop the right per-target daemon instance.
             let (target, serials) =
                 serial_runtime(lab_flag, target.name(), None, dispatch::Mode::Reexec)?;
-            // An orphan has no discovery file, so `serialcap stop` cannot see
-            // it and the operator has nothing left but `ps` and `kill` (#187).
-            // Only consulted when nothing is tracked: a healthy daemon is never
-            // in this set, and its own stop is the clean shutdown.
-            if serial::daemon(&target).is_none() {
-                if let Some(orphan) = serial::untracked(&serials) {
-                    reap_untracked(&orphan)?;
+            let status = match serial_stop_local(&target, &serials)? {
+                Stopped::Orphan(orphan) => {
                     println!(
                         "Untracked serial daemon for '{target}' (pid {}) stopped.",
                         orphan.pid
                     );
                     return Ok(());
                 }
-            }
-            let status = serial::stop_daemon(&target)?;
+                Stopped::Daemon(status) => status,
+            };
             if status.success() {
                 println!("Serial daemon for '{target}' stopped.");
                 Ok(())
@@ -4770,21 +4818,16 @@ fn video_cmd(lab_flag: Option<&str>, cmd: VideoCmd) -> Result<()> {
             // Resolve the target (routing to its video channel's host if
             // remote) so we stop the right per-target daemon instance.
             let (target, v) = video_runtime(lab_flag, target.name())?;
-            // An orphan has no discovery file, so `hdmicap stop` cannot see it
-            // and the operator has nothing left but `ps` and `kill` (#187).
-            // Only consulted when nothing is tracked: a healthy daemon is
-            // never in this set, and its own stop is the clean shutdown.
-            if video::daemon(&target).is_none() {
-                if let Some(orphan) = v.device.as_deref().and_then(video::untracked) {
-                    reap_untracked(&orphan)?;
+            let status = match video_stop_local(&target, v.device.as_deref())? {
+                Stopped::Orphan(orphan) => {
                     println!(
                         "Untracked video daemon for '{target}' (pid {}) stopped.",
                         orphan.pid
                     );
                     return Ok(());
                 }
-            }
-            let status = video::stop_daemon(&target)?;
+                Stopped::Daemon(status) => status,
+            };
             if status.success() {
                 println!("Video daemon for '{target}' stopped.");
                 Ok(())

@@ -368,6 +368,15 @@ fn run_steps(steps: Vec<Step<'_>>) -> Vec<String> {
         .collect()
 }
 
+/// Map a local capture-daemon stop to a step result.
+fn stopped(r: anyhow::Result<crate::Stopped>) -> Result<(), String> {
+    match r {
+        Ok(crate::Stopped::Daemon(st)) if !st.success() => Err(format!("stop exited with {st}")),
+        Ok(_) => Ok(()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
 /// Terminate a registered process that is still the same process (pid plus
 /// start time, so a recycled pid is never signaled): TERM, a short grace, then
 /// KILL after re-checking identity.
@@ -375,15 +384,22 @@ fn terminate_registered(p: &Proc) -> Result<(), String> {
     if !proc_is_live(p) {
         return Ok(());
     }
-    platform::try_signal_pid(p.pid, platform::Signal::Term)
-        .map_err(|e| format!("could not stop pid {}: {e}", p.pid))?;
+    if let Err(e) = platform::try_signal_pid(p.pid, platform::Signal::Term) {
+        if !proc_is_live(p) {
+            return Ok(());
+        }
+        return Err(format!("could not stop pid {}: {e}", p.pid));
+    }
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
     while proc_is_live(p) && std::time::Instant::now() < deadline {
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
     if proc_is_live(p) {
-        platform::try_signal_pid(p.pid, platform::Signal::Kill)
-            .map_err(|e| format!("could not kill pid {}: {e}", p.pid))?;
+        if let Err(e) = platform::try_signal_pid(p.pid, platform::Signal::Kill) {
+            if proc_is_live(p) {
+                return Err(format!("could not kill pid {}: {e}", p.pid));
+            }
+        }
     }
     Ok(())
 }
@@ -393,8 +409,8 @@ fn terminate_registered(p: &Proc) -> Result<(), String> {
 /// step that failed.
 ///
 /// Runs with the lease's [`StoreLock`] held, so it calls only the library
-/// functions beneath the runtime handlers (`serial::stop_daemon`,
-/// `video::stop_daemon`, `hid_stop_local`, `netboot::stop`,
+/// functions beneath the runtime handlers (`serial_stop_local`,
+/// `video_stop_local`, `hid_stop_local`, `netboot::stop`,
 /// `netif::mode_off`), never `panio` itself and never `lease::enforce`.
 pub fn cleanup(lab: &crate::model::Lab, target: &str, lease: &Lease) -> Vec<String> {
     let Some(t) = lab.targets.get(target) else {
@@ -416,23 +432,31 @@ pub fn cleanup(lab: &crate::model::Lab, target: &str, lease: &Lease) -> Vec<Stri
             }
         }),
     ));
-    if !t.serial.is_empty() && crate::serial::daemon(target).is_some() {
+    if !t.serial.is_empty() {
+        let serials = &t.serial;
         steps.push((
             "serial daemon",
-            Box::new(move || match crate::serial::stop_daemon(target) {
-                Ok(st) if st.success() => Ok(()),
-                Ok(st) => Err(format!("stop exited with {st}")),
-                Err(e) => Err(e.to_string()),
+            Box::new(move || {
+                if crate::serial::daemon(target).is_none()
+                    && crate::serial::untracked(serials).is_none()
+                {
+                    return Ok(());
+                }
+                stopped(crate::serial_stop_local(target, serials))
             }),
         ));
     }
-    if t.video.is_some() && crate::video::daemon(target).is_some() {
+    if let Some(v) = &t.video {
+        let device = v.device.as_deref();
         steps.push((
             "video daemon",
-            Box::new(move || match crate::video::stop_daemon(target) {
-                Ok(st) if st.success() => Ok(()),
-                Ok(st) => Err(format!("stop exited with {st}")),
-                Err(e) => Err(e.to_string()),
+            Box::new(move || {
+                if crate::video::daemon(target).is_none()
+                    && device.is_none_or(|d| crate::video::untracked(d).is_none())
+                {
+                    return Ok(());
+                }
+                stopped(crate::video_stop_local(target, device))
             }),
         ));
     }
@@ -592,23 +616,53 @@ mod tests {
         assert_eq!(*ran.borrow(), vec!["first", "second"]);
     }
 
+    #[cfg(unix)]
     #[test]
     fn cleanup_runs_while_the_lease_lock_is_held() {
-        let tmp = std::env::temp_dir().join(format!("panio-t6-lock-{}", std::process::id()));
-        let store = Store::at(tmp.clone());
+        let _env = crate::daemons::RUNTIME_BASE_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let base = tempfile::tempdir().unwrap();
+        let prev = std::env::var_os("PANIO_RUNTIME_BASE");
+        // Safe: serialized by RUNTIME_BASE_LOCK; restored below.
+        unsafe { std::env::set_var("PANIO_RUNTIME_BASE", base.path()) };
+        let dir = crate::daemons::ensure_runtime_dir("hid", Some("t6-locked")).unwrap();
+        std::fs::write(
+            dir.join("daemon.json"),
+            format!(r#"{{"pid":{},"port":7}}"#, std::process::id()),
+        )
+        .unwrap();
+
+        let store_dir = tempfile::tempdir().unwrap();
+        let store = Store::at(store_dir.path().to_path_buf());
         let _guard = store.lock().expect("lock");
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            let lab = lab_from(
-                "[targets.t6-locked]\n[[targets.t6-locked.serial]]\nname = \"console\"\ndevice = \"/dev/null\"\n",
-            );
+            let lab = lab_from("[targets.t6-locked]\n[targets.t6-locked.hid]\ncmd = \"false\"\n");
             let _ = tx.send(cleanup(&lab, "t6-locked", &lease()));
         });
-        let out = rx
-            .recv_timeout(std::time::Duration::from_secs(10))
-            .expect("cleanup must not block on the held lock");
-        assert!(out.is_empty(), "{out:?}");
-        let _ = std::fs::remove_dir_all(tmp);
+        let out = rx.recv_timeout(std::time::Duration::from_secs(10));
+        match prev {
+            Some(p) => unsafe { std::env::set_var("PANIO_RUNTIME_BASE", p) },
+            None => unsafe { std::env::remove_var("PANIO_RUNTIME_BASE") },
+        }
+        let out = out.expect("cleanup must not block on the held lock");
+        assert_eq!(
+            out.len(),
+            1,
+            "the hid step must have run and failed: {out:?}"
+        );
+        assert!(out[0].starts_with("hid daemon:"), "{out:?}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn terminate_registered_ignores_a_process_that_already_exited() {
+        let mut child = sleeper();
+        let p = registered(&child);
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(terminate_registered(&p).is_ok());
     }
 
     #[test]
