@@ -556,3 +556,30 @@ fn forced_release_message_when_no_new_owner() {
     assert_eq!(o.status.code(), Some(23), "{o:?}");
     assert!(stderr(&o).contains("forced release"), "{}", stderr(&o));
 }
+
+#[test]
+fn lease_file_is_read_and_deleted() {
+    let dir = scratch("lease_file_is_read_and_deleted", REQUIRED_LAB);
+    let tok = acquire(&dir);
+    let file = dir.join("t");
+    std::fs::write(&file, format!("{tok}\n")).unwrap();
+    let o = panio(
+        &dir,
+        &["--lease-file", file.to_str().unwrap(), "power", "on", "dut"],
+        None,
+    );
+    assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
+    assert!(!file.exists(), "token file must be deleted");
+    let o = panio(
+        &dir,
+        &[
+            "--lease-file",
+            dir.join("missing").to_str().unwrap(),
+            "lease",
+            "status",
+            "dut",
+        ],
+        None,
+    );
+    assert_eq!(o.status.code(), Some(109), "{}", stderr(&o));
+}

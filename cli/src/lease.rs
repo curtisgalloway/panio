@@ -488,8 +488,32 @@ pub fn cleanup(lab: &crate::model::Lab, target: &str, lease: &Lease) -> Vec<Stri
     run_steps(steps)
 }
 
-/// The caller's lease token, from `PANIO_LEASE` (trimmed; empty is none).
+/// The token read from `--lease-file`, once. `Some(None)` means the flag was
+/// given but the file held nothing.
+static FILE_TOKEN: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+
+/// Read and delete the `--lease-file` a dispatching panio shipped, and keep
+/// its trimmed content as the caller's token for the rest of this process
+/// (it overrides `PANIO_LEASE`). Call once, right after argument parsing: the
+/// file is deleted on read so the token does not outlive the command. An
+/// unreadable file is an error, never a silent run without a token.
+pub fn take_lease_file(path: &str) -> anyhow::Result<()> {
+    use anyhow::Context;
+    let text = std::fs::read_to_string(path)
+        .with_context(|| format!("reading the shipped lease token file '{path}'"))?;
+    // Best effort: the dispatching side also removes it afterward.
+    let _ = std::fs::remove_file(path);
+    let t = text.trim().to_string();
+    let _ = FILE_TOKEN.set((!t.is_empty()).then_some(t));
+    Ok(())
+}
+
+/// The caller's lease token: the `--lease-file` content when one was given,
+/// else `PANIO_LEASE` (trimmed; empty is none).
 pub fn caller_token() -> Option<String> {
+    if let Some(Some(t)) = FILE_TOKEN.get() {
+        return Some(t.clone());
+    }
     std::env::var("PANIO_LEASE")
         .ok()
         .map(|t| t.trim().to_string())

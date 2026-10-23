@@ -147,7 +147,11 @@ pub fn shell_quote(s: &str) -> String {
 /// not ask for. The values travel on the remote command's **stdin** (see
 /// [`remote_command`]), never on its command line, where `ps` on the control
 /// host would show them to every local user.
-pub const FORWARDED_ENV: &[&str] = &["AMT_PASSWORD"];
+///
+/// `PANIO_LEASE` is the caller's target-lease token. Interactive dispatch
+/// forwards nothing, so there the token travels in a file instead (see
+/// `dispatch::ship_token`).
+pub const FORWARDED_ENV: &[&str] = &["AMT_PASSWORD", "PANIO_LEASE"];
 
 /// The [`FORWARDED_ENV`] variables set in this process, in list order — the
 /// `env` argument to [`run`], [`run_passthrough`] and [`run_stdout_to`].
@@ -461,8 +465,9 @@ pub fn run_stdout_to(
 /// remote's stdin *is* the terminal the user is typing into, so there is no
 /// channel to put a secret on ahead of the command that the user's
 /// keystrokes would not also share. The interactive commands (`serial
-/// connect`, `adb shell`, `setup --host`) need none of the
-/// [`FORWARDED_ENV`] variables.
+/// connect`, `adb shell`, `setup --host`) need none of the [`FORWARDED_ENV`]
+/// credentials; the one variable they do need, `PANIO_LEASE`, goes in a
+/// token file named by `--lease-file` instead.
 pub fn run_interactive(host: &Host, argv: &[String]) -> std::io::Result<i32> {
     let status = ssh_command(host, true)?
         .arg(remote_command(argv, &[]))
@@ -599,6 +604,13 @@ mod tests {
     /// Only the listed variables cross, in list order; an unset one is
     /// simply absent, and a value the remote's line-oriented `read` could
     /// not take back intact is refused rather than truncated.
+    #[test]
+    fn forwarded_env_includes_panio_lease() {
+        let lookup = |n: &str| (n == "PANIO_LEASE").then(|| std::ffi::OsString::from("tok"));
+        let got = collect_forwarded(FORWARDED_ENV, lookup).unwrap();
+        assert_eq!(got, vec![("PANIO_LEASE".to_string(), "tok".to_string())]);
+    }
+
     #[test]
     fn collect_forwarded_takes_set_names_in_order_and_rejects_newlines() {
         let lookup = |name: &str| -> Option<std::ffi::OsString> {

@@ -259,6 +259,49 @@ pub fn ship_slice(
     Ok(remote)
 }
 
+/// Write the lease `token` to a private file on `host` over SFTP and return
+/// its remote (relative) name, for `--lease-file`. Same unique naming and
+/// error classification as [`ship_slice`]. The local copy is a 0600
+/// `tempfile` and `sftp put` carries the local mode to the remote file, so it
+/// is not world-readable there; the token is a cooperative boundary anyway.
+pub fn ship_token(
+    host: &crate::model::Host,
+    host_name: &str,
+    target: &str,
+    token: &str,
+) -> anyhow::Result<String> {
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let remote = format!(".panio-lease-{}-{stamp}", std::process::id());
+
+    use anyhow::Context;
+    let mut local =
+        tempfile::NamedTempFile::new().context("creating the local lease token file")?;
+    use std::io::Write;
+    local
+        .write_all(token.as_bytes())
+        .context("writing the local lease token file")?;
+    ssh::sftp_put(host, local.path(), &remote).map_err(|e| {
+        let err = if e.kind() == std::io::ErrorKind::NotFound {
+            crate::error::PanioError::not_configured(format!(
+                "sftp not found — cannot ship the lease token to '{host_name}': {e}"
+            ))
+        } else {
+            crate::error::unreachable_host(
+                host_name,
+                format!(
+                    "cannot reach control host '{host_name}': failed to ship lease token to {}: {e}",
+                    host.ssh
+                ),
+            )
+        };
+        err.target(target)
+    })?;
+    Ok(remote)
+}
+
 /// Re-exec `sub_argv` on `host` against a shipped slice; return the remote exit
 /// code, except that ssh's own 255 becomes an `unreachable` error (see
 /// [`transport_checked`]). Cleans up the slice file afterward either way.
@@ -273,7 +316,20 @@ pub fn dispatch(
     let slice = build_slice(lab, target, host_name)?;
     let remote_path = ship_slice(&host, host_name, target, &slice)?;
 
-    let argv = remote_argv(&host, &remote_path, sub_argv);
+    // Interactive dispatch forwards no environment, so the caller's lease
+    // token rides in a file shipped beside the slice; the remote reads and
+    // deletes it. A Reexec dispatch forwards PANIO_LEASE on stdin instead.
+    let token_file = match (mode, crate::lease::caller_token()) {
+        (Mode::Interactive, Some(token)) => match ship_token(&host, host_name, target, &token) {
+            Ok(f) => Some(f),
+            Err(e) => {
+                let _ = ssh::sftp_rm(&host, &remote_path);
+                return Err(e);
+            }
+        },
+        _ => None,
+    };
+    let argv = remote_argv(&host, &remote_path, token_file.as_deref(), sub_argv);
 
     let code = match mode {
         // No environment crosses here: the remote's stdin *is* the terminal
@@ -287,6 +343,10 @@ pub fn dispatch(
     // 255 does not always mean the host is gone (see `transport_checked`),
     // and when it is, the removal just fails.
     let _ = ssh::sftp_rm(&host, &remote_path);
+    if let Some(f) = &token_file {
+        // The remote deletes it on read; this is the backstop.
+        let _ = ssh::sftp_rm(&host, f);
+    }
     transport_checked(code, host_name, target)
 }
 
@@ -311,10 +371,20 @@ fn transport_checked(code: i32, host_name: &str, target: &str) -> anyhow::Result
 
 /// The remote panio's argv for a user-facing dispatch: `panio
 /// [--plugin-path=…] --lab <slice>` (see [`crate::model::Host::panio_argv`]),
-/// then `--json-errors` when requested here, then `sub_argv`.
-fn remote_argv(host: &crate::model::Host, remote_path: &str, sub_argv: &[String]) -> Vec<String> {
+/// then `--lease-file <token file>` when a token was shipped (the path only,
+/// never the token), then `--json-errors` when requested here, then
+/// `sub_argv`.
+fn remote_argv(
+    host: &crate::model::Host,
+    remote_path: &str,
+    token_file: Option<&str>,
+    sub_argv: &[String],
+) -> Vec<String> {
     let mut argv = host.panio_argv();
     argv.extend(["--lab".to_string(), remote_path.to_string()]);
+    if let Some(f) = token_file {
+        argv.extend(["--lease-file".to_string(), f.to_string()]);
+    }
     argv.extend(json_errors_arg(crate::error::json_requested()));
     argv.extend(sub_argv.iter().cloned());
     argv
@@ -476,7 +546,7 @@ pub fn dispatch_stdout_to_file(
     let slice = build_slice(lab, target, host_name)?;
     let remote_path = ship_slice(&host, host_name, target, &slice)?;
 
-    let argv = remote_argv(&host, &remote_path, sub_argv);
+    let argv = remote_argv(&host, &remote_path, None, sub_argv);
 
     let env = ssh::forwarded_env()?;
     let code = capture_to_file(out_path, |sink| {
@@ -1106,7 +1176,7 @@ mod tests {
             ..Default::default()
         };
         let sub = vec!["helper".to_string()];
-        let argv = remote_argv(&host, ".slice.toml", &sub);
+        let argv = remote_argv(&host, ".slice.toml", None, &sub);
         assert_eq!(argv[0], "panio");
         assert_eq!(argv[1], "--plugin-path=/opt/lab-plugins:/srv/more");
         assert_eq!(&argv[2..4], ["--lab", ".slice.toml"]);
@@ -1117,11 +1187,30 @@ mod tests {
         );
 
         host.plugin_path = None;
-        let argv = remote_argv(&host, ".slice.toml", &sub);
+        let argv = remote_argv(&host, ".slice.toml", None, &sub);
         assert!(
             !argv.iter().any(|a| a.starts_with("--plugin-path")),
             "{argv:?}"
         );
+    }
+
+    #[test]
+    fn lease_file_flag_not_token() {
+        use clap::Parser;
+        let host = model::Host {
+            ssh: "u@bench1".to_string(),
+            ..Default::default()
+        };
+        let sub = vec!["serial".to_string(), "connect".to_string()];
+        let argv = remote_argv(&host, ".slice.toml", Some(".panio-lease-1-2"), &sub);
+        let pos = argv.iter().position(|a| a == "--lease-file").unwrap();
+        assert_eq!(argv[pos + 1], ".panio-lease-1-2");
+        assert!(pos < argv.iter().position(|a| a == "serial").unwrap());
+        assert!(!argv.join(" ").contains("s3cr3t"), "{argv:?}");
+        crate::Cli::try_parse_from(&argv).expect("the remote parser accepts --lease-file");
+
+        let argv = remote_argv(&host, ".slice.toml", None, &sub);
+        assert!(!argv.iter().any(|a| a == "--lease-file"), "{argv:?}");
     }
 
     #[test]

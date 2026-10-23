@@ -89,6 +89,13 @@ struct Cli {
     // name, and a global flag would collide with it.
     #[arg(long, value_name = "LIST")]
     plugin_path: Option<String>,
+    /// Read the lease token from this file, delete the file, and use the
+    /// token as PANIO_LEASE. Dispatch passes it for interactive commands,
+    /// which cannot forward environment variables. A remote panio older than
+    /// this flag rejects it with a usage error (the same version skew as
+    /// `--json-errors`).
+    #[arg(long, value_name = "PATH", hide = true)]
+    lease_file: Option<String>,
     #[command(subcommand)]
     command: Command,
 }
@@ -1417,6 +1424,11 @@ fn main() {
     if let Some(p) = &cli.plugin_path {
         // Safe: no other thread exists yet.
         unsafe { std::env::set_var(daemons::PLUGIN_PATH_ENV, p) };
+    }
+    if let Some(f) = &cli.lease_file {
+        if let Err(e) = lease::take_lease_file(f) {
+            std::process::exit(error::report(&e));
+        }
     }
     if let Err(e) = run(cli) {
         // `report` prints the full `.context()` chain (`{e:#}`), not just the
