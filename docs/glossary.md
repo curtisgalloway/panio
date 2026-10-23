@@ -12,11 +12,17 @@ each term briefly on first use; this page is the longer reference.
 
 | Term | Meaning |
 |---|---|
+| **lease** | A time-limited reservation of a whole target by one holder. Others can still read from the target but cannot change it. See [Target leases](leases.md). |
+| **holder** | Whoever acquired a lease and has its token: a person, an agent, or several agents sharing the token. |
+| **lease token** | The random secret `panio lease acquire` prints. Passed in the `PANIO_LEASE` environment variable to prove a command belongs to the holder. |
+| **default host** | A target's `host` field: the host every channel uses unless it names its own. A lease record lives there. |
+| **preempt** | Take a lease from its holder with `--preempt`; the holder is told on its next command. |
 | **action** | A named hook command in a target's `actions` table for a control that is not power, such as a reset line or boot strap. Run with `panio action run`. See [Named actions](actions.md). |
 | **power level** | A named set of power hooks (such as `soft` or `hard`) beside a target's default ones, for a target with more than one independent power layer. Picked with `--level` on the power commands. See [Power levels](power.md#power-levels-soft-and-hard). |
 | **receive boundary** | A capture epoch and exclusive RX chunk sequence; only later received chunks from that epoch belong to an acquisition. |
 | **transaction / transaction lock** | One `serial transact` exchange: record the receive boundary, send a command, wait for its reply. The per-interface lock it holds makes other transactions wait their turn and refuses plain input (`serial send`, dashboard keystrokes) until it ends. See [transactions](serial.md#requestresponse-transactions). |
 | **follow / NDJSON** | Deliver completed rows as separate JSON objects, one per line, then a final result object. A row beginning at an arbitrary receive boundary may have an unknown prefix. |
+| **fault rule** | A named literal pattern on a serial interface (`faults` in the lab file, `panio serial fault set`). When it appears in the bytes a `serial wait` acquires, the wait ends with status `fault`. See [Fault rules](serial.md#fault-rules). |
 | **capture epoch** | Identifier for one serial interface supervisor lifetime. Receive chunk counters restart with a new epoch. |
 | **receive record / evidence cursor** | An immutable chunk of exact bytes received from a target, identified by a capture epoch and RX sequence. It preserves the original receive time; later reads have their own observation time. This cursor is different from a line-log sequence. |
 | **connection generation** | Successful port-open count within an epoch; increments on reconnect. |

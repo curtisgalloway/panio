@@ -1,0 +1,28 @@
+# Copyright 2026 Curtis Galloway — Licensed under the Apache License, Version 2.0.
+id = "l1"
+title = "Lease a board, power-cycle it, release it"
+tier = "t0"
+core = false
+conditions = ["cold", "warm", "preloaded"]
+capabilities = ["lease", "power"]
+goal = """
+Another agent shares this lab and may touch the Pi `pico` at any time. I need
+to power-cycle `pico` without anyone interfering, then give it back. List the
+exact panio command(s) you would run, in order, and how the later commands
+would prove they belong to you.
+"""
+traps = [
+  "reserve the board first with `panio lease acquire pico`; do not just power-cycle and hope",
+  "`acquire` prints the token alone on stdout; carry it in `PANIO_LEASE` (e.g. `export PANIO_LEASE=$(panio lease acquire pico)`), not as a flag",
+  "end with `panio lease release pico`; do NOT use --preempt, which takes the board from someone else",
+  "exit 23 means someone else holds it: check `panio lease status pico` or use `--wait`, don't work around it",
+]
+reference = [
+  'export PANIO_LEASE=$(panio lease acquire pico)',
+  'panio power-cycle pico',
+  'panio lease release pico',
+]
+seed = "bench.toml"
+
+[grader]
+type = "judge"

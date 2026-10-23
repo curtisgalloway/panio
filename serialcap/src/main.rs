@@ -157,7 +157,7 @@ enum Cmd {
         #[arg(long, default_value_t = evidence::DEFAULT_MAX_BYTES)]
         max_bytes: u64,
     },
-    /// Acquire fresh raw output until a pattern, deadline or byte cap.
+    /// Acquire fresh raw output until a pattern, fault rule, deadline or byte cap.
     /// Returns JSON evidence and an explicit status even on timeout/disconnect;
     /// never sends input, resets hardware or restarts a daemon.
     Wait {
@@ -185,6 +185,12 @@ enum Cmd {
         /// A match is observation, not proof of target command execution.
         #[arg(long, value_parser = clap::builder::NonEmptyStringValueParser::new())]
         pattern: Option<String>,
+        /// Fault rule NAME=PATTERN (repeatable, split at the first `=`): end
+        /// with status `fault` when this literal appears in fresh raw bytes.
+        /// The earliest hit among --pattern and the rules wins; a tie goes to
+        /// --pattern, then to the rules in the order given.
+        #[arg(long = "fault", value_name = "NAME=PATTERN", value_parser = parse_fault)]
+        faults: Vec<(String, String)>,
         /// Include the trailing unterminated bytes acquired after the boundary.
         #[arg(long)]
         include_pending: bool,
@@ -200,6 +206,18 @@ enum Cmd {
     /// Older daemons without the shutdown endpoint must be stopped with
     /// `panio daemons stop serialcap` before starting the updated daemon.
     Stop,
+}
+
+/// `--fault NAME=PATTERN`: split at the first `=`; both halves nonempty.
+fn parse_fault(arg: &str) -> Result<(String, String), String> {
+    match arg.split_once('=') {
+        Some((name, pattern)) if !name.is_empty() && !pattern.is_empty() => {
+            Ok((name.to_string(), pattern.to_string()))
+        }
+        _ => Err(format!(
+            "expected NAME=PATTERN with both parts nonempty, got '{arg}'"
+        )),
+    }
 }
 
 fn main() -> Result<()> {
@@ -254,6 +272,7 @@ fn main() -> Result<()> {
             max_bytes,
             max_output_bytes,
             pattern,
+            faults,
             include_pending,
             follow,
         } => wait::cmd_wait(
@@ -265,6 +284,7 @@ fn main() -> Result<()> {
                 max_bytes,
                 max_output_bytes,
                 pattern,
+                faults,
                 include_pending,
                 follow,
             },

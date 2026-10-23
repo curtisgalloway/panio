@@ -227,6 +227,27 @@ impl LabFile {
         Ok(())
     }
 
+    /// Set (`Some(true)`) or clear (`Some(false)` removes the key, the
+    /// default) a target's `lease_required`; `None` leaves it alone.
+    pub fn set_target_lease_required(
+        &mut self,
+        name: &str,
+        lease_required: Option<bool>,
+    ) -> Result<(), LabError> {
+        model::validate_name("target", name)?;
+        let t = self.target_mut(name)?;
+        match lease_required {
+            Some(true) => {
+                t.insert("lease_required", value(true));
+            }
+            Some(false) => {
+                t.remove("lease_required");
+            }
+            None => {}
+        }
+        Ok(())
+    }
+
     pub fn remove_target(&mut self, name: &str) -> Result<(), LabError> {
         let targets = self
             .doc
@@ -362,6 +383,70 @@ impl LabFile {
             t.remove("serial");
         }
         Ok(())
+    }
+
+    /// Add or replace one fault rule on a serial interface, kept as an inline
+    /// `faults = { name = "pattern" }` table.
+    pub fn set_serial_fault(
+        &mut self,
+        target: &str,
+        interface: &str,
+        name: &str,
+        pattern: &str,
+    ) -> Result<(), LabError> {
+        model::validate_fault_rule(name, pattern)?;
+        let s = self.serial_mut(target, interface)?;
+        if !s.contains_key("faults") {
+            s.insert("faults", value(toml_edit::InlineTable::new()));
+        }
+        let faults = s
+            .get_mut("faults")
+            .and_then(|i| i.as_inline_table_mut())
+            .ok_or_else(|| {
+                LabError(format!(
+                    "target '{target}' serial '{interface}': faults is not an inline table"
+                ))
+            })?;
+        faults.insert(name, toml_edit::Value::from(pattern));
+        // A parsed `{ a = "x" }` keeps the space before `}` on its last
+        // value, so an appended rule would print as `"x" , b = …`.
+        faults.fmt();
+        Ok(())
+    }
+
+    /// Remove one fault rule; drops the `faults` key with the last rule.
+    pub fn remove_serial_fault(
+        &mut self,
+        target: &str,
+        interface: &str,
+        name: &str,
+    ) -> Result<(), LabError> {
+        let s = self.serial_mut(target, interface)?;
+        let no_rule = || {
+            LabError(format!(
+                "target '{target}' serial '{interface}': no fault rule '{name}'"
+            ))
+        };
+        let faults = s
+            .get_mut("faults")
+            .and_then(|i| i.as_inline_table_mut())
+            .ok_or_else(no_rule)?;
+        faults.remove(name).ok_or_else(no_rule)?;
+        if faults.is_empty() {
+            s.remove("faults");
+        }
+        Ok(())
+    }
+
+    fn serial_mut(&mut self, target: &str, interface: &str) -> Result<&mut Table, LabError> {
+        let t = self.target_mut(target)?;
+        let no_serial = || LabError(format!("target '{target}': no serial '{interface}'"));
+        t.get_mut("serial")
+            .and_then(|i| i.as_array_of_tables_mut())
+            .ok_or_else(no_serial)?
+            .iter_mut()
+            .find(|s| s.get("name").and_then(|v| v.as_str()) == Some(interface))
+            .ok_or_else(no_serial)
     }
 
     // ── singleton channels (netboot / power / video) ─────────────────────────
@@ -1480,6 +1565,80 @@ mod tests {
     }
 
     #[test]
+    fn serial_fault_round_trip_replace_and_remove() {
+        let mut lf = LabFile::create(Path::new("x.toml"));
+        lf.add_target("t", None, None).unwrap();
+        lf.add_serial("t", "console", "/dev/a", 115200, None, false, None, None)
+            .unwrap();
+        lf.set_serial_fault("t", "console", "oops", "Oops:")
+            .unwrap();
+        lf.set_serial_fault("t", "console", "panic", "Kernel panic")
+            .unwrap();
+        let text = lf.doc.to_string();
+        assert!(text.contains("faults = {"), "{text}");
+        let f = &model::parse(&text).unwrap().targets["t"].serial[0].faults;
+        assert_eq!(f.len(), 2);
+        assert_eq!(f["oops"], "Oops:");
+
+        lf.set_serial_fault("t", "console", "oops", "Oops: 0")
+            .unwrap();
+        let f = &model::parse(&lf.doc.to_string()).unwrap().targets["t"].serial[0].faults;
+        assert_eq!(f.len(), 2);
+        assert_eq!(f["oops"], "Oops: 0");
+
+        lf.remove_serial_fault("t", "console", "oops").unwrap();
+        lf.remove_serial_fault("t", "console", "panic").unwrap();
+        let text = lf.doc.to_string();
+        assert!(!text.contains("faults"), "{text}");
+        assert!(model::parse(&text).unwrap().targets["t"].serial[0]
+            .faults
+            .is_empty());
+    }
+
+    /// Appending to a `faults` table read back from disk keeps it tidy.
+    #[test]
+    fn serial_fault_appends_cleanly_to_a_loaded_table() {
+        let (_d, path) = tmp();
+        std::fs::write(
+            &path,
+            "[targets.t]\n[[targets.t.serial]]\nname = \"console\"\ndevice = \"/dev/a\"\n\
+             faults = { kp = \"Kernel panic\" }\n",
+        )
+        .unwrap();
+        let mut lf = LabFile::load(&path).unwrap();
+        lf.set_serial_fault("t", "console", "oops", "Oops:")
+            .unwrap();
+        let text = lf.doc.to_string();
+        assert!(
+            text.contains("faults = { kp = \"Kernel panic\", oops = \"Oops:\" }"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn serial_fault_errors() {
+        let mut lf = LabFile::create(Path::new("x.toml"));
+        lf.add_target("t", None, None).unwrap();
+        lf.add_serial("t", "console", "/dev/a", 115200, None, false, None, None)
+            .unwrap();
+        let e = lf.set_serial_fault("t", "nope", "a", "x").unwrap_err();
+        assert!(e.0.contains("no serial 'nope'"), "{}", e.0);
+        let e = lf
+            .set_serial_fault("t", "console", "bad name", "x")
+            .unwrap_err();
+        assert!(e.0.contains("invalid fault rule name"), "{}", e.0);
+        let e = lf.set_serial_fault("t", "console", "a", "").unwrap_err();
+        assert!(e.0.contains("empty"), "{}", e.0);
+        let e = lf.remove_serial_fault("t", "console", "a").unwrap_err();
+        assert!(e.0.contains("no fault rule 'a'"), "{}", e.0);
+        lf.set_serial_fault("t", "console", "b", "x").unwrap();
+        let e = lf.remove_serial_fault("t", "console", "a").unwrap_err();
+        assert!(e.0.contains("no fault rule 'a'"), "{}", e.0);
+        let e = lf.remove_serial_fault("t", "nope", "a").unwrap_err();
+        assert!(e.0.contains("no serial 'nope'"), "{}", e.0);
+    }
+
+    #[test]
     fn remove_last_serial_drops_array() {
         let (_d, path) = tmp();
         let mut lf = LabFile::create(&path);
@@ -1891,5 +2050,33 @@ mod tests {
         )
         .unwrap();
         assert!(model::load(&path).is_err());
+    }
+
+    #[test]
+    fn lease_required_round_trips() {
+        let (_d, path) = tmp();
+        std::fs::write(
+            &path,
+            "# keep me\n[targets.t]\n# inline note\ndescription = \"d\"\n",
+        )
+        .unwrap();
+        let mut lf = LabFile::load(&path).unwrap();
+        lf.set_target_lease_required("t", Some(true)).unwrap();
+        lf.save().unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            text.contains("# keep me") && text.contains("# inline note"),
+            "{text}"
+        );
+        assert!(model::load(&path).unwrap().targets["t"].lease_required());
+        let mut lf = LabFile::load(&path).unwrap();
+        lf.set_target_lease_required("t", Some(false)).unwrap();
+        lf.save().unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            !text.contains("lease_required"),
+            "false removes the key: {text}"
+        );
+        assert!(!model::load(&path).unwrap().targets["t"].lease_required());
     }
 }

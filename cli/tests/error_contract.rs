@@ -67,7 +67,7 @@ fn error_object(out: &Output) -> Value {
 fn category_of(kind: &str) -> Value {
     match kind {
         "not_configured" | "unreachable" | "daemon_down" => "infrastructure".into(),
-        "timeout" => "transient".into(),
+        "timeout" | "target_leased" => "transient".into(),
         "helper_failed" => "device_state".into(),
         _ => Value::Null,
     }

@@ -182,7 +182,9 @@ cli/src/
                 `serial wait` (bounded, opens no devices), `serial transact` (POST
                 /transact; write tool; -t only), read-only health_snapshot
                 (`serial status`), offline read_evidence (`serial evidence`); each
-                has an MCP twin
+                has an MCP twin. `serial wait` passes the interface's lab
+                `faults` as `--fault NAME=PATTERN` (`serial fault set|rm` edit
+                them; `build_slice` carries them to remote hosts)
   video.rs      hdmicap orchestration (daemon start/stop, client passthrough)
   adb.rs        adb transport (argv, shell exec, run/input passthrough, exec-out
                 screencap → PNG); generic transport in core, no helper
@@ -215,6 +217,19 @@ cli/src/
   actions.rs    named target actions (#299): find, run_hook, the requires_power
                 refusal, and the per-target hook lock (std File::try_lock, 120 s
                 wait) that power hooks take too
+  lease.rs      target leases (#360): lease.json store under an exclusive file
+                lock, the pure `decide` table, `enforce` (the central check:
+                reads allowed, mutating needs PANIO_LEASE, ended tokens refuse
+                or warn), `cleanup` (registered procs, serialcap/hdmicap/hid
+                daemons, netboot, link down; never power and never the lease
+                check, since it runs under the lock), `--lease-file` handoff
+  lease_cmd.rs  `panio lease acquire|renew|release|status` bodies and `retire`
+                (cleanup + history line). main.rs `remote_console` runs a
+                `Keepalive` thread (holder read every min(idle/2, 5 min)) while
+                a caller with a token has a console open. main.rs `lease_scope` classifies every
+                command as Read/Mutating/Unchecked with no `_` arm, so a new
+                subcommand must be classified; `lease_check` runs it once in
+                `run`. Guide: docs/leases.md, design: notes/target-leases.md
   mcp.rs        `panio mcp` (experimental) stdio JSON-RPC server. stdout is
                 the protocol channel, so tools run this binary as a child (stdin
                 null, stdout captured) rather than call printing handlers; each

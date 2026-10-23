@@ -27,6 +27,8 @@ mod dispatch;
 mod doctor;
 mod error;
 mod labfile;
+mod lease;
+mod lease_cmd;
 mod mcp;
 mod model;
 mod netboot;
@@ -87,6 +89,13 @@ struct Cli {
     // name, and a global flag would collide with it.
     #[arg(long, value_name = "LIST")]
     plugin_path: Option<String>,
+    /// Read the lease token from this file, delete the file, and use the
+    /// token as PANIO_LEASE. Dispatch passes it for interactive commands,
+    /// which cannot forward environment variables. A remote panio older than
+    /// this flag rejects it with a usage error (the same version skew as
+    /// `--json-errors`).
+    #[arg(long, value_name = "PATH", hide = true)]
+    lease_file: Option<String>,
     #[command(subcommand)]
     command: Command,
 }
@@ -143,6 +152,15 @@ enum Command {
     Hid {
         #[command(subcommand)]
         cmd: HidCmd,
+    },
+    /// Reserve a whole target for one holder (acquire, renew, release, status).
+    ///
+    /// `acquire` prints a secret token; pass it to later commands in
+    /// PANIO_LEASE. A lease ends on its own after its duration or when idle,
+    /// and anyone can take it with `acquire --preempt`.
+    Lease {
+        #[command(subcommand)]
+        cmd: LeaseCmd,
     },
     /// Switch a shared USB device between the control host and the target —
     /// an Openterface KVM-Go's onboard microSD card, or a Mini-KVM's
@@ -496,7 +514,7 @@ enum TargetCmd {
         #[arg(long, alias = "note")]
         description: Option<String>,
     },
-    /// Update a target's default host or description.
+    /// Update a target's default host, description, or lease requirement.
     Set {
         name: String,
         #[arg(long)]
@@ -504,11 +522,51 @@ enum TargetCmd {
         /// Free-text description of the target (accepts `--note` as an alias).
         #[arg(long, alias = "note")]
         description: Option<String>,
+        /// Require a lease for every command on this target (`true`), or stop
+        /// requiring one (`false` removes the key). Every channel must be on the
+        /// target's default host (`--host`); otherwise this is refused.
+        #[arg(long, value_name = "BOOL")]
+        lease_required: Option<bool>,
     },
     /// Rename a target, carrying all its channels.
     Rename { old: String, new: String },
     /// Remove a target and all its channels.
     Rm { name: String },
+}
+
+#[derive(Subcommand)]
+enum FaultCmd {
+    /// Add or replace a fault rule on a serial interface.
+    ///
+    /// PATTERN is a literal byte string (no regex, 1..=1024 bytes). `serial
+    /// wait` and the MCP `serial_wait` tool end with status `fault` naming the
+    /// rule when it appears in fresh bytes before `--pattern` does; a fault
+    /// is an observation, so the command still exits 0. `serial transact`
+    /// does not apply fault rules. At most 32 rules per interface.
+    Set {
+        /// Rule name (letters, digits, `.`, `_`, `-`); setting an existing
+        /// name replaces its pattern.
+        name: String,
+        /// Literal text to look for in received serial bytes.
+        pattern: String,
+        /// Target the interface belongs to.
+        #[arg(long, short)]
+        target: String,
+        /// Interface name (optional when the target has only one).
+        #[arg(long, short)]
+        interface: Option<String>,
+    },
+    /// Remove a fault rule from a serial interface (an error if absent).
+    Rm {
+        /// Name of the rule to remove.
+        name: String,
+        /// Target the interface belongs to.
+        #[arg(long, short)]
+        target: String,
+        /// Interface name (optional when the target has only one).
+        #[arg(long, short)]
+        interface: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -562,6 +620,15 @@ enum SerialCmd {
         name: String,
         #[arg(long, short)]
         target: String,
+    },
+    /// Manage serial fault rules (set, rm).
+    ///
+    /// A fault rule is a named literal pattern on a serial interface. When it
+    /// appears in the bytes `serial wait` acquires, the wait ends with status
+    /// `fault` naming the rule.
+    Fault {
+        #[command(subcommand)]
+        cmd: FaultCmd,
     },
     /// Open an interactive serial console (via tio) on the channel's host.
     Connect {
@@ -656,9 +723,11 @@ enum SerialCmd {
         #[arg(long, default_value_t = serial::DEFAULT_EVIDENCE_BYTES, value_parser = clap::value_parser!(u64).range(1..=serial::MAX_EVIDENCE_BYTES))]
         max_bytes: u64,
     },
-    /// Acquire fresh serial evidence until a pattern, deadline or byte cap.
-    /// Returns JSON with timing, raw records and explicit stop status;
-    /// never sends input, resets hardware or restarts a daemon.
+    /// Acquire fresh serial evidence until a pattern, a lab fault rule,
+    /// deadline or byte cap. Returns JSON with timing, raw records and
+    /// explicit stop status; never sends input, resets hardware or restarts a
+    /// daemon. Fault rules (`serial fault set`) apply automatically: status
+    /// `fault` names the rule, and still exits 0.
     Wait {
         #[command(flatten)]
         target: TargetArg,
@@ -1108,6 +1177,81 @@ enum HidCmd {
 }
 
 #[derive(Subcommand)]
+enum LeaseCmd {
+    /// Reserve the target and print its token (alone on stdout).
+    ///
+    /// Fails with exit 23 when someone else holds it; --wait polls until it
+    /// is free, --preempt takes it. Already holding it (PANIO_LEASE matches)
+    /// renews it and prints the same token. Durations are 90s, 30m, 2h, at
+    /// most 24h.
+    Acquire {
+        #[command(flatten)]
+        target: TargetArg,
+        /// Display name for the holder (default: USER@short-hostname of the
+        /// machine you run this on).
+        #[arg(long, value_name = "LABEL")]
+        owner: Option<String>,
+        /// Total lease length (default 2h).
+        #[arg(long, value_name = "DUR")]
+        duration: Option<String>,
+        /// End the lease after this long with no command and no live
+        /// registered process (default 30m).
+        #[arg(long, value_name = "DUR")]
+        idle: Option<String>,
+        /// If the target is held, keep trying (every 2 s) for this long.
+        #[arg(long, value_name = "DUR")]
+        wait: Option<String>,
+        /// Take the target from its current holder, who is told on its next
+        /// command. The holder's leftovers are cleaned up first.
+        #[arg(long)]
+        preempt: bool,
+        /// Print {token, owner, expires_at, expires_in_secs} as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Extend your lease (needs PANIO_LEASE).
+    ///
+    /// A lease that has already expired is retired (cleaned up) and the
+    /// command exits 23 saying so.
+    Renew {
+        #[command(flatten)]
+        target: TargetArg,
+        /// New length from now (default: the lease's original duration).
+        #[arg(long, value_name = "DUR")]
+        duration: Option<String>,
+    },
+    /// End your lease and clean the target up (needs PANIO_LEASE, or --preempt).
+    ///
+    /// Releasing a lease that is already over is not an error: with a token
+    /// that names an ended lease it exits 0 and says how it ended (a new
+    /// holder is left alone); on a target nobody holds, with no token, it
+    /// exits 0 ("not leased").
+    Release {
+        #[command(flatten)]
+        target: TargetArg,
+        /// End someone else's lease without its token.
+        #[arg(long)]
+        preempt: bool,
+    },
+    /// Show who holds a target and for how long; never prints the token.
+    ///
+    /// With no target in a lab that has several, lists them all; a host that
+    /// cannot be reached is reported in its row. Not read-only: it cleans up
+    /// a lease that has expired. While a registered process is alive the
+    /// lease cannot idle out, so the idle countdown is replaced by
+    /// "kept alive by N process(es)" (`idle_left_secs` is null in JSON).
+    Status {
+        #[command(flatten)]
+        target: TargetArg,
+        /// Print JSON ({target, held, owner, expires_in_secs, idle_left_secs,
+        /// procs, idle_secs, last_change}; an array when listing every
+        /// target).
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
 enum UsbCmd {
     /// Configure the target's usb channel (one per target).
     Set {
@@ -1339,6 +1483,11 @@ fn main() {
         // Safe: no other thread exists yet.
         unsafe { std::env::set_var(daemons::PLUGIN_PATH_ENV, p) };
     }
+    if let Some(f) = &cli.lease_file {
+        if let Err(e) = lease::take_lease_file(f) {
+            std::process::exit(error::report(&e));
+        }
+    }
     if let Err(e) = run(cli) {
         // `report` prints the full `.context()` chain (`{e:#}`), not just the
         // outermost message — a bare `{e}` drops every cause a command added
@@ -1347,8 +1496,185 @@ fn main() {
     }
 }
 
+/// Which target a command acts on, for the lease check.
+enum LeaseScope<'a> {
+    /// No target: nothing to check.
+    None,
+    /// The target the user named.
+    Named(&'a str),
+    /// The target the user did not name: the lab's only one.
+    Sole,
+}
+
+impl<'a> LeaseScope<'a> {
+    fn from_arg(t: &'a TargetArg) -> Self {
+        t.name().map_or(LeaseScope::Sole, LeaseScope::Named)
+    }
+
+    fn from_opt(t: &'a Option<String>) -> Self {
+        t.as_deref().map_or(LeaseScope::Sole, LeaseScope::Named)
+    }
+}
+
+/// How a command touches its target, and which target, for the lease check
+/// (`notes/target-leases.md`, "Which commands are mutating"). Exhaustive
+/// with no `_` arm: a new subcommand does not compile until it is classified.
+fn lease_scope(cmd: &Command) -> (lease::Access, LeaseScope<'_>) {
+    use lease::Access::{Mutating, Read, Unchecked};
+    let a = LeaseScope::from_arg;
+    let o = LeaseScope::from_opt;
+    let none = || (Unchecked, LeaseScope::None);
+    match cmd {
+        Command::Init { .. }
+        | Command::Config { .. }
+        | Command::Host { .. }
+        | Command::Target { .. }
+        | Command::Lease { .. }
+        | Command::Discover { .. }
+        | Command::Configure { .. }
+        | Command::Setup { .. }
+        | Command::Mcp
+        | Command::Helper { .. }
+        | Command::Skill { .. }
+        | Command::Daemons { .. } => none(),
+        Command::Serial { cmd } => match cmd {
+            SerialCmd::Add { .. }
+            | SerialCmd::Set { .. }
+            | SerialCmd::Rm { .. }
+            | SerialCmd::Fault { .. }
+            | SerialCmd::Devices => none(),
+            SerialCmd::Connect { target, .. }
+            | SerialCmd::Watch { target, .. }
+            | SerialCmd::Stop { target }
+            | SerialCmd::Dtr { target, .. }
+            | SerialCmd::Reset { target, .. } => (Mutating, a(target)),
+            SerialCmd::Send {
+                first,
+                second,
+                target,
+                ..
+            } => {
+                let named = if second.is_some() {
+                    Some(first.as_str())
+                } else {
+                    target.as_deref()
+                };
+                (Mutating, named.map_or(LeaseScope::Sole, LeaseScope::Named))
+            }
+            SerialCmd::Transact { target, .. } => (Mutating, o(target)),
+            SerialCmd::Log { target, .. }
+            | SerialCmd::Evidence { target, .. }
+            | SerialCmd::Wait { target, .. }
+            | SerialCmd::Status { target, .. }
+            | SerialCmd::Show { target } => (Read, a(target)),
+        },
+        Command::Netboot { cmd } => match cmd {
+            NetbootCmd::Set { .. } | NetbootCmd::Rm { .. } | NetbootCmd::Devices => none(),
+            NetbootCmd::Start { target } | NetbootCmd::Stop { target } => (Mutating, a(target)),
+            NetbootCmd::Status { target }
+            | NetbootCmd::Logs { target, .. }
+            | NetbootCmd::TftpRoot { target } => (Read, a(target)),
+        },
+        Command::Netif { cmd } => match cmd {
+            NetifCmd::Vlan { .. } => none(),
+            NetifCmd::Mode { target, .. } | NetifCmd::DownHard { target } => (Mutating, a(target)),
+            NetifCmd::Status { target } => (Read, a(target)),
+        },
+        Command::Power { cmd } => match cmd {
+            PowerCmd::Set { .. } | PowerCmd::Rm { .. } => none(),
+            PowerCmd::On { target, .. } | PowerCmd::Off { target, .. } => (Mutating, a(target)),
+        },
+        Command::Video { cmd } => match cmd {
+            VideoCmd::Set { .. } | VideoCmd::Rm { .. } | VideoCmd::Devices => none(),
+            VideoCmd::Watch { target, .. }
+            | VideoCmd::Stop { target }
+            | VideoCmd::Preview { target, .. } => (Mutating, a(target)),
+            VideoCmd::Shot { target, .. }
+            | VideoCmd::Read { target, .. }
+            | VideoCmd::Show { target } => (Read, a(target)),
+        },
+        Command::Hid { cmd } => match cmd {
+            HidCmd::Set { .. } | HidCmd::Rm { .. } => none(),
+            HidCmd::Send { target, .. } => (Mutating, o(target)),
+            HidCmd::Serve { target } | HidCmd::Stop { target } => (Mutating, a(target)),
+        },
+        Command::Usb { cmd } => match cmd {
+            UsbCmd::Set { .. } | UsbCmd::Rm { .. } => none(),
+            UsbCmd::AttachHost { target } | UsbCmd::AttachTarget { target } => {
+                (Mutating, o(target))
+            }
+            UsbCmd::State { target } => (Read, o(target)),
+        },
+        Command::Action { cmd } => match cmd {
+            ActionCmd::Set { .. } | ActionCmd::Rm { .. } => none(),
+            ActionCmd::Run { target, .. } => (Mutating, o(target)),
+            ActionCmd::List { target, .. } => (Read, o(target)),
+        },
+        Command::Adb { cmd } => match cmd {
+            AdbCmd::Set { .. } | AdbCmd::Rm { .. } | AdbCmd::Devices { .. } => none(),
+            AdbCmd::Shell { target } => (Mutating, a(target)),
+            AdbCmd::Run { target, .. } | AdbCmd::Input { target, .. } => (Mutating, o(target)),
+            AdbCmd::Show { target } | AdbCmd::Screencap { target, .. } => (Read, a(target)),
+        },
+        Command::Console { target, .. } | Command::PowerCycle { target, .. } => {
+            (Mutating, a(target))
+        }
+        Command::PowerState { target, .. } => (Read, a(target)),
+        Command::Doctor { target, .. } => (
+            Read,
+            target
+                .as_deref()
+                .map_or(LeaseScope::None, LeaseScope::Named),
+        ),
+    }
+}
+
+/// Run the lease check for the command about to execute, when this host is
+/// the one that executes it: the target's default host is local. On a
+/// control host the shipped lab slice has every `host` stripped, so the
+/// re-exec'd panio lands here and checks; on the dev machine a target whose
+/// default host is remote is checked over there instead. One call covers
+/// every handler, including the ones that bypass `maybe_dispatch`
+/// (`console`, `action run`, the `serial`/`adb` runtimes).
+///
+/// A lab that will not load or a target that does not resolve is left for
+/// the handler to report with its own error.
+fn lease_check(
+    lab_flag: Option<&str>,
+    access: lease::Access,
+    scope: LeaseScope<'_>,
+    register: bool,
+) -> Result<()> {
+    if access == lease::Access::Unchecked {
+        return Ok(());
+    }
+    let Ok(lab) = load_for_read(lab_flag) else {
+        return Ok(());
+    };
+    let name = match scope {
+        LeaseScope::None => return Ok(()),
+        LeaseScope::Named(n) => n.to_string(),
+        LeaseScope::Sole => match resolve_single_target(&lab, None) {
+            Ok(n) => n,
+            Err(_) => return Ok(()),
+        },
+    };
+    let Some(rt) = lab.resolved_target(&name) else {
+        return Ok(());
+    };
+    if !lab.host(&rt.default_host).is_local(&rt.default_host) {
+        return Ok(());
+    }
+    lease::enforce_with(&lab, &name, access, register)
+}
+
 fn run(cli: Cli) -> Result<()> {
     let lab_flag = cli.lab.as_deref();
+    let (access, scope) = lease_scope(&cli.command);
+    // The console keeps its lease alive itself and leaves on its own when the
+    // lease ends, so it is not registered as a process for cleanup to kill.
+    let register = !matches!(cli.command, Command::Console { .. });
+    lease_check(lab_flag, access, scope, register)?;
     match cli.command {
         Command::Init { path } => cmd_init(lab_flag, path.as_deref()),
         Command::Config { cmd } => match cmd {
@@ -1365,6 +1691,7 @@ fn run(cli: Cli) -> Result<()> {
         Command::Video { cmd } => video_cmd(lab_flag, cmd),
         Command::Hid { cmd } => hid_cmd(lab_flag, cmd),
         Command::Usb { cmd } => usb_cmd(lab_flag, cmd),
+        Command::Lease { cmd } => lease_command(lab_flag, cmd),
         Command::Action { cmd } => action_cmd(lab_flag, cmd),
         Command::Adb { cmd } => adb_cmd(lab_flag, cmd),
         Command::Console {
@@ -1411,7 +1738,9 @@ fn run(cli: Cli) -> Result<()> {
         Command::Skill { name, path } => skills::run(name.as_deref(), path),
         Command::Daemons { cmd } => match cmd.unwrap_or(DaemonsCmd::List) {
             DaemonsCmd::List => cmd_daemons_list(),
-            DaemonsCmd::Stop { names, all, force } => cmd_daemons_stop(&names, all, force),
+            DaemonsCmd::Stop { names, all, force } => {
+                cmd_daemons_stop(lab_flag, &names, all, force)
+            }
             DaemonsCmd::Restart { names, all, stale } => {
                 cmd_daemons_restart(lab_flag, &names, all, stale)
             }
@@ -1618,13 +1947,182 @@ fn cmd_daemons_list() -> Result<()> {
     Ok(())
 }
 
+/// The per-target daemons a target lease covers: the capture daemons, hid, and
+/// a target's netboot session (netbootd's instance is its target). Host
+/// singletons (zigplug, cambrionix) serve every target and are never checked.
+const LEASED_DAEMONS: [&str; 4] = ["serialcap", "hdmicap", "hid", "netbootd"];
+
+/// A daemon left alone because its target is leased to someone else.
+struct LeaseSkip {
+    daemon: String,
+    target: String,
+    block: lease::Block,
+}
+
+impl LeaseSkip {
+    fn label(&self) -> String {
+        format!("{}/{}", self.daemon, self.target)
+    }
+
+    /// The stderr line `--all` prints for a daemon it skipped.
+    fn line(&self) -> String {
+        format!(
+            "skipped {}: leased to {} until {}",
+            self.label(),
+            self.block.owner,
+            self.block.until
+        )
+    }
+}
+
+/// The refusal for a daemon the caller named explicitly (exit 23).
+fn leased_refusal(skip: &LeaseSkip) -> anyhow::Error {
+    error::target_leased(&skip.target, skip.block.message.clone()).into()
+}
+
+/// Split `items` into those the caller may stop and those whose target is
+/// leased to someone else. `id_of` gives an item's daemon name and instance
+/// (its target); `blocked` answers for one target.
+fn partition_leased<T>(
+    items: Vec<T>,
+    id_of: impl Fn(&T) -> (String, Option<String>),
+    blocked: impl Fn(&str) -> Option<lease::Block>,
+) -> (Vec<T>, Vec<LeaseSkip>) {
+    let mut allowed = Vec::new();
+    let mut skipped = Vec::new();
+    for item in items {
+        let (daemon, instance) = id_of(&item);
+        let block = match instance {
+            Some(target) if LEASED_DAEMONS.contains(&daemon.as_str()) => {
+                blocked(&target).map(|block| (target, block))
+            }
+            _ => None,
+        };
+        match block {
+            Some((target, block)) => skipped.push(LeaseSkip {
+                daemon,
+                target,
+                block,
+            }),
+            None => allowed.push(item),
+        }
+    }
+    (allowed, skipped)
+}
+
+/// Apply the lease check to a daemon selection: with `skip_leased` (`--all`,
+/// `--stale`) leased daemons are dropped with one stderr line each; otherwise
+/// the first one is a refusal and nothing is stopped.
+fn apply_lease_check<T>(
+    items: Vec<T>,
+    id_of: impl Fn(&T) -> (String, Option<String>),
+    skip_leased: bool,
+) -> Result<Vec<T>> {
+    let (allowed, skipped) = partition_leased(items, id_of, lease::foreign_holder);
+    if skip_leased {
+        for s in &skipped {
+            eprintln!("{}", s.line());
+        }
+    } else if let Some(first) = skipped.first() {
+        return Err(leased_refusal(first));
+    }
+    Ok(allowed)
+}
+
+/// The netbootd pids of sessions the lease check left running (their target is
+/// not in `kept`), so the stray sweep does not TERM them right after saying
+/// they were skipped.
+fn skipped_netboot_pids(netboots: &[(String, state::NetbootState)], kept: &[String]) -> Vec<i32> {
+    netboots
+        .iter()
+        .filter(|(target, _)| !kept.contains(target))
+        .flat_map(|(_, st)| [st.dhcp_pid, st.tftp_pid])
+        .filter(|pid| *pid > 0)
+        .collect()
+}
+
+/// The target whose channel devices the untracked daemon `u` holds, if the
+/// lab names one. A serialcap orphan is matched on a serial channel's device,
+/// an hdmicap orphan on the video channel's.
+fn orphan_target(lab: &Lab, u: &daemons::Untracked) -> Option<String> {
+    lab.targets.iter().find_map(|(name, t)| {
+        let devices: Vec<&str> = if u.name == serial::DAEMON {
+            t.serial.iter().map(|ch| ch.device.as_str()).collect()
+        } else if u.name == video::DAEMON {
+            t.video
+                .as_ref()
+                .and_then(|v| v.device.as_deref())
+                .into_iter()
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let holds = u
+            .devices
+            .iter()
+            .any(|held| devices.iter().any(|want| daemons::same_device(held, want)));
+        holds.then(|| name.clone())
+    })
+}
+
+/// Drop the untracked capture daemons (orphans) of a target leased to someone
+/// else from a `daemons stop --all` stray sweep, one stderr line each, like the
+/// tracked daemons. Without a readable lab an orphan cannot be tied to a
+/// target, so the sweep warns and treats it as before.
+fn skip_leased_orphans(lab_flag: Option<&str>, strays: Vec<(i32, String)>) -> Vec<(i32, String)> {
+    let lab = load_for_read(lab_flag).ok();
+    let (kept, skipped) = partition_orphans(strays, lab.as_ref(), lease::foreign_holder);
+    for s in &skipped {
+        eprintln!("{}", s.line());
+    }
+    kept
+}
+
+/// [`skip_leased_orphans`] with the lease lookup passed in.
+fn partition_orphans(
+    strays: Vec<(i32, String)>,
+    lab: Option<&Lab>,
+    blocked: impl Fn(&str) -> Option<lease::Block>,
+) -> (Vec<(i32, String)>, Vec<LeaseSkip>) {
+    let Some(lab) = lab else {
+        for (pid, args) in &strays {
+            if let Some(u) = daemons::untracked_of(*pid, args) {
+                if LEASED_DAEMONS.contains(&u.name.as_str()) {
+                    eprintln!(
+                        "warning: no readable lab, so {} (pid {pid}) cannot be tied to a \
+                         target; stopping it without a lease check",
+                        u.name
+                    );
+                }
+            }
+        }
+        return (strays, Vec::new());
+    };
+    partition_leased(
+        strays,
+        |(pid, args)| match daemons::untracked_of(*pid, args) {
+            Some(u) => {
+                let target = orphan_target(lab, &u);
+                (u.name, target)
+            }
+            None => (String::new(), None),
+        },
+        blocked,
+    )
+}
+
 /// Stop daemons by name or wholesale: netbootd via its proper teardown
 /// (interface cleanup), everything else via SIGTERM, with an optional
 /// SIGKILL escalation after a grace period. A pid from a discovery file is
 /// signalled only while its command line still names the daemon (a recycled
 /// pid is skipped with a message), and a signal the OS refuses is reported
 /// and fails the command instead of being printed as if it had landed.
-fn cmd_daemons_stop(names: &[String], all: bool, force: bool) -> Result<()> {
+fn cmd_daemons_stop(
+    lab_flag: Option<&str>,
+    names: &[String],
+    all: bool,
+    force: bool,
+) -> Result<()> {
     if !all && names.is_empty() {
         bail!("name one or more daemons (see `panio daemons`), or pass --all");
     }
@@ -1632,16 +2130,33 @@ fn cmd_daemons_stop(names: &[String], all: bool, force: bool) -> Result<()> {
     let wanted =
         |name: &str, instance: Option<&str>| all || specs.iter().any(|s| s.matches(name, instance));
 
-    // netbootd first — its stop also restores the interface.
+    // Every lease check runs before anything is stopped, so a refusal leaves
+    // the host exactly as it was. The netboot sessions are checked per target
+    // like the capture daemons.
     let netboots = running_netboots();
-    for (target, _) in &netboots {
-        if wanted("netbootd", Some(target)) {
-            netboot::stop(target)?;
-            println!("netbootd stopped (target {target}).");
-        }
-    }
+    let netboot_targets: Vec<String> = netboots
+        .iter()
+        .filter(|(target, _)| wanted("netbootd", Some(target)))
+        .map(|(target, _)| target.clone())
+        .collect();
+    let netboot_targets = apply_lease_check(
+        netboot_targets,
+        |t| ("netbootd".to_string(), Some(t.clone())),
+        all,
+    )?;
 
     let discovered = daemons::list_discovered();
+    let (selected, rest): (Vec<_>, Vec<_>) = discovered
+        .into_iter()
+        .partition(|d| wanted(&d.name, d.instance.as_deref()));
+    let leased_pids: Vec<i32> = selected.iter().map(|d| d.pid).collect();
+    let selected = apply_lease_check(selected, |d| (d.name.clone(), d.instance.clone()), all)?;
+    let allowed_pids: Vec<i32> = selected.iter().map(|d| d.pid).collect();
+    let skipped_pids: Vec<i32> = leased_pids
+        .into_iter()
+        .filter(|p| !allowed_pids.contains(p))
+        .collect();
+    let discovered: Vec<_> = selected.into_iter().chain(rest).collect();
     for spec in &specs {
         let running = if spec.name == "netbootd" {
             netboots
@@ -1657,15 +2172,26 @@ fn cmd_daemons_stop(names: &[String], all: bool, force: bool) -> Result<()> {
         }
     }
 
+    // netbootd first: its stop also restores the interface. Every lease check
+    // above has passed by now.
+    for target in &netboot_targets {
+        netboot::stop(target)?;
+        println!("netbootd stopped (target {target}).");
+    }
+
     // (label, pid, command-line needles that prove the pid is still it)
     let mut victims: Vec<(String, i32, Vec<String>)> = discovered
         .iter()
         .filter(|d| wanted(&d.name, d.instance.as_deref()))
         .map(|d| (daemon_label(d), d.pid, daemon_process_needles(&d.name)))
         .collect();
-    let known: Vec<i32> = victims.iter().map(|(_, pid, _)| *pid).collect();
+    let mut known: Vec<i32> = victims.iter().map(|(_, pid, _)| *pid).collect();
+    known.extend(skipped_pids);
+    known.extend(skipped_netboot_pids(&netboots, &netboot_targets));
     if all {
-        for (pid, args) in daemons::list_stray_helpers(&known) {
+        let strays = daemons::list_stray_helpers(&known);
+        let strays = skip_leased_orphans(lab_flag, strays);
+        for (pid, args) in strays {
             let short = args
                 .split_whitespace()
                 .take(4)
@@ -1773,6 +2299,11 @@ fn cmd_daemons_restart(
         .filter(|d| !stale_only || d.binary_status.is_stale() == Some(true))
         .filter_map(|d| d.instance.map(|inst| (d.name, inst)))
         .collect();
+    let selected = apply_lease_check(
+        selected,
+        |(name, inst)| (name.clone(), Some(inst.clone())),
+        all || stale_only,
+    )?;
     if selected.is_empty() {
         println!("No matching capture daemons to restart.");
         return Ok(());
@@ -1837,13 +2368,68 @@ fn stop_capture_daemon_and_wait(name: &str, target: &str) -> Result<Option<i32>>
     let Some(pid) = old_pid else {
         return Ok(None);
     };
-    wait_for_daemon_exit(name, target, pid)?;
+    wait_for_daemon_exit(name, target, pid, true)?;
     Ok(Some(pid))
+}
+
+/// What a local capture-daemon stop did.
+pub(crate) enum Stopped {
+    /// An untracked orphan (no discovery file) was reaped.
+    Orphan(daemons::Untracked),
+    /// The tracked daemon's own `stop` ran; its exit status.
+    Daemon(std::process::ExitStatus),
+}
+
+/// Stop the target's serialcap on this host: reap an untracked orphan if
+/// nothing is tracked (#187), else run the daemon's own `stop` and wait for the
+/// process to exit. The part of `serial stop` below the dispatch decision;
+/// `lease::cleanup` calls it with the lease lock held, so it must never run
+/// the lease check.
+pub(crate) fn serial_stop_local(target: &str, serials: &[model::SerialChannel]) -> Result<Stopped> {
+    // An orphan has no discovery file, so `serialcap stop` cannot see it and
+    // the operator has nothing left but `ps` and `kill` (#187). Only
+    // consulted when nothing is tracked: a healthy daemon is never in this
+    // set, and its own stop is the clean shutdown.
+    if serial::daemon(target).is_none() {
+        if let Some(orphan) = serial::untracked(serials) {
+            reap_untracked(&orphan, false)?;
+            return Ok(Stopped::Orphan(orphan));
+        }
+    }
+    let old_pid = daemons::daemon_pid(serial::DAEMON, Some(target));
+    let status = serial::stop_daemon(target)?;
+    if status.success() {
+        if let Some(pid) = old_pid {
+            wait_for_daemon_exit(serial::DAEMON, target, pid, false)?;
+        }
+    }
+    Ok(Stopped::Daemon(status))
+}
+
+/// [`serial_stop_local`] for the target's hdmicap; `device` is the video
+/// channel's capture device, if it names one.
+pub(crate) fn video_stop_local(target: &str, device: Option<&str>) -> Result<Stopped> {
+    if video::daemon(target).is_none() {
+        if let Some(orphan) = device.and_then(video::untracked) {
+            reap_untracked(&orphan, false)?;
+            return Ok(Stopped::Orphan(orphan));
+        }
+    }
+    let old_pid = daemons::daemon_pid(video::DAEMON, Some(target));
+    let status = video::stop_daemon(target)?;
+    if status.success() {
+        if let Some(pid) = old_pid {
+            wait_for_daemon_exit(video::DAEMON, target, pid, false)?;
+        }
+    }
+    Ok(Stopped::Daemon(status))
 }
 
 /// Wait until a stopped daemon releases its device, then clean up its discovery
 /// file. HID uses a shared runtime name but several possible helper binaries.
-fn wait_for_daemon_exit(name: &str, target: &str, pid: i32) -> Result<()> {
+/// `replacing` says a new daemon is about to take the device, which only
+/// changes the wording of the failure.
+fn wait_for_daemon_exit(name: &str, target: &str, pid: i32, replacing: bool) -> Result<()> {
     let needles = daemon_process_needles(name);
     let pending = || {
         needles
@@ -1868,8 +2454,12 @@ fn wait_for_daemon_exit(name: &str, target: &str, pid: i32) -> Result<()> {
         }
         if pending() {
             bail!(
-                "old {name} daemon (pid {pid}) is still running after SIGKILL; not starting a \
-                 replacement that would race it for the device"
+                "old {name} daemon (pid {pid}) is still running after SIGKILL{}",
+                if replacing {
+                    "; not starting a replacement that would race it for the device"
+                } else {
+                    ""
+                }
             );
         }
     }
@@ -1886,7 +2476,7 @@ fn wait_for_daemon_exit(name: &str, target: &str, pid: i32) -> Result<()> {
 /// only that file recorded) is not available and a signal is the only handle
 /// left. See the "untracked daemons" note in daemons.rs for how a daemon ends
 /// up in this state.
-fn reap_untracked(u: &daemons::Untracked) -> Result<()> {
+fn reap_untracked(u: &daemons::Untracked, replacing: bool) -> Result<()> {
     let (pid, name) = (u.pid, u.name.clone());
     let still_it = || state::is_named_child_alive(pid, &name);
     if !still_it() {
@@ -1912,8 +2502,12 @@ fn reap_untracked(u: &daemons::Untracked) -> Result<()> {
     }
     if still_it() {
         bail!(
-            "untracked {name} daemon (pid {pid}) is still running after SIGKILL; not starting \
-             a replacement that would race it for the device"
+            "untracked {name} daemon (pid {pid}) is still running after SIGKILL{}",
+            if replacing {
+                "; not starting a replacement that would race it for the device"
+            } else {
+                ""
+            }
         );
     }
     Ok(())
@@ -2298,6 +2892,48 @@ fn cmd_setup(lab_flag: Option<&str>, host: Option<&str>, rust_only: bool) -> Res
     }
 }
 
+/// `panio lease acquire|renew|release|status`.
+fn lease_command(lab_flag: Option<&str>, cmd: LeaseCmd) -> Result<()> {
+    let lab = load_for_read(lab_flag)?;
+    match cmd {
+        LeaseCmd::Acquire {
+            target,
+            owner,
+            duration,
+            idle,
+            wait,
+            preempt,
+            json,
+        } => {
+            let t = resolve_single_target(&lab, target.name())?;
+            let opts = lease_cmd::AcquireOpts {
+                owner,
+                duration,
+                idle,
+                wait,
+                preempt,
+                json,
+            };
+            lease_cmd::acquire(&lab, &t, &opts)
+        }
+        LeaseCmd::Renew { target, duration } => {
+            let t = resolve_single_target(&lab, target.name())?;
+            lease_cmd::renew(&lab, &t, &duration)
+        }
+        LeaseCmd::Release { target, preempt } => {
+            let t = resolve_single_target(&lab, target.name())?;
+            lease_cmd::release(&lab, &t, preempt)
+        }
+        LeaseCmd::Status { target, json } => {
+            if target.name().is_none() && lab.target_names().len() > 1 {
+                return lease_cmd::status_all(&lab, json);
+            }
+            let t = resolve_single_target(&lab, target.name())?;
+            lease_cmd::status(&lab, &t, json)
+        }
+    }
+}
+
 /// Resolve a runtime command's target: the given name, or the sole target.
 fn resolve_single_target(lab: &Lab, name: Option<&str>) -> Result<String> {
     if let Some(n) = name {
@@ -2635,9 +3271,11 @@ fn target_cmd(lab_flag: Option<&str>, cmd: TargetCmd) -> Result<()> {
             name,
             host,
             description,
+            lease_required,
         } => {
             edit_lab(lab_flag, |lf| {
-                lf.update_target(&name, host.as_deref(), description.as_deref())
+                lf.update_target(&name, host.as_deref(), description.as_deref())?;
+                lf.set_target_lease_required(&name, lease_required)
             })?;
             println!("Target '{name}' updated.");
             Ok(())
@@ -2695,7 +3333,12 @@ fn target_show(lab_flag: Option<&str>, name: Option<&str>) -> Result<()> {
     }
     for tname in names {
         match lab.resolved_target(&tname) {
-            Some(rt) => print_resolved_target(&rt),
+            Some(rt) => {
+                print_resolved_target(&rt);
+                if lab.targets[&tname].lease_required() {
+                    println!("  lease         required");
+                }
+            }
             None => eprintln!("Target '{tname}' not found in lab."),
         }
     }
@@ -2772,6 +3415,45 @@ fn serial_cmd(lab_flag: Option<&str>, cmd: SerialCmd) -> Result<()> {
             println!("Serial '{name}' removed from '{target}'.");
             Ok(())
         }
+        SerialCmd::Fault { cmd } => {
+            let (target, interface, rule, pattern) = match cmd {
+                FaultCmd::Set {
+                    name,
+                    pattern,
+                    target,
+                    interface,
+                } => (target, interface, name, Some(pattern)),
+                FaultCmd::Rm {
+                    name,
+                    target,
+                    interface,
+                } => (target, interface, name, None),
+            };
+            let lab = load_for_read(lab_flag)?;
+            let serials = lab
+                .targets
+                .get(&target)
+                .map(|t| t.serial.as_slice())
+                .ok_or_else(|| error::target_not_found(&target))?;
+            let interface = pick_serial(&target, serials, interface.as_deref())?
+                .name
+                .clone();
+            match pattern {
+                Some(pattern) => {
+                    edit_lab(lab_flag, |lf| {
+                        lf.set_serial_fault(&target, &interface, &rule, &pattern)
+                    })?;
+                    println!("Fault rule '{rule}' set on '{target}' serial '{interface}'.");
+                }
+                None => {
+                    edit_lab(lab_flag, |lf| {
+                        lf.remove_serial_fault(&target, &interface, &rule)
+                    })?;
+                    println!("Fault rule '{rule}' removed from '{target}' serial '{interface}'.");
+                }
+            }
+            Ok(())
+        }
         SerialCmd::Connect { target, interface } => {
             cmd_serial_connect(lab_flag, target.name(), interface.as_deref())
         }
@@ -2781,21 +3463,16 @@ fn serial_cmd(lab_flag: Option<&str>, cmd: SerialCmd) -> Result<()> {
             // remote) so we stop the right per-target daemon instance.
             let (target, serials) =
                 serial_runtime(lab_flag, target.name(), None, dispatch::Mode::Reexec)?;
-            // An orphan has no discovery file, so `serialcap stop` cannot see
-            // it and the operator has nothing left but `ps` and `kill` (#187).
-            // Only consulted when nothing is tracked: a healthy daemon is never
-            // in this set, and its own stop is the clean shutdown.
-            if serial::daemon(&target).is_none() {
-                if let Some(orphan) = serial::untracked(&serials) {
-                    reap_untracked(&orphan)?;
+            let status = match serial_stop_local(&target, &serials)? {
+                Stopped::Orphan(orphan) => {
                     println!(
                         "Untracked serial daemon for '{target}' (pid {}) stopped.",
                         orphan.pid
                     );
                     return Ok(());
                 }
-            }
-            let status = serial::stop_daemon(&target)?;
+                Stopped::Daemon(status) => status,
+            };
             if status.success() {
                 println!("Serial daemon for '{target}' stopped.");
                 Ok(())
@@ -2908,6 +3585,7 @@ fn serial_cmd(lab_flag: Option<&str>, cmd: SerialCmd) -> Result<()> {
                     max_bytes,
                     max_output_bytes,
                     pattern: pattern.as_deref(),
+                    faults: &channel.faults,
                     include_pending,
                     follow,
                 },
@@ -3541,7 +4219,263 @@ fn cmd_console(
         },
     );
     show_console(&target, &video, &url, &ports, view);
+    // The page's use never runs a panio command, so a lease holder stays in
+    // the foreground and keeps the lease alive in-process, like the remote
+    // console. Without a token nothing changes: the command returns now.
+    if lease::caller_token().is_some() {
+        match lease::held_idle_secs(&target) {
+            Some(idle) => {
+                let (lab, t) = (lab.clone(), target.clone());
+                // Poll the lease state often (a cheap local read) so the
+                // console leaves promptly when the lease ends; touch it only
+                // at the keepalive interval.
+                let every = keepalive_interval(idle);
+                let mut last_touch = std::time::Instant::now();
+                let keepalive = Keepalive::spawn(
+                    LOCAL_LEASE_POLL,
+                    move || {
+                        let touch = last_touch.elapsed() >= every;
+                        if touch {
+                            last_touch = std::time::Instant::now();
+                        }
+                        match lease::keepalive_tick(&lab, &t, touch) {
+                            lease::Poll::Holds => Tick::Ok,
+                            lease::Poll::Lost(m) => Tick::Lost(m),
+                            lease::Poll::Unreadable(m) => Tick::Fail(m),
+                        }
+                    },
+                    OnRepeat::Exit,
+                );
+                println!("Keeping the lease on '{target}' alive. Press Ctrl-C to close.");
+                return Err(keepalive.wait(&target));
+            }
+            None => eprintln!(
+                "note: the lease on '{target}' will not be kept alive by this console \
+                 (PANIO_LEASE is not the holder's); {DASHBOARD_IDLE_NOTE}"
+            ),
+        }
+    }
     Ok(())
+}
+
+/// A remote leg's non-zero exit as a typed error, so a refusal such as
+/// `target_leased` (23) keeps its exit code on the dev machine.
+fn remote_failure(status: i32, target: &str, message: String) -> anyhow::Error {
+    let kind = error::Kind::from_exit_code(status).unwrap_or(error::Kind::Internal);
+    error::PanioError::new(kind, message).target(target).into()
+}
+
+/// Said when a command hands the user a dashboard that panio then stops
+/// watching: its use does not count as lease activity.
+const DASHBOARD_IDLE_NOTE: &str = "the lease's idle timer is not refreshed by dashboard use; \
+     run `panio lease renew` or keep a panio command going";
+
+/// How often a local console looks at its lease.
+const LOCAL_LEASE_POLL: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// How often a remote console refreshes the lease: half the idle timeout, at
+/// most every 5 minutes, and never faster than every 10 seconds.
+fn keepalive_interval(idle_secs: u64) -> std::time::Duration {
+    std::time::Duration::from_secs((idle_secs / 2).clamp(10, 300))
+}
+
+/// What one keepalive tick found.
+enum Tick {
+    /// The lease is still the caller's (and was refreshed if due).
+    Ok,
+    /// Clearly not the caller's any more: the reason.
+    Lost(String),
+    /// Could not tell (a network blip, an unreadable record): the cause.
+    Fail(String),
+}
+
+/// What to do about repeated [`Tick::Fail`]s.
+#[derive(Clone, Copy)]
+enum OnRepeat {
+    /// Keep going and warn that the lease may idle out (a remote console: the
+    /// lease itself is fine, the link is not).
+    Warn,
+    /// Give up with an honest error (a local console that cannot read its own
+    /// lease record).
+    Exit,
+}
+
+/// Consecutive failed ticks before [`OnRepeat`] applies.
+const KEEPALIVE_MAX_FAILS: u32 = 3;
+
+/// Why a console's keepalive ended it.
+#[derive(Debug, PartialEq, Eq)]
+enum ConsoleExit {
+    Lost(String),
+    Unreadable(String),
+}
+
+/// The error a console returns when its keepalive ended it. Returned rather
+/// than exiting the process, so the console's tunnels are dropped (killed).
+fn console_exit_error(target: &str, why: ConsoleExit) -> anyhow::Error {
+    match why {
+        ConsoleExit::Lost(m) => error::target_leased(
+            target,
+            format!("the console no longer holds the lease on '{target}': {m}"),
+        )
+        .into(),
+        ConsoleExit::Unreadable(m) => error::PanioError::new(
+            error::Kind::Internal,
+            format!("the console could not read its lease on '{target}' ({m}); exiting"),
+        )
+        .target(target)
+        .into(),
+    }
+}
+
+/// A background thread that ticks every `interval` until dropped and reports
+/// the one thing that ends a console: the lease is lost, or cannot be read.
+struct Keepalive {
+    stop: Option<std::sync::mpsc::Sender<()>>,
+    ended: std::sync::mpsc::Receiver<ConsoleExit>,
+}
+
+impl Keepalive {
+    fn spawn(
+        interval: std::time::Duration,
+        mut touch: impl FnMut() -> Tick + Send + 'static,
+        repeat: OnRepeat,
+    ) -> Keepalive {
+        let (stop, rx) = std::sync::mpsc::channel::<()>();
+        let (tx, ended) = std::sync::mpsc::channel::<ConsoleExit>();
+        std::thread::spawn(move || {
+            let mut fails = 0u32;
+            // A timeout is the tick; a message or a dropped sender is the stop.
+            while let Err(std::sync::mpsc::RecvTimeoutError::Timeout) = rx.recv_timeout(interval) {
+                match touch() {
+                    Tick::Ok => fails = 0,
+                    Tick::Lost(m) => {
+                        let _ = tx.send(ConsoleExit::Lost(m));
+                        break;
+                    }
+                    Tick::Fail(m) => {
+                        fails += 1;
+                        if matches!(repeat, OnRepeat::Exit) && fails >= KEEPALIVE_MAX_FAILS {
+                            let _ = tx.send(ConsoleExit::Unreadable(m));
+                            break;
+                        }
+                        eprintln!("warning: could not refresh the lease ({m}); will retry");
+                        if fails == KEEPALIVE_MAX_FAILS {
+                            eprintln!(
+                                "warning: {fails} lease refreshes in a row failed; the lease \
+                                 may idle out (it has not been reported lost)"
+                            );
+                        }
+                    }
+                }
+            }
+        });
+        Keepalive {
+            stop: Some(stop),
+            ended,
+        }
+    }
+
+    /// Block until the keepalive ends the console; the error to return.
+    fn wait(&self, target: &str) -> anyhow::Error {
+        let why = self.ended.recv().unwrap_or_else(|_| {
+            ConsoleExit::Unreadable("the keepalive thread stopped".to_string())
+        });
+        console_exit_error(target, why)
+    }
+}
+
+impl Drop for Keepalive {
+    fn drop(&mut self) {
+        // Dropping the sender wakes the thread out of its wait.
+        self.stop.take();
+    }
+}
+
+/// One keepalive read on the control host: `video show` as a holder read.
+fn remote_touch(lab: &Lab, target: &str, host_name: &str) -> Tick {
+    match dispatch::run_subcommand(lab, target, host_name, &["video", "show", target]) {
+        Ok(out) => classify_remote_read(out.status, &out.stderr),
+        Err(e) => Tick::Fail(format!("{e:#}")),
+    }
+}
+
+/// [`remote_touch`]'s verdict on a finished read. Only the lease check's own
+/// answer is a loss: exit 23, or a `warning:` that is one of its messages (a
+/// read by a non-holder exits 0 with one). Any other failure (ssh exit 255, a
+/// timeout) says nothing about the lease and is retried.
+fn classify_remote_read(status: i32, stderr: &str) -> Tick {
+    let loss = stderr
+        .lines()
+        .filter_map(|l| l.trim().strip_prefix("warning:"))
+        .map(str::trim)
+        .find(|w| lease::is_lease_loss_message(w));
+    if let Some(w) = loss {
+        return Tick::Lost(w.to_string());
+    }
+    let text = stderr.trim();
+    match status {
+        0 => Tick::Ok,
+        s if s == error::Kind::TargetLeased.exit_code() => Tick::Lost(if text.is_empty() {
+            "refused by the lease check".to_string()
+        } else {
+            text.to_string()
+        }),
+        s => Tick::Fail(if text.is_empty() {
+            format!("exit {s}")
+        } else {
+            text.to_string()
+        }),
+    }
+}
+
+/// Keep the caller's lease alive while a remote console runs: one holder read
+/// every [`keepalive_interval`]. Nothing starts without a token or when the
+/// target is not leased; if the lease cannot be confirmed as the caller's, one
+/// line on stderr says it will not be kept alive.
+fn lease_keepalive(lab: &Lab, target: &str, host_name: &str) -> Option<Keepalive> {
+    lease::caller_token()?;
+    let not_kept = |why: &str| {
+        eprintln!("note: the lease on '{target}' will not be kept alive by this console ({why})");
+    };
+    let row = dispatch::run_subcommand(
+        lab,
+        target,
+        host_name,
+        &["lease", "status", "--json", "-t", target],
+    )
+    .map_err(|e| format!("{e:#}"))
+    .and_then(|out| {
+        if out.status != 0 {
+            return Err(format!("lease status exited {}", out.status));
+        }
+        serde_json::from_str::<lease_cmd::StatusRow>(out.stdout.trim())
+            .map_err(|e| format!("unreadable lease status: {e}"))
+    });
+    let row = match row {
+        Ok(r) => r,
+        Err(why) => {
+            not_kept(&why);
+            return None;
+        }
+    };
+    if row.held != Some(true) {
+        return None;
+    }
+    match remote_touch(lab, target, host_name) {
+        Tick::Ok => {}
+        Tick::Lost(why) | Tick::Fail(why) => {
+            not_kept(&why);
+            return None;
+        }
+    }
+    let interval = keepalive_interval(row.idle_secs.unwrap_or(lease::DEFAULT_IDLE));
+    let (lab, target, host_name) = (lab.clone(), target.to_string(), host_name.to_string());
+    Some(Keepalive::spawn(
+        interval,
+        move || remote_touch(&lab, &target, &host_name),
+        OnRepeat::Warn,
+    ))
 }
 
 fn remote_console(
@@ -3566,11 +4500,14 @@ fn remote_console(
             } else {
                 out.stderr.trim().to_string()
             };
-            bail!(
-                "failed to start '{} {}' on {host_name}: {msg}",
-                sub[0],
-                sub[1]
-            );
+            return Err(remote_failure(
+                out.status,
+                target,
+                format!(
+                    "failed to start '{} {}' on {host_name}: {msg}",
+                    sub[0], sub[1]
+                ),
+            ));
         }
     }
     let video =
@@ -3622,6 +4559,13 @@ fn remote_console(
     let mut _fwd_hid = None;
     let hid_ws: Option<String> = if hid_on_host {
         match dispatch::run_subcommand(lab, target, host_name, &["hid", "serve", target]) {
+            Ok(out) if out.status == error::Kind::TargetLeased.exit_code() => {
+                return Err(remote_failure(
+                    out.status,
+                    target,
+                    out.stderr.trim().to_string(),
+                ));
+            }
             Ok(out) if out.status == 0 => dispatch::remote_daemon_endpoint(
                 &host,
                 &daemons::runtime_rel(HID_DAEMON, Some(target)),
@@ -3656,9 +4600,16 @@ fn remote_console(
         },
     );
     show_console(target, &video, &url, &ports, view);
+    // Dashboard input goes straight to the daemons and never touches panio on
+    // the host, so without this the lease would idle out under an active user.
+    let keepalive = lease_keepalive(lab, target, host_name);
     println!("Tunnels to {host_name} open. Press Ctrl-C to close.");
-    loop {
-        std::thread::sleep(std::time::Duration::from_secs(1));
+    match keepalive {
+        // Returning (rather than exiting) drops the tunnels, which kills them.
+        Some(k) => Err(k.wait(target)),
+        None => loop {
+            std::thread::sleep(std::time::Duration::from_secs(1));
+        },
     }
 }
 
@@ -4243,7 +5194,7 @@ fn cmd_serial_watch(lab_flag: Option<&str>, target: Option<&str>, port: u16) -> 
     // keeps calling the channel stopped (#187).
     if replaced.is_none() {
         if let Some(orphan) = serial::untracked(&serials) {
-            reap_untracked(&orphan)?;
+            reap_untracked(&orphan, true)?;
         }
     }
     // `--port` wins; without it, the lab's fixed port (or OS-assigned).
@@ -4607,7 +5558,7 @@ fn video_cmd(lab_flag: Option<&str>, cmd: VideoCmd) -> Result<()> {
             // lock ("another hdmicap daemon is already running") while every
             // other command keeps calling the channel stopped (#187).
             else if let Some(orphan) = video::untracked(&device) {
-                reap_untracked(&orphan)?;
+                reap_untracked(&orphan, true)?;
             }
             let hid_input = ensure_video_source(&load_for_read(lab_flag)?, &target, &device)?;
             eprintln!("Starting video daemon for '{target}' ('{device}')…");
@@ -4642,21 +5593,16 @@ fn video_cmd(lab_flag: Option<&str>, cmd: VideoCmd) -> Result<()> {
             // Resolve the target (routing to its video channel's host if
             // remote) so we stop the right per-target daemon instance.
             let (target, v) = video_runtime(lab_flag, target.name())?;
-            // An orphan has no discovery file, so `hdmicap stop` cannot see it
-            // and the operator has nothing left but `ps` and `kill` (#187).
-            // Only consulted when nothing is tracked: a healthy daemon is
-            // never in this set, and its own stop is the clean shutdown.
-            if video::daemon(&target).is_none() {
-                if let Some(orphan) = v.device.as_deref().and_then(video::untracked) {
-                    reap_untracked(&orphan)?;
+            let status = match video_stop_local(&target, v.device.as_deref())? {
+                Stopped::Orphan(orphan) => {
                     println!(
                         "Untracked video daemon for '{target}' (pid {}) stopped.",
                         orphan.pid
                     );
                     return Ok(());
                 }
-            }
-            let status = video::stop_daemon(&target)?;
+                Stopped::Daemon(status) => status,
+            };
             if status.success() {
                 println!("Video daemon for '{target}' stopped.");
                 Ok(())
@@ -4758,6 +5704,9 @@ fn video_cmd(lab_flag: Option<&str>, cmd: VideoCmd) -> Result<()> {
                 refuse_remote_open(lab_flag, target.name())?;
             }
             let (target, _v) = video_runtime(lab_flag, target.name())?;
+            if lease::caller_token().is_some() {
+                eprintln!("note: {DASHBOARD_IDLE_NOTE}");
+            }
             let Some(daemon) = video::daemon(&target) else {
                 return Err(error::daemon_down(
                     video::DAEMON,
@@ -5857,23 +6806,31 @@ fn cmd_hid_stop(lab_flag: Option<&str>, target: Option<&str>) -> Result<()> {
     )? {
         std::process::exit(code);
     }
+    hid_stop_local(&lab, &target)
+}
+
+/// Stop the target's hid helper on this host and wait for its daemon to exit.
+/// The part of `hid stop` below the dispatch decision; `lease::cleanup` calls
+/// it directly while holding the lease lock, so it must never run the lease
+/// check.
+pub(crate) fn hid_stop_local(lab: &Lab, target: &str) -> Result<()> {
     let t = lab
         .targets
-        .get(&target)
-        .ok_or_else(|| error::target_not_found(&target))?;
+        .get(target)
+        .ok_or_else(|| error::target_not_found(target))?;
     let cmd = t.hid.as_ref().and_then(|h| h.cmd.clone()).ok_or_else(|| {
         error::channel_missing(
-            &target,
+            target,
             "hid",
             format!("target '{target}' has no hid channel"),
         )
     })?;
-    let old_pid = daemons::daemon_pid(HID_DAEMON, Some(&target));
+    let old_pid = daemons::daemon_pid(HID_DAEMON, Some(target));
     // The helper owns its own stop (e.g. `hidrig stop`); strip any trailing
     // device args isn't needed — `<cmd> stop` ignores extra args it doesn't use.
     let status = platform::shell_command(&format!("{cmd} stop"))
         .env("PATH", daemons::hook_path())
-        .envs(daemons::helper_env(HID_DAEMON, Some(&target)))
+        .envs(daemons::helper_env(HID_DAEMON, Some(target)))
         .status()?;
     if !status.success() {
         return Err(error::hook_failed(
@@ -5883,12 +6840,12 @@ fn cmd_hid_stop(lab_flag: Option<&str>, target: Option<&str>) -> Result<()> {
                 error::shell_code(status)
             ),
         )
-        .target(&target)
+        .target(target)
         .channel("hid")
         .into());
     }
     if let Some(pid) = old_pid {
-        wait_for_daemon_exit(HID_DAEMON, &target, pid)?;
+        wait_for_daemon_exit(HID_DAEMON, target, pid, false)?;
     }
     Ok(())
 }
@@ -6207,6 +7164,443 @@ fn print_resolved_target(rt: &ResolvedTarget) {
 
 #[cfg(test)]
 mod tests {
+
+    fn held_by(owner: &str) -> lease::Block {
+        lease::Block {
+            owner: owner.into(),
+            until: "10:30 local".into(),
+            message: format!("target is leased to {owner}"),
+        }
+    }
+
+    /// Daemon `(name, instance)` pairs; `blocked` leases only target `pi5`
+    /// to someone else.
+    fn lease_split(
+        items: &[(&str, Option<&str>)],
+        caller_holds: bool,
+    ) -> (Vec<(String, Option<String>)>, Vec<LeaseSkip>) {
+        let items = items
+            .iter()
+            .map(|(n, i)| (n.to_string(), i.map(str::to_string)))
+            .collect();
+        partition_leased(
+            items,
+            |d: &(String, Option<String>)| (d.0.clone(), d.1.clone()),
+            |t| (t == "pi5" && !caller_holds).then(|| held_by("alice")),
+        )
+    }
+
+    #[test]
+    fn named_leased_daemon_refused() {
+        let (allowed, skipped) = lease_split(&[("serialcap", Some("pi5"))], false);
+        assert!(allowed.is_empty());
+        assert_eq!(skipped.len(), 1);
+        assert_eq!(skipped[0].label(), "serialcap/pi5");
+        let err = leased_refusal(&skipped[0]);
+        let pe = err.downcast_ref::<error::PanioError>().unwrap();
+        assert_eq!(pe.kind, error::Kind::TargetLeased);
+    }
+
+    #[test]
+    fn all_skips_leased() {
+        let (allowed, skipped) = lease_split(
+            &[
+                ("serialcap", Some("pi5")),
+                ("hdmicap", Some("nuc")),
+                ("hid", Some("pi5")),
+            ],
+            false,
+        );
+        assert_eq!(
+            allowed,
+            vec![("hdmicap".to_string(), Some("nuc".to_string()))]
+        );
+        assert_eq!(skipped.len(), 2);
+        assert_eq!(
+            skipped[0].line(),
+            "skipped serialcap/pi5: leased to alice until 10:30 local"
+        );
+    }
+
+    #[test]
+    fn holder_can_stop() {
+        let (allowed, skipped) = lease_split(&[("serialcap", Some("pi5"))], true);
+        assert_eq!(allowed.len(), 1);
+        assert!(skipped.is_empty());
+    }
+
+    #[test]
+    fn unleased_unchanged() {
+        let (allowed, skipped) = lease_split(
+            &[
+                ("serialcap", Some("nuc")),
+                ("zigplug", None),
+                ("cambrionix", None),
+            ],
+            false,
+        );
+        assert_eq!(allowed.len(), 3);
+        assert!(skipped.is_empty());
+    }
+
+    #[test]
+    fn host_singletons_never_checked() {
+        let (allowed, skipped) = lease_split(&[("zigplug", Some("pi5"))], false);
+        assert_eq!(allowed.len(), 1);
+        assert!(skipped.is_empty());
+    }
+
+    #[test]
+    fn a_leased_netboot_session_is_refused_by_name_and_skipped_by_all() {
+        let named = lease_split(&[("netbootd", Some("pi5"))], false);
+        assert!(named.0.is_empty());
+        assert_eq!(named.1[0].label(), "netbootd/pi5");
+        assert_eq!(
+            named.1[0].line(),
+            "skipped netbootd/pi5: leased to alice until 10:30 local"
+        );
+        let err = leased_refusal(&named.1[0]);
+        let pe = err.downcast_ref::<error::PanioError>().unwrap();
+        assert_eq!(pe.kind, error::Kind::TargetLeased);
+
+        let (allowed, skipped) = lease_split(
+            &[("netbootd", Some("nuc")), ("netbootd", Some("pi5"))],
+            false,
+        );
+        assert_eq!(
+            allowed,
+            vec![("netbootd".to_string(), Some("nuc".to_string()))]
+        );
+        assert_eq!(skipped.len(), 1);
+    }
+
+    #[test]
+    fn skipped_netboot_sessions_are_excluded_from_the_stray_sweep() {
+        let st = |target: &str, dhcp, tftp| {
+            (
+                target.to_string(),
+                state::NetbootState {
+                    target: target.into(),
+                    dhcp_pid: dhcp,
+                    tftp_pid: tftp,
+                    started_at: 0.0,
+                    interface: "eth0".into(),
+                    tftp_root: "/t".into(),
+                    engine: "rust".into(),
+                },
+            )
+        };
+        let netboots = vec![st("pi5", 100, 101), st("nuc", 200, 0)];
+        let kept = vec!["nuc".to_string()];
+        assert_eq!(skipped_netboot_pids(&netboots, &kept), vec![100, 101]);
+        assert!(skipped_netboot_pids(&netboots, &["pi5".into(), "nuc".into()]).is_empty());
+    }
+
+    fn orphan_lab() -> Lab {
+        toml::from_str(
+            r#"
+[targets.pi5]
+[[targets.pi5.serial]]
+name = "console"
+device = "/dev/ttyUSB-pi5"
+baud = 115200
+
+[targets.nuc]
+[targets.nuc.video]
+device = "/dev/video-nuc"
+"#,
+        )
+        .expect("lab parses")
+    }
+
+    const SERIAL_ORPHAN: &str = "/home/u/.local/libexec/panio/bin/serialcap daemon \
+        --interface console=/dev/ttyUSB-pi5@115200";
+    const VIDEO_ORPHAN: &str =
+        "/home/u/.local/libexec/panio/bin/hdmicap daemon --device /dev/video-nuc";
+
+    #[test]
+    fn orphans_are_matched_to_their_target_by_device() {
+        let lab = orphan_lab();
+        let s = daemons::untracked_of(10, SERIAL_ORPHAN).unwrap();
+        let v = daemons::untracked_of(11, VIDEO_ORPHAN).unwrap();
+        assert_eq!(orphan_target(&lab, &s).as_deref(), Some("pi5"));
+        assert_eq!(orphan_target(&lab, &v).as_deref(), Some("nuc"));
+        let other =
+            daemons::untracked_of(12, "/x/serialcap daemon --interface c=/dev/else@9600").unwrap();
+        assert_eq!(orphan_target(&lab, &other), None);
+    }
+
+    #[test]
+    fn stop_all_leaves_an_orphan_of_a_leased_target() {
+        let lab = orphan_lab();
+        let strays = vec![
+            (10, SERIAL_ORPHAN.to_string()),
+            (11, VIDEO_ORPHAN.to_string()),
+            (12, "/x/zigplug on 1".to_string()),
+        ];
+        let (kept, skipped) = partition_orphans(strays, Some(&lab), |t| {
+            (t == "pi5").then(|| held_by("alice"))
+        });
+        let pids: Vec<i32> = kept.iter().map(|(p, _)| *p).collect();
+        assert_eq!(pids, vec![11, 12]);
+        assert_eq!(skipped.len(), 1);
+        assert_eq!(
+            skipped[0].line(),
+            "skipped serialcap/pi5: leased to alice until 10:30 local"
+        );
+    }
+
+    #[test]
+    fn stop_all_without_a_lab_keeps_every_stray() {
+        let strays = vec![(10, SERIAL_ORPHAN.to_string())];
+        let (kept, skipped) = partition_orphans(strays, None, |_| Some(held_by("alice")));
+        assert_eq!(kept.len(), 1);
+        assert!(skipped.is_empty());
+    }
+
+    #[test]
+    fn keepalive_interval_is_half_the_idle_timeout_capped_at_five_minutes() {
+        let secs = |idle| keepalive_interval(idle).as_secs();
+        assert_eq!(secs(1800), 300);
+        assert_eq!(secs(400), 200);
+        assert_eq!(secs(60), 30);
+        assert_eq!(secs(2), 10);
+        assert_eq!(secs(86_400), 300);
+    }
+
+    #[test]
+    fn only_the_lease_checks_own_answer_is_a_loss() {
+        assert!(matches!(classify_remote_read(0, ""), Tick::Ok));
+        assert!(matches!(
+            classify_remote_read(0, "note: something\n"),
+            Tick::Ok
+        ));
+        // An unrelated warning is not a lease loss.
+        assert!(matches!(
+            classify_remote_read(0, "warning: video daemon is stale\n"),
+            Tick::Ok
+        ));
+        let w = "warning: your lease on 'pi5' ended at 10:30 local (preempted by bob)\n";
+        match classify_remote_read(0, w) {
+            Tick::Lost(m) => {
+                assert!(m.contains("preempted by bob"), "{m}");
+                assert!(!m.starts_with("warning"), "{m}");
+            }
+            _ => panic!("a lease warning is a loss"),
+        }
+        let w = "warning: PANIO_LEASE does not match the current holder (bob) of 'pi5'\n";
+        assert!(matches!(classify_remote_read(0, w), Tick::Lost(_)));
+        let w = "warning: PANIO_LEASE is set but 'pi5' is not leased; running without a lease\n";
+        assert!(matches!(classify_remote_read(0, w), Tick::Lost(_)));
+        assert!(matches!(classify_remote_read(23, "refused\n"), Tick::Lost(m) if m == "refused"));
+        // A network blip is not a loss.
+        match classify_remote_read(255, "ssh: connect to host: timed out\n") {
+            Tick::Fail(m) => assert!(m.contains("timed out"), "{m}"),
+            _ => panic!("ssh failure must be a retryable failure"),
+        }
+        assert!(matches!(classify_remote_read(1, ""), Tick::Fail(m) if m == "exit 1"));
+    }
+
+    fn run_keepalive(
+        ticks: Vec<Tick>,
+        repeat: OnRepeat,
+    ) -> (Keepalive, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let n = std::sync::Arc::new(AtomicUsize::new(0));
+        let seen = n.clone();
+        let mut ticks = ticks.into_iter();
+        let k = Keepalive::spawn(
+            std::time::Duration::from_millis(10),
+            move || {
+                seen.fetch_add(1, Ordering::SeqCst);
+                ticks.next().unwrap_or(Tick::Ok)
+            },
+            repeat,
+        );
+        (k, n)
+    }
+
+    #[test]
+    fn a_lost_lease_makes_the_console_return_target_leased_not_exit() {
+        let (k, n) = run_keepalive(
+            vec![Tick::Ok, Tick::Lost("preempted".into())],
+            OnRepeat::Warn,
+        );
+        let err = k.wait("pi5");
+        let pe = err.downcast_ref::<error::PanioError>().expect("typed");
+        assert_eq!(pe.kind, error::Kind::TargetLeased);
+        assert!(err.to_string().contains("preempted"), "{err}");
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert_eq!(
+            n.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "stops after the loss"
+        );
+    }
+
+    #[test]
+    fn failed_ticks_are_retried_and_never_reported_as_a_loss() {
+        use std::sync::atomic::Ordering;
+        let fails = (0..5).map(|_| Tick::Fail("ssh down".into())).collect();
+        let (k, n) = run_keepalive(fails, OnRepeat::Warn);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while n.load(Ordering::SeqCst) < 6 && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(
+            n.load(Ordering::SeqCst) >= 6,
+            "it kept retrying past 3 failures"
+        );
+        assert!(k.ended.try_recv().is_err(), "no exit was requested");
+    }
+
+    #[test]
+    fn a_local_console_that_cannot_read_its_lease_exits_internal_not_23() {
+        let fails = (0..3)
+            .map(|_| Tick::Fail("cannot read the lease: eio".into()))
+            .collect();
+        let (k, _) = run_keepalive(fails, OnRepeat::Exit);
+        let err = k.wait("pi5");
+        let pe = err.downcast_ref::<error::PanioError>().expect("typed");
+        assert_eq!(pe.kind, error::Kind::Internal);
+        assert!(err.to_string().contains("cannot read the lease"), "{err}");
+        // Two failures then success resets the count.
+        let ticks = vec![
+            Tick::Fail("x".into()),
+            Tick::Fail("x".into()),
+            Tick::Ok,
+            Tick::Fail("x".into()),
+            Tick::Fail("x".into()),
+        ];
+        let (k, n) = run_keepalive(ticks, OnRepeat::Exit);
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        assert!(n.load(std::sync::atomic::Ordering::SeqCst) > 5);
+        assert!(k.ended.try_recv().is_err(), "a reset count must not exit");
+    }
+
+    #[test]
+    fn keepalive_ticks_until_dropped() {
+        use std::sync::atomic::Ordering;
+        let (k, n) = run_keepalive(vec![], OnRepeat::Warn);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while n.load(Ordering::SeqCst) < 3 && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(n.load(Ordering::SeqCst) >= 3, "the keepalive never ticked");
+        drop(k);
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let after = n.load(Ordering::SeqCst);
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert_eq!(
+            n.load(Ordering::SeqCst),
+            after,
+            "it kept ticking after drop"
+        );
+    }
+
+    /// The read/mutating split of the spec table, row by row.
+    #[test]
+    fn access_table_matches_spec() {
+        use lease::Access::{Mutating, Read, Unchecked};
+        let rows: &[(&str, lease::Access)] = &[
+            ("serial log t", Read),
+            ("serial evidence t", Read),
+            ("serial wait t --epoch e --since 0", Read),
+            ("serial status t", Read),
+            ("serial show t", Read),
+            ("serial connect t", Mutating),
+            ("serial watch t", Mutating),
+            ("serial stop t", Mutating),
+            ("serial send t hello", Mutating),
+            ("serial send -t t hello", Mutating),
+            ("serial transact -t t --until x hello", Mutating),
+            ("serial dtr t", Mutating),
+            ("serial reset t", Mutating),
+            ("serial devices", Unchecked),
+            ("serial add c -t t --device /dev/x", Unchecked),
+            ("video shot t", Read),
+            ("video read t", Read),
+            ("video show t", Read),
+            ("video watch t", Mutating),
+            ("video stop t", Mutating),
+            ("video preview t", Mutating),
+            ("video devices", Unchecked),
+            ("netboot status t", Read),
+            ("netboot logs t", Read),
+            ("netboot tftp-root t", Read),
+            ("netboot start t", Mutating),
+            ("netboot stop t", Mutating),
+            ("netboot devices", Unchecked),
+            ("netif status t", Read),
+            ("netif mode off t", Mutating),
+            ("netif down-hard t", Mutating),
+            ("power-state t", Read),
+            ("power on t", Mutating),
+            ("power off t", Mutating),
+            ("power-cycle t", Mutating),
+            ("usb state -t t", Read),
+            ("usb attach-host -t t", Mutating),
+            ("usb attach-target -t t", Mutating),
+            ("action list -t t", Read),
+            ("action run -t t x", Mutating),
+            ("adb show t", Read),
+            ("adb screencap t", Read),
+            ("adb shell t", Mutating),
+            ("adb run -t t devices", Mutating),
+            ("adb input -t t tap 1 1", Mutating),
+            ("adb devices", Unchecked),
+            ("doctor t", Read),
+            ("hid send -t t x", Mutating),
+            ("hid serve t", Mutating),
+            ("hid stop t", Mutating),
+            ("console t", Mutating),
+            ("daemons list", Unchecked),
+            ("daemons stop --all", Unchecked),
+            ("lease status t", Unchecked),
+            ("lease acquire t", Unchecked),
+            ("config show", Unchecked),
+            ("host list", Unchecked),
+            ("target list", Unchecked),
+            ("discover", Unchecked),
+            ("setup", Unchecked),
+            ("helper", Unchecked),
+            ("skill", Unchecked),
+            ("mcp", Unchecked),
+            ("power set -t t --on-cmd true", Unchecked),
+        ];
+        for (line, want) in rows {
+            let argv = std::iter::once("panio").chain(line.split_whitespace());
+            let cli = Cli::try_parse_from(argv).unwrap_or_else(|e| panic!("{line}: {e}"));
+            assert_eq!(lease_scope(&cli.command).0, *want, "{line}");
+        }
+    }
+
+    #[test]
+    fn remote_failure_keeps_the_lease_refusal_code() {
+        let e = remote_failure(23, "pi5", "leased".into());
+        assert_eq!(error::classify(&e).kind.exit_code(), 23);
+        let e = remote_failure(77, "pi5", "x".into());
+        assert_eq!(error::classify(&e).kind.exit_code(), 109);
+    }
+
+    /// Where the target comes from: named either way, or the sole one.
+    #[test]
+    fn lease_scope_names_the_target() {
+        let scope = |line: &str| {
+            let argv = std::iter::once("panio").chain(line.split_whitespace());
+            let cli = Cli::try_parse_from(argv).unwrap();
+            match lease_scope(&cli.command).1 {
+                LeaseScope::Named(n) => Some(n.to_string()),
+                _ => None,
+            }
+        };
+        assert_eq!(scope("power on pi5").as_deref(), Some("pi5"));
+        assert_eq!(scope("power on -t pi5").as_deref(), Some("pi5"));
+        assert_eq!(scope("serial send pi5 hello").as_deref(), Some("pi5"));
+        assert_eq!(scope("serial send -t pi5 hello").as_deref(), Some("pi5"));
+        assert_eq!(scope("serial send hello"), None);
+        assert_eq!(scope("hid send -t pi5 x").as_deref(), Some("pi5"));
+    }
     use super::*;
 
     /// `power-cycle` waits for power to come back (#259): the reader is
