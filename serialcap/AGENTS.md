@@ -49,7 +49,10 @@ serialcap/       Rust crate: serial console daemon (parallels hdmicap)
                  target to exist) before the prefix test, so a stable symlink to
                  a pty (e.g. hidrig's console bridge) is recognized
     wait.rs      bounded fresh acquisition after epoch/RX seq: exact immutable
-                 chunks, literal patterns, explicit incomplete outcomes, NDJSON
+                 chunks, literal patterns, repeatable `--fault NAME=PATTERN` rules (earliest
+                 byte offset wins; tie: `--pattern`, then rules in the order
+                 given; result carries `fault` and `fault_rules`; transact
+                 passes none), explicit incomplete outcomes, NDJSON
                  completed rows, optional final pending. Output budget covers
                  every follow event and the final JSON. Never sends input,
                  resets or restarts. Before its first journal read, health gates

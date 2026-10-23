@@ -22,6 +22,7 @@ each term briefly on first use; this page is the longer reference.
 | **receive boundary** | A capture epoch and exclusive RX chunk sequence; only later received chunks from that epoch belong to an acquisition. |
 | **transaction / transaction lock** | One `serial transact` exchange: record the receive boundary, send a command, wait for its reply. The per-interface lock it holds makes other transactions wait their turn and refuses plain input (`serial send`, dashboard keystrokes) until it ends. See [transactions](serial.md#requestresponse-transactions). |
 | **follow / NDJSON** | Deliver completed rows as separate JSON objects, one per line, then a final result object. A row beginning at an arbitrary receive boundary may have an unknown prefix. |
+| **fault rule** | A named literal pattern on a serial interface (`faults` in the lab file, `panio serial fault set`). When it appears in the bytes a `serial wait` acquires, the wait ends with status `fault`. See [Fault rules](serial.md#fault-rules). |
 | **capture epoch** | Identifier for one serial interface supervisor lifetime. Receive chunk counters restart with a new epoch. |
 | **receive record / evidence cursor** | An immutable chunk of exact bytes received from a target, identified by a capture epoch and RX sequence. It preserves the original receive time; later reads have their own observation time. This cursor is different from a line-log sequence. |
 | **connection generation** | Successful port-open count within an epoch; increments on reconnect. |

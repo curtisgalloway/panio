@@ -909,7 +909,7 @@ fn tool_list() -> Value {
         },
         {
             "name": "serial_wait",
-            "description": "Acquire immutable raw serial evidence after a required epoch/RX boundary until a literal pattern, finite deadline or byte cap. Returns timing, records and explicit stop status; optional complete-line follow events and final pending bytes. Timeout/disconnect retain acquired bytes. Matching is observation, not target execution. Never sends input, resets, restarts or retries an action.",
+            "description": "Acquire immutable raw serial evidence after a required epoch/RX boundary until a literal pattern, finite deadline or byte cap. Returns timing, records and explicit stop status; optional complete-line follow events and final pending bytes. Timeout/disconnect retain acquired bytes. The interface's lab fault rules also apply: a rule matching first ends the wait with status fault, naming it. Matching is observation, not target execution. Never sends input, resets, restarts or retries an action.",
             "inputSchema": schema_requiring(&["epoch", "since"], &[
                 ("interface", json!({"type":"string"})),
                 ("epoch", json!({"type":"string", "minLength":1})),

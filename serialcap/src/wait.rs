@@ -22,6 +22,8 @@ pub struct Request {
     pub max_output_bytes: u64,
     pub follow: bool,
     pub pattern: Option<String>,
+    /// Named literal fault patterns (name, pattern), in precedence order.
+    pub faults: Vec<(String, String)>,
     pub include_pending: bool,
 }
 
@@ -102,6 +104,33 @@ struct ResultMeta {
     elapsed_ms: u64,
     next_record_bytes: Option<usize>,
     required_output_bytes: Option<u64>,
+    /// The fault rule that ended the wait, as `{name, pattern, offset}`.
+    fault: Option<Value>,
+}
+
+fn fault_value(name: &str, pattern: &str, offset: u64) -> Value {
+    json!({"name":name, "pattern":pattern, "offset":offset})
+}
+
+/// Earliest literal hit in `bytes` among `--pattern` (`None` index) and the
+/// fault rules. Offsets are byte indexes into `bytes`. Ties keep the first
+/// candidate checked, so the caller's explicit pattern beats a fault and
+/// faults resolve in the order given.
+fn earliest_match(request: &Request, bytes: &[u8]) -> Option<(usize, Option<usize>)> {
+    let find = |needle: &str| {
+        bytes
+            .windows(needle.len())
+            .position(|w| w == needle.as_bytes())
+    };
+    let mut best = request.pattern.as_deref().and_then(find).map(|o| (o, None));
+    for (i, (_, pattern)) in request.faults.iter().enumerate() {
+        if let Some(o) = find(pattern) {
+            if best.is_none_or(|(b, _)| o < b) {
+                best = Some((o, Some(i)));
+            }
+        }
+    }
+    best
 }
 
 fn result(
@@ -123,6 +152,7 @@ fn result(
         "pending":if request.include_pending { Some(&acquired.pending) } else { None },
         "diagnostics":notes.values,"diagnostic_count":notes.count,
         "diagnostics_truncated":notes.truncated,"raw_truncated":notes.raw_truncated,
+        "fault":meta.fault, "fault_rules":request.faults.iter().map(|(n, _)| n).collect::<Vec<_>>(),
         "next_record_bytes":meta.next_record_bytes,"required_output_bytes":meta.required_output_bytes,
         "command_execution":"not_assessed"
     })
@@ -183,8 +213,16 @@ pub fn run(
             "wait requires timeout <= {MAX_TIMEOUT_MS} ms, 1..={MAX_BYTES} raw bytes, and {MIN_OUTPUT_BYTES}..={MAX_OUTPUT_BYTES} output bytes"
         ));
     }
-    if request.epoch.is_empty() || request.pattern.as_ref().is_some_and(String::is_empty) {
-        return Err(anyhow!("epoch and a supplied pattern must be nonempty"));
+    if request.epoch.is_empty()
+        || request.pattern.as_ref().is_some_and(String::is_empty)
+        || request
+            .faults
+            .iter()
+            .any(|(name, pattern)| name.is_empty() || pattern.is_empty())
+    {
+        return Err(anyhow!(
+            "epoch, a supplied pattern and every fault rule must be nonempty"
+        ));
     }
     let started_at_ms = crate::capture::now_ms();
     let start = Instant::now();
@@ -202,6 +240,11 @@ pub fn run(
         elapsed_ms: u64::MAX,
         next_record_bytes: Some(usize::MAX),
         required_output_bytes: Some(u64::MAX),
+        fault: request
+            .faults
+            .iter()
+            .map(|(name, pattern)| fault_value(name, pattern, u64::MAX))
+            .max_by_key(encoded_len),
     };
     if encoded_len(&result(
         request,
@@ -423,12 +466,14 @@ pub fn run(
             break "reconnected";
         }
         generation = current_generation;
-        if request
-            .pattern
-            .as_ref()
-            .is_some_and(|p| acquired.bytes.windows(p.len()).any(|w| w == p.as_bytes()))
-        {
-            break "matched";
+        match earliest_match(request, &acquired.bytes) {
+            Some((_, None)) => break "matched",
+            Some((offset, Some(i))) => {
+                let (name, pattern) = &request.faults[i];
+                meta.fault = Some(fault_value(name, pattern, offset as u64));
+                break "fault";
+            }
+            None => {}
         }
         if envelope["capped"] == true || acquired.bytes.len() as u64 == request.max_bytes {
             break "cap";
@@ -447,6 +492,9 @@ pub fn run(
     };
     for note in pending_diagnostics {
         diagnostics.push(note);
+    }
+    if status != "fault" {
+        meta.fault = None;
     }
     meta.finished_at_ms = crate::capture::now_ms();
     meta.elapsed_ms = start.elapsed().as_millis() as u64;
@@ -535,6 +583,7 @@ mod tests {
             max_output_bytes: MAX_OUTPUT_BYTES,
             follow: true,
             pattern: pattern.map(str::to_string),
+            faults: vec![],
             include_pending: true,
         }
     }
@@ -1017,5 +1066,115 @@ mod tests {
         assert_eq!(output["status"], "daemon_unavailable");
         assert_eq!(output["records"][0]["bytes"], json!(b"fault\xff".to_vec()));
         assert_eq!(output["through_rx_seq"], 12);
+    }
+
+    fn faulted(pattern: Option<&str>, faults: &[(&str, &str)]) -> Request {
+        let mut req = request(pattern, 64);
+        req.faults = faults
+            .iter()
+            .map(|(n, p)| (n.to_string(), p.to_string()))
+            .collect();
+        req
+    }
+
+    fn run_once(req: &Request, records: Vec<Value>) -> Value {
+        run(
+            req,
+            |_, _| Ok(json!({ "records": records })),
+            |_| Ok(healthy()),
+            |_| Ok(()),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn fault_rule_ends_the_wait_with_its_name_and_offset() {
+        let req = faulted(
+            Some("login:"),
+            &[("panic", "Kernel panic"), ("oops", "Oops:")],
+        );
+        let output = run_once(
+            &req,
+            vec![record(11, b"boot\nKernel panic - not syncing\n")],
+        );
+        assert_eq!(output["status"], "fault", "{output}");
+        assert_eq!(
+            output["fault"],
+            json!({"name":"panic", "pattern":"Kernel panic", "offset":5})
+        );
+        assert_eq!(output["fault_rules"], json!(["panic", "oops"]));
+        assert_eq!(output["received_bytes"], 32);
+    }
+
+    #[test]
+    fn earlier_pattern_beats_a_later_fault() {
+        let req = faulted(Some("login:"), &[("oops", "Oops:")]);
+        let output = run_once(&req, vec![record(11, b"login: then Oops:")]);
+        assert_eq!(output["status"], "matched");
+        assert!(output["fault"].is_null());
+        assert_eq!(output["fault_rules"], json!(["oops"]));
+    }
+
+    #[test]
+    fn earlier_fault_beats_a_later_pattern() {
+        let req = faulted(Some("login:"), &[("oops", "Oops:")]);
+        let output = run_once(&req, vec![record(11, b"Oops: then login:")]);
+        assert_eq!(output["status"], "fault");
+        assert_eq!(output["fault"]["offset"], 0);
+    }
+
+    #[test]
+    fn a_tie_goes_to_the_pattern_then_to_the_first_fault() {
+        let req = faulted(Some("panic"), &[("a", "panic now")]);
+        let output = run_once(&req, vec![record(11, b"panic now")]);
+        assert_eq!(output["status"], "matched");
+        assert!(output["fault"].is_null());
+
+        let req = faulted(None, &[("first", "panic"), ("second", "panic now")]);
+        let output = run_once(&req, vec![record(11, b"panic now")]);
+        assert_eq!(output["status"], "fault");
+        assert_eq!(output["fault"]["name"], "first");
+    }
+
+    #[test]
+    fn fault_pattern_may_span_two_records() {
+        let req = faulted(None, &[("oops", "Oops:")]);
+        let output = run_once(&req, vec![record(11, b"xOo"), record(12, b"ps:")]);
+        assert_eq!(output["status"], "fault");
+        assert_eq!(output["fault"]["offset"], 1);
+        assert_eq!(output["through_rx_seq"], 12);
+    }
+
+    #[test]
+    fn no_rules_reports_an_empty_rule_list_and_null_fault() {
+        let output = run_once(&request(Some("done"), 64), vec![record(11, b"nothing")]);
+        assert_eq!(output["status"], "timeout");
+        assert_eq!(output["fault_rules"], json!([]));
+        assert!(output["fault"].is_null());
+    }
+
+    #[test]
+    fn empty_fault_parts_are_refused() {
+        let req = faulted(None, &[("oops", "")]);
+        assert!(run(
+            &req,
+            |_, _| Ok(json!({"records":[]})),
+            |_| Ok(healthy()),
+            |_| Ok(())
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn fault_result_fits_a_tight_output_budget() {
+        let long = "x".repeat(1024);
+        let mut req = faulted(None, &[("big", long.as_str())]);
+        req.max_output_bytes = MIN_OUTPUT_BYTES;
+        let output = run_once(&req, vec![record(11, long.as_bytes())]);
+        assert!(
+            encoded_len(&output) < MIN_OUTPUT_BYTES,
+            "{}",
+            encoded_len(&output)
+        );
     }
 }

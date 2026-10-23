@@ -144,6 +144,12 @@ expiration is `timeout`, not `gap` (also for `serial transact`). Real journal
 faults and cursors beyond live RX remain explicit failures. Optional
 `--pattern TEXT` matches literal UTF-8 across fresh raw chunks. Omit it to
 collect until the deadline/cap; a match never establishes task success.
+The interface's lab **fault rules** (`panio serial fault set -t T [-i I] NAME
+PATTERN`, `... fault rm`) apply to every wait: literal patterns for output that
+means the run is lost (`Kernel panic`, `Oops:`). The earliest hit among
+`--pattern` and the rules wins (tie: `--pattern`, then the rules); a rule hit
+ends the wait with `status: fault`, `fault: {name, pattern, offset}`. Every
+result lists the checked `fault_rules`. `serial transact` ignores them.
 
 The wait is read-only and finite: `--timeout-ms` defaults to 30000 (0 is one
 immediate observation, max 3600000). `--max-bytes` caps raw evidence at
@@ -153,7 +159,7 @@ MCP framing adds transport overhead. Whole records that cannot fit remain in
 the journal; `through_rx_seq` does not skip them. Inspect `next_record_bytes`
 and `required_output_bytes` before resuming with a larger cap.
 
-Read the JSON `status`: matched/timeout/cap, disconnected/reconnected,
+Read the JSON `status`: matched/fault/timeout/cap, disconnected/reconnected,
 daemon_unavailable, epoch_changed/epoch_missing, gap/capture_error/read_error,
 or unsupported. Valid observations return exit0 even on an incomplete wait;
 accepted immutable records and timing survive. Diagnostic truncation is explicit
@@ -1265,6 +1271,10 @@ the device is free just because a daemon is gone from the tracked list.
 - `doctor` flags a channel that still works? Believe the working channel and
   report the discrepancy — never rewrite the lab config to silence `doctor`.
 - Serial port is exclusive: one of `connect` / `watch` / external `tio`/`screen`.
+- `serial wait` ending `status: fault` (exit 0) means a lab fault rule's pattern
+  arrived before anything else you waited for; read `fault.name` and the
+  records, and check the target. It is an observation, not a diagnosis, and
+  `fault_rules: []` means no rules were configured, not that the target is fine.
 - `serial send` failing with *interface busy* (409) means a `serial transact`
   holds the console; nothing was sent. Wait for it, then send again.
 - A JetKVM's screen arrives as `--device rfb+hid:` on the video channel; the
