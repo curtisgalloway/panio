@@ -343,9 +343,9 @@ pub fn process_start_time(pid: i32) -> Option<u64> {
 #[allow(dead_code)]
 #[cfg(windows)]
 pub fn process_start_time(pid: i32) -> Option<u64> {
-    use windows_sys::Win32::Foundation::{CloseHandle, FILETIME};
+    use windows_sys::Win32::Foundation::{CloseHandle, FILETIME, STILL_ACTIVE};
     use windows_sys::Win32::System::Threading::{
-        GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+        GetExitCodeProcess, GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
     };
     if !is_real_pid(pid) {
         return None;
@@ -354,6 +354,13 @@ pub fn process_start_time(pid: i32) -> Option<u64> {
     unsafe {
         let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid as u32);
         if h.is_null() {
+            return None;
+        }
+        // A terminated process object lives on while any handle is open, so
+        // only a still-running process counts (matches `pid_alive`).
+        let mut code: u32 = 0;
+        if GetExitCodeProcess(h, &mut code) == 0 || code != STILL_ACTIVE as u32 {
+            CloseHandle(h);
             return None;
         }
         let zero = FILETIME {
@@ -826,6 +833,9 @@ mod tests {
 
     #[test]
     fn start_time_of_child_differs_from_self() {
+        // Linux start times are in clock ticks (~10 ms); make sure the child
+        // cannot start in the same tick as this process.
+        std::thread::sleep(std::time::Duration::from_millis(50));
         let mut child = spawn_sleeper();
         let theirs = process_start_time(child.id() as i32);
         let ours = process_start_time(std::process::id() as i32);
@@ -841,6 +851,7 @@ mod tests {
         let pid = child.id() as i32;
         let _ = child.kill();
         let _ = child.wait();
+        drop(child);
         assert_eq!(process_start_time(pid), None);
     }
 
