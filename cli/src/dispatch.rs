@@ -47,6 +47,9 @@ pub fn build_slice(lab: &Lab, target: &str, host: &str) -> Result<String, LabErr
 
     let mut lf = LabFile::create(Path::new("slice.toml"));
     lf.add_target(target, None, t.description.as_deref())?;
+    if t.lease_required() {
+        lf.set_target_lease_required(target, Some(true))?;
+    }
     if let Some(nb) = &t.netboot {
         if on(&nb.host) {
             lf.set_netboot(
@@ -1110,5 +1113,13 @@ mod tests {
             .map(|s| s.to_string())
             .collect();
         assert_eq!(strip_lab_option(&b), vec!["netboot", "start"]);
+    }
+
+    #[test]
+    fn slice_carries_lease_required() {
+        let mut l = lab();
+        l.targets.get_mut("fortune").unwrap().lease_required = Some(true);
+        let s = build_slice(&l, "fortune", "bench2").unwrap();
+        assert!(model::parse(&s).unwrap().targets["fortune"].lease_required());
     }
 }

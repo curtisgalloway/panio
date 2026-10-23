@@ -227,6 +227,27 @@ impl LabFile {
         Ok(())
     }
 
+    /// Set (`Some(true)`) or clear (`Some(false)` removes the key, the
+    /// default) a target's `lease_required`; `None` leaves it alone.
+    pub fn set_target_lease_required(
+        &mut self,
+        name: &str,
+        lease_required: Option<bool>,
+    ) -> Result<(), LabError> {
+        model::validate_name("target", name)?;
+        let t = self.target_mut(name)?;
+        match lease_required {
+            Some(true) => {
+                t.insert("lease_required", value(true));
+            }
+            Some(false) => {
+                t.remove("lease_required");
+            }
+            None => {}
+        }
+        Ok(())
+    }
+
     pub fn remove_target(&mut self, name: &str) -> Result<(), LabError> {
         let targets = self
             .doc
@@ -1891,5 +1912,33 @@ mod tests {
         )
         .unwrap();
         assert!(model::load(&path).is_err());
+    }
+
+    #[test]
+    fn lease_required_round_trips() {
+        let (_d, path) = tmp();
+        std::fs::write(
+            &path,
+            "# keep me\n[targets.t]\n# inline note\ndescription = \"d\"\n",
+        )
+        .unwrap();
+        let mut lf = LabFile::load(&path).unwrap();
+        lf.set_target_lease_required("t", Some(true)).unwrap();
+        lf.save().unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            text.contains("# keep me") && text.contains("# inline note"),
+            "{text}"
+        );
+        assert!(model::load(&path).unwrap().targets["t"].lease_required());
+        let mut lf = LabFile::load(&path).unwrap();
+        lf.set_target_lease_required("t", Some(false)).unwrap();
+        lf.save().unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            !text.contains("lease_required"),
+            "false removes the key: {text}"
+        );
+        assert!(!model::load(&path).unwrap().targets["t"].lease_required());
     }
 }

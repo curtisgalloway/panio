@@ -497,7 +497,7 @@ enum TargetCmd {
         #[arg(long, alias = "note")]
         description: Option<String>,
     },
-    /// Update a target's default host or description.
+    /// Update a target's default host, description, or lease requirement.
     Set {
         name: String,
         #[arg(long)]
@@ -505,6 +505,11 @@ enum TargetCmd {
         /// Free-text description of the target (accepts `--note` as an alias).
         #[arg(long, alias = "note")]
         description: Option<String>,
+        /// Require a lease for every command on this target (`true`), or stop
+        /// requiring one (`false` removes the key). Refused on a target whose
+        /// channels span more than one host.
+        #[arg(long, value_name = "BOOL")]
+        lease_required: Option<bool>,
     },
     /// Rename a target, carrying all its channels.
     Rename { old: String, new: String },
@@ -2636,9 +2641,11 @@ fn target_cmd(lab_flag: Option<&str>, cmd: TargetCmd) -> Result<()> {
             name,
             host,
             description,
+            lease_required,
         } => {
             edit_lab(lab_flag, |lf| {
-                lf.update_target(&name, host.as_deref(), description.as_deref())
+                lf.update_target(&name, host.as_deref(), description.as_deref())?;
+                lf.set_target_lease_required(&name, lease_required)
             })?;
             println!("Target '{name}' updated.");
             Ok(())
@@ -2696,7 +2703,12 @@ fn target_show(lab_flag: Option<&str>, name: Option<&str>) -> Result<()> {
     }
     for tname in names {
         match lab.resolved_target(&tname) {
-            Some(rt) => print_resolved_target(&rt),
+            Some(rt) => {
+                print_resolved_target(&rt);
+                if lab.targets[&tname].lease_required() {
+                    println!("  lease         required");
+                }
+            }
             None => eprintln!("Target '{tname}' not found in lab."),
         }
     }
