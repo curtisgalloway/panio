@@ -5985,23 +5985,31 @@ fn cmd_hid_stop(lab_flag: Option<&str>, target: Option<&str>) -> Result<()> {
     )? {
         std::process::exit(code);
     }
+    hid_stop_local(&lab, &target)
+}
+
+/// Stop the target's hid helper on this host and wait for its daemon to exit.
+/// The part of `hid stop` below the dispatch decision; `lease::cleanup` calls
+/// it directly while holding the lease lock, so it must never run the lease
+/// check.
+pub(crate) fn hid_stop_local(lab: &Lab, target: &str) -> Result<()> {
     let t = lab
         .targets
-        .get(&target)
-        .ok_or_else(|| error::target_not_found(&target))?;
+        .get(target)
+        .ok_or_else(|| error::target_not_found(target))?;
     let cmd = t.hid.as_ref().and_then(|h| h.cmd.clone()).ok_or_else(|| {
         error::channel_missing(
-            &target,
+            target,
             "hid",
             format!("target '{target}' has no hid channel"),
         )
     })?;
-    let old_pid = daemons::daemon_pid(HID_DAEMON, Some(&target));
+    let old_pid = daemons::daemon_pid(HID_DAEMON, Some(target));
     // The helper owns its own stop (e.g. `hidrig stop`); strip any trailing
     // device args isn't needed — `<cmd> stop` ignores extra args it doesn't use.
     let status = platform::shell_command(&format!("{cmd} stop"))
         .env("PATH", daemons::hook_path())
-        .envs(daemons::helper_env(HID_DAEMON, Some(&target)))
+        .envs(daemons::helper_env(HID_DAEMON, Some(target)))
         .status()?;
     if !status.success() {
         return Err(error::hook_failed(
@@ -6011,12 +6019,12 @@ fn cmd_hid_stop(lab_flag: Option<&str>, target: Option<&str>) -> Result<()> {
                 error::shell_code(status)
             ),
         )
-        .target(&target)
+        .target(target)
         .channel("hid")
         .into());
     }
     if let Some(pid) = old_pid {
-        wait_for_daemon_exit(HID_DAEMON, &target, pid)?;
+        wait_for_daemon_exit(HID_DAEMON, target, pid)?;
     }
     Ok(())
 }

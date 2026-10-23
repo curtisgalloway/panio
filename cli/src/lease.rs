@@ -356,12 +356,110 @@ pub fn decide(
     }
 }
 
+/// One cleanup step: a label for the failure message and the work itself.
+type Step<'a> = (&'static str, Box<dyn FnOnce() -> Result<(), String> + 'a>);
+
+/// Run every step in order, whatever happens to the earlier ones; one message
+/// per step that failed.
+fn run_steps(steps: Vec<Step<'_>>) -> Vec<String> {
+    steps
+        .into_iter()
+        .filter_map(|(label, step)| step().err().map(|e| format!("{label}: {e}")))
+        .collect()
+}
+
+/// Terminate a registered process that is still the same process (pid plus
+/// start time, so a recycled pid is never signaled): TERM, a short grace, then
+/// KILL after re-checking identity.
+fn terminate_registered(p: &Proc) -> Result<(), String> {
+    if !proc_is_live(p) {
+        return Ok(());
+    }
+    platform::try_signal_pid(p.pid, platform::Signal::Term)
+        .map_err(|e| format!("could not stop pid {}: {e}", p.pid))?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while proc_is_live(p) && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    if proc_is_live(p) {
+        platform::try_signal_pid(p.pid, platform::Signal::Kill)
+            .map_err(|e| format!("could not kill pid {}: {e}", p.pid))?;
+    }
+    Ok(())
+}
+
 /// Tear down what a departing holder left on the target: its registered
 /// processes, the target's daemons, the netboot link. Returns one message per
 /// step that failed.
-pub fn cleanup(_lab: &crate::model::Lab, _target: &str, _lease: &Lease) -> Vec<String> {
-    // Task 6
-    Vec::new()
+///
+/// Runs with the lease's [`StoreLock`] held, so it calls only the library
+/// functions beneath the runtime handlers (`serial::stop_daemon`,
+/// `video::stop_daemon`, `hid_stop_local`, `netboot::stop`,
+/// `netif::mode_off`), never `panio` itself and never `lease::enforce`.
+pub fn cleanup(lab: &crate::model::Lab, target: &str, lease: &Lease) -> Vec<String> {
+    let Some(t) = lab.targets.get(target) else {
+        return Vec::new();
+    };
+    let mut steps: Vec<Step<'_>> = Vec::new();
+    steps.push((
+        "registered processes",
+        Box::new(move || {
+            let errs: Vec<String> = lease
+                .procs
+                .iter()
+                .filter_map(|p| terminate_registered(p).err())
+                .collect();
+            if errs.is_empty() {
+                Ok(())
+            } else {
+                Err(errs.join("; "))
+            }
+        }),
+    ));
+    if !t.serial.is_empty() && crate::serial::daemon(target).is_some() {
+        steps.push((
+            "serial daemon",
+            Box::new(move || match crate::serial::stop_daemon(target) {
+                Ok(st) if st.success() => Ok(()),
+                Ok(st) => Err(format!("stop exited with {st}")),
+                Err(e) => Err(e.to_string()),
+            }),
+        ));
+    }
+    if t.video.is_some() && crate::video::daemon(target).is_some() {
+        steps.push((
+            "video daemon",
+            Box::new(move || match crate::video::stop_daemon(target) {
+                Ok(st) if st.success() => Ok(()),
+                Ok(st) => Err(format!("stop exited with {st}")),
+                Err(e) => Err(e.to_string()),
+            }),
+        ));
+    }
+    if t.hid.is_some() && crate::daemons::daemon_pid("hid", Some(target)).is_some() {
+        steps.push((
+            "hid daemon",
+            Box::new(move || crate::hid_stop_local(lab, target).map_err(|e| e.to_string())),
+        ));
+    }
+    if t.netboot.is_some() && crate::state::is_netboot_running(target) {
+        steps.push((
+            "netboot session",
+            Box::new(move || crate::netboot::stop(target).map_err(|e| e.to_string())),
+        ));
+    }
+    if let Some(nb) = &t.netboot {
+        if let Some(iface) = nb.interface.as_deref() {
+            let host_ip = nb.effective_host_ip().to_string();
+            steps.push((
+                "netif mode off",
+                Box::new(move || {
+                    crate::netif::mode_off(target, iface, &host_ip).map_err(|e| e.to_string())
+                }),
+            ));
+        }
+    }
+    run_steps(steps)
 }
 
 /// Parse `90s`, `30m`, `2h`, or bare seconds. Zero and negative values are
@@ -407,6 +505,110 @@ mod tests {
             pid: 42,
             start_time: 7,
         }
+    }
+
+    fn lab_from(text: &str) -> crate::model::Lab {
+        toml::from_str(text).expect("lab parses")
+    }
+
+    fn lease_with(procs: Vec<Proc>) -> Lease {
+        Lease { procs, ..lease() }
+    }
+
+    #[cfg(unix)]
+    fn sleeper() -> std::process::Child {
+        std::process::Command::new("sleep")
+            .arg("60")
+            .spawn()
+            .expect("spawn sleep")
+    }
+
+    #[cfg(unix)]
+    fn registered(child: &std::process::Child) -> Proc {
+        let pid = child.id() as i32;
+        Proc {
+            pid,
+            start_time: platform::process_start_time(pid).expect("start time"),
+        }
+    }
+
+    #[test]
+    fn cleanup_with_no_channels_is_noop() {
+        let lab = lab_from("[targets.t6-empty]\n");
+        assert!(cleanup(&lab, "t6-empty", &lease()).is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cleanup_kills_registered_proc() {
+        let lab = lab_from("[targets.t6-kill]\n");
+        let mut child = sleeper();
+        let l = lease_with(vec![registered(&child)]);
+        assert!(cleanup(&lab, "t6-kill", &l).is_empty());
+        let status = child.try_wait().expect("try_wait");
+        assert!(status.is_some(), "child should have been terminated");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cleanup_skips_recycled_pid() {
+        let lab = lab_from("[targets.t6-recycled]\n");
+        let mut child = sleeper();
+        let mut p = registered(&child);
+        p.start_time += 1;
+        let l = lease_with(vec![p]);
+        assert!(cleanup(&lab, "t6-recycled", &l).is_empty());
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        assert!(
+            child.try_wait().expect("try_wait").is_none(),
+            "must survive"
+        );
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+
+    #[test]
+    fn cleanup_continues_after_failure() {
+        use std::cell::RefCell;
+        let ran = RefCell::new(Vec::new());
+        let steps: Vec<Step<'_>> = vec![
+            (
+                "first",
+                Box::new(|| {
+                    ran.borrow_mut().push("first");
+                    Err("boom".to_string())
+                }),
+            ),
+            (
+                "second",
+                Box::new(|| {
+                    ran.borrow_mut().push("second");
+                    Ok(())
+                }),
+            ),
+        ];
+        let errs = run_steps(steps);
+        assert_eq!(errs, vec!["first: boom".to_string()]);
+        assert_eq!(*ran.borrow(), vec!["first", "second"]);
+    }
+
+    #[test]
+    fn cleanup_runs_while_the_lease_lock_is_held() {
+        let tmp = std::env::temp_dir().join(format!("panio-t6-lock-{}", std::process::id()));
+        let store = Store::at(tmp.clone());
+        let _guard = store.lock().expect("lock");
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let lab = lab_from(
+                "[targets.t6-locked]\n[[targets.t6-locked.serial]]\nname = \"console\"\ndevice = \"/dev/null\"\n",
+            );
+            let _ = tx.send(cleanup(&lab, "t6-locked", &lease()));
+        });
+        let out = rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("cleanup must not block on the held lock");
+        assert!(out.is_empty(), "{out:?}");
+        let _ = std::fs::remove_dir_all(tmp);
     }
 
     #[test]
