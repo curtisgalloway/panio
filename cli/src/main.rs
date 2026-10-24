@@ -153,11 +153,14 @@ enum Command {
         #[command(subcommand)]
         cmd: HidCmd,
     },
-    /// Reserve a whole target for one holder (acquire, renew, release, status).
+    /// Reserve a whole target for one holder (acquire, renew, release, status,
+    /// cleanup, override-cleanup).
     ///
     /// `acquire` prints a secret token; pass it to later commands in
     /// PANIO_LEASE. A lease ends on its own after its duration or when idle,
-    /// and anyone can take it with `acquire --preempt`.
+    /// and anyone can take it with `acquire --preempt`. When the cleanup after
+    /// a lease fails, the target stays blocked (exit 24) until `lease cleanup`
+    /// verifies it or `lease override-cleanup` clears it.
     Lease {
         #[command(subcommand)]
         cmd: LeaseCmd,
