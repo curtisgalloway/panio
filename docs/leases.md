@@ -102,7 +102,9 @@ omit it when the lab has exactly one target. Durations are written `90s`,
 | `panio lease acquire [TARGET]` | Reserve the target and print its token alone on stdout. Exits 23 when someone else holds it. `--owner LABEL` sets the display name (default `user@host` of the machine you run it on). `--duration DUR` is the total length (default `2h`). `--idle DUR` ends the lease after this long with no command and no live registered process (default `30m`). `--wait DUR` polls every 2 s for that long. `--preempt` takes the target from its holder. `--json` prints `{token, owner, expires_at, expires_in_secs}`. If `PANIO_LEASE` already matches, `acquire` renews and prints the same token. |
 | `panio lease renew [TARGET]` | Move the end to now plus `--duration` (default: the lease's original duration), capped at 24 h from now. Needs `PANIO_LEASE`. If the lease had already expired, `renew` retires it (cleaning up, as any expiry does) and exits 23 saying so. |
 | `panio lease release [TARGET]` | End your lease and clean the target up. Needs `PANIO_LEASE`, or `--preempt` to end someone else's. Releasing a lease that is already over is not an error, so an end-of-job `release` does not retry: with a token that names an ended lease it exits 0 and says on stderr how it ended (and leaves a new holder alone); on a target nobody holds, with no token, it exits 0 and says `'<target>' is not leased`. A token that never named a lease on the target, or no token while someone else holds it, exits 23. |
-| `panio lease status [TARGET]` | Who holds the target, until when, idle time left (or, while a registered process is alive, `kept alive by N process(es)`; `idle_left_secs` is `null` then), and registered processes. Never prints the token. With no target in a lab of several, lists them all; an unreachable host is reported in its row. `--json` for scripts. Not read-only: it cleans up a lease that has expired. |
+| `panio lease cleanup [TARGET] --id ID` | Retry the cleanup that blocked the target; clears the block when every step passes. Exits 24 if it still fails. See [Cleanup](#cleanup). `--json` prints the result. |
+| `panio lease override-cleanup [TARGET] --id ID --reason TEXT` | Clear a cleanup block without verifying it; the reason and the outstanding failures go into the history first. `--corrupt` (instead of `--id`) moves an unreadable `lease.json` aside. |
+| `panio lease status [TARGET]` | Who holds the target, until when, idle time left (or, while a registered process is alive, `kept alive by N process(es)`; `idle_left_secs` is `null` then), and registered processes. Never prints the token. With no target in a lab of several, lists them all; an unreachable host is reported in its row. `--json` for scripts. Shows `state` (`held`, `unleased`, `blocked`) and, for a blocked target, the cleanup id and each step's result; exits 0 either way. Not read-only: it cleans up a lease that has expired, once. |
 
 ### Preemption
 
@@ -139,9 +141,57 @@ Ending a lease, by any route, tears down what the holder left:
 - the target's netboot session, and the netboot link is taken down
   (`netif mode off`).
 
-Power is never touched: a board that was on stays on. A step that fails is
-reported as a warning and recorded in the history; the remaining steps still
-run.
+Power is never touched: a board that was on stays on.
+
+Every step runs, whatever happens to the earlier ones, and each reports one of
+`ok`, `already_satisfied` (nothing to do: the daemon was not running, the
+process was already gone) or `failed`. The step ids are
+`registered_processes`, `serial_daemon`, `video_daemon`, `hid_daemon`,
+`netboot_session` and `netif_mode_off`; a step appears whenever the target has
+that channel.
+
+**A failed step blocks the target.** The lease still ends, but the record in
+`lease.json` becomes a *cleanup block* and the target is refused to everyone
+until a person recovers it: `acquire` (including `--preempt`, and `--wait`
+fails at once), `renew`, `release`, every mutating command (even with the old
+token, and whether or not `lease_required` is set), and `daemons stop|restart`
+all exit 24 (`target_cleanup_blocked`). `--all` sweeps skip the target with a
+line on stderr. Reads still run, with a warning when a `PANIO_LEASE` token is
+set, and do not retry the cleanup. The block is written *before* cleanup
+starts, so a panio that dies mid-cleanup leaves the target blocked too, and it
+never expires. If recording any of this fails (the record, the history), panio
+stops: it does not remove the record or hand out a token.
+
+`panio lease status` shows the block and never the old token:
+
+```text
+dut: blocked: cleanup failed (hid_daemon); cleanup id 3f2a...; run panio lease cleanup dut --id 3f2a...
+```
+
+Two commands recover the target. Both check, under the target's lock, that the
+record is blocked with exactly the id you give (a held or unleased target, or
+a newer block with another id, is refused), both leave the target unleased,
+and neither acquires it:
+
+- `panio lease cleanup TARGET --id ID` re-runs every step against the
+  processes registered when the lease ended. Success clears the block and
+  records `resolution: "verified"` in the history; failure updates the step
+  results, keeps the block, and exits 24. If the target's serial, video, hid or
+  netboot configuration changed since the lease ended, the retry would not
+  clean up what was left, so the block stays and only an override clears it.
+- `panio lease override-cleanup TARGET --id ID --reason TEXT` clears the block
+  *without* verifying cleanup. The reason (required, not empty) and the
+  outstanding failures are written to the history, with `resolution:
+  "overridden"`, before the block is cleared. Use it when cleanup cannot
+  succeed (the device is gone, the config changed).
+
+The history keeps the original end reason in `how` and the outcome in a
+separate `resolution` field, so an ended token still gets its explanation.
+
+An unreadable `lease.json` is treated the same way: it is no longer read as "no
+lease". Mutations exit 24, status reports the target as `blocked` with an
+error, and `panio lease override-cleanup TARGET --corrupt --reason TEXT` moves
+the file aside as `lease.json.corrupt-<time>` and records it.
 
 ## Reads and mutating commands
 
@@ -205,8 +255,9 @@ command, so it does not count as activity.
 `panio daemons stop` and `restart` look at the daemon's target: the capture
 daemons, hid, and a target's netboot session (`netbootd[pi5]`). Naming one that
 belongs to a target leased to someone else (`'serialcap[pi5]'`) is refused with
-exit 23. `stop --all` and `restart --all|--stale` skip those with one line on
-stderr for each, and stop the rest. Every lease check runs before anything is
+exit 23 (exit 24 when the target is [cleanup-blocked](#cleanup)). `stop --all`
+and `restart --all|--stale` skip those with one line on stderr for each, and
+stop the rest. Every lease check runs before anything is
 stopped, so a refusal leaves the host exactly as it was. The `stop --all`
 sweep of untracked orphan daemons skips an orphan whose device belongs to a
 leased target the same way; with no readable lab it cannot tell and says so.
@@ -275,6 +326,10 @@ every channel and the default host are local.
   job object that kills it when panio ends, so the cleanup also frees the port.
   Processes the tool itself starts (adb's background server) leave the job and
   are not killed.
+- **The block binds this version.** An older panio that does not know about
+  cleanup blocks sees a lease held by `cleanup-blocked (was ...)` with a token
+  nobody has, so it refuses other callers, but its `--preempt` still overrides
+  it. Direct helper or daemon access bypasses it, as it does a lease.
 - **Not a calendar.** There are no future bookings and no queue; waiting is
   `--wait`, which polls.
 - **Whole target.** There is no per-channel lease. Agents that want to share

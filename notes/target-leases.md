@@ -284,9 +284,13 @@ written), and lazily on expiry, on the default host, in this order:
    daemons shared with other targets (zigplug, cambrionix) are left alone.
 3. If the target has a netboot channel: `netif mode off` on its interface.
 
-Power is deliberately not touched. Each step is best effort; a failure is
-reported (and kept in the history line) but does not stop the next step or
-keep the lease alive.
+Power is deliberately not touched. Every step runs even when an earlier one
+fails, and reports `ok`, `already_satisfied` or `failed` under a stable id.
+A failure no longer lets the target be reassigned (#372): the record becomes a
+persisted cleanup block (`cleanup` field of `lease.json`, written before
+cleanup runs), the target is refused to everyone with `target_cleanup_blocked`
+(exit 24), and `lease cleanup --id` / `lease override-cleanup --id --reason`
+recover it. User docs: `docs/leases.md#cleanup`.
 
 ### Errors
 

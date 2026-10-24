@@ -62,6 +62,7 @@ text. `panio --help` prints the table.
 | 4 | `unreachable` | The control host did not answer over SSH; the command may or may not have run |
 | 22 | `timeout` | Outcome unknown: check state (`power-state`, `serial log`, `video shot`) before repeating a power cycle or other mutation |
 | 23 | `target_leased` | The target is leased to someone else, or the lab requires a lease and none is held; the message names the holder and when it ends. Wait (`panio lease acquire --wait`) and retry |
+| 24 | `target_cleanup_blocked` | The last lease's cleanup failed (or its record is unreadable), so the target is refused to everyone, `--preempt` too. Do not retry or work around it. `panio lease status <target>` shows the cleanup id and failed steps; `panio lease cleanup <target> --id <id>` retries, `panio lease override-cleanup <target> --id <id> --reason "..."` clears it unverified (ask the user first) |
 | 100 | `daemon_down` | Start the daemon (`serial watch`, `video watch`); `panio daemons` lists what is running |
 | 101 | `helper_failed` | The hook/helper/daemon ran and failed; its message (and its own code in `child_exit`) says why. On Windows a *missing* hook also lands here (`cmd.exe` exits 1 for it) |
 | 109 | `internal` | Unclassified; read the message |
@@ -77,7 +78,7 @@ For a machine-readable reason, set `PANIO_JSON_ERRORS=1` (or put
 "host", "child_exit"}}`. `category` groups the kinds by where to look:
 `infrastructure` (3, 4, 100: fix the setup, the target was not reached),
 `transient` (22: a retry may work, but check state first; 23: retry once the lease ends), `device_state`
-(101: the target or its hardware refused), or null (2, 109). Exit codes do not
+(101: the target or its hardware refused; 24: a lease's cleanup failed), or null (2, 109). Exit codes do not
 change with it; a control host older than 0.13 omits the field. Passthroughs (`helper`, `config edit`, `video shot`/`devices`,
 `adb run`/`input`/`devices`, `setup --host`, and the consoles `serial connect`
 and `adb shell`) exit with their program's own status instead. `serial log` still reads a stopped daemon's file, with a
@@ -1049,7 +1050,8 @@ panio lease release pi5                              # when done
   the 2 h / 30 min defaults; `lease renew` extends a lease you hold. Long
   jobs: renew before the end.
 - **Release when done.** Release stops the target's daemons and netboot
-  session and takes the link down; it never changes power. Releasing a lease
+  session and takes the link down; it never changes power. If any of that
+  fails the lease still ends but the target is blocked (exit 24, below). Releasing a lease
   that is already over exits 0 and says on stderr how it ended (it does not
   disturb a new holder), so an end-of-job `release` is safe to run twice; on a
   target nobody holds it exits 0 (`not leased`). `renew` on an expired lease
@@ -1070,6 +1072,20 @@ names the holder and when the lease ends. Run `panio lease status <target>`,
 then wait (`panio lease acquire <target> --wait 30m`) or tell the user. Do not
 retry in a loop and do not work around it by touching the daemons or devices
 directly.
+
+**Exit 24 (`target_cleanup_blocked`).** The previous lease ended but cleaning
+up after it failed (a daemon would not stop, a process survived, the netboot
+address could not be released), so nobody can acquire, renew, release or
+change the target; `--preempt` does not help. Reads still run, with a warning.
+`panio lease status <target>` (exit 0) shows `state: "blocked"`, the
+`cleanup_id` and each step's result. Tell the user. To recover, run
+`panio lease cleanup <target> --id <cleanup_id>`: it retries every step and
+clears the block when they pass. Only when the user agrees that cleanup cannot
+succeed, `panio lease override-cleanup <target> --id <id> --reason "..."`
+clears it without verifying and records the reason. Neither command acquires
+the target. An unreadable lease record gives the same exit; the fix is
+`override-cleanup <target> --corrupt --reason "..."`. Older panio versions
+and direct helper access do not honor the block.
 
 **Your own token stopped working.** If your lease was released, preempted or
 expired, a mutating command exits 23 with how and when it ended (and who holds
@@ -1253,7 +1269,8 @@ the device is free just because a daemon is gone from the tracked list.
 ## Quick reference — gotchas
 
 - **Leased target.** Exit 23 means someone holds the board or your token's
-  lease ended: `panio lease status <target>`, never retry blindly. Reads still
+  lease ended; exit 24 means the last cleanup failed and the target is blocked
+  for everyone: `panio lease status <target>`, never retry blindly. Reads still
   work on a leased target. `daemons stop|restart` of a leased target's daemon
   is refused too (this includes a target's netboot session, `netbootd[target]`);
   `stop --all` and `restart --all|--stale` skip them. `lease_acquire` over MCP
