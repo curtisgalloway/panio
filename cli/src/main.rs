@@ -1205,7 +1205,8 @@ enum LeaseCmd {
         #[arg(long, value_name = "DUR")]
         wait: Option<String>,
         /// Take the target from its current holder, who is told on its next
-        /// command. The holder's leftovers are cleaned up first.
+        /// command. The holder's leftovers are cleaned up first; if that
+        /// fails the target is blocked (exit 24) and nothing is acquired.
         #[arg(long)]
         preempt: bool,
         /// Print {token, owner, expires_at, expires_in_secs} as JSON.
@@ -1215,7 +1216,7 @@ enum LeaseCmd {
     /// Extend your lease (needs PANIO_LEASE).
     ///
     /// A lease that has already expired is retired (cleaned up) and the
-    /// command exits 23 saying so.
+    /// command exits 23 saying so; exits 24 if that cleanup failed.
     Renew {
         #[command(flatten)]
         target: TargetArg,
@@ -1224,6 +1225,9 @@ enum LeaseCmd {
         duration: Option<String>,
     },
     /// End your lease and clean the target up (needs PANIO_LEASE, or --preempt).
+    ///
+    /// If cleanup fails the lease still ends but the target is blocked (exit
+    /// 24) until `lease cleanup` or `lease override-cleanup` clears it.
     ///
     /// Releasing a lease that is already over is not an error: with a token
     /// that names an ended lease it exits 0 and says how it ended (a new
@@ -1240,15 +1244,64 @@ enum LeaseCmd {
     ///
     /// With no target in a lab that has several, lists them all; a host that
     /// cannot be reached is reported in its row. Not read-only: it cleans up
-    /// a lease that has expired. While a registered process is alive the
+    /// a lease that has expired (once; a failure shows as state "blocked"
+    /// with the cleanup id and exits 0). While a registered process is alive the
     /// lease cannot idle out, so the idle countdown is replaced by
     /// "kept alive by N process(es)" (`idle_left_secs` is null in JSON).
     Status {
         #[command(flatten)]
         target: TargetArg,
-        /// Print JSON ({target, held, owner, expires_in_secs, idle_left_secs,
-        /// procs, idle_secs, last_change}; an array when listing every
-        /// target).
+        /// Print JSON ({target, state, held, owner, expires_in_secs,
+        /// idle_left_secs, procs, idle_secs, last_change, cleanup}; an array
+        /// when listing every target).
+        #[arg(long)]
+        json: bool,
+    },
+    /// Retry the cleanup that blocked a target, and clear the block if it works.
+    ///
+    /// After a lease ends, panio stops the holder's processes, daemons and
+    /// netboot link. If any step fails the target is blocked (exit 24) for
+    /// everyone until this succeeds or `override-cleanup` clears it. `--id` is
+    /// the cleanup id `lease status` prints; a block with a different id
+    /// (a newer one) is refused. Re-runs every step; if the target's serial,
+    /// video, hid or netboot config changed since the lease ended, the block
+    /// stays and an override is required. Leaves the target unleased; it never
+    /// acquires. Exits 24 if cleanup still fails.
+    Cleanup {
+        #[command(flatten)]
+        target: TargetArg,
+        /// The cleanup id from `lease status`.
+        #[arg(long, value_name = "ID")]
+        id: String,
+        /// Print JSON on success.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Clear a cleanup block WITHOUT verifying cleanup (audited).
+    ///
+    /// For a target whose cleanup cannot succeed (the hardware is gone, the
+    /// config changed). The reason and the outstanding failures go into the
+    /// lease history before the block is cleared. Leaves the target unleased;
+    /// `--preempt` never does this. With `--corrupt` (instead of `--id`) moves
+    /// an unreadable lease record aside as lease.json.corrupt-<time>.
+    OverrideCleanup {
+        #[command(flatten)]
+        target: TargetArg,
+        /// The cleanup id from `lease status`.
+        #[arg(
+            long,
+            value_name = "ID",
+            conflicts_with = "corrupt",
+            required_unless_present = "corrupt"
+        )]
+        id: Option<String>,
+        /// The lease record is unreadable: move it aside.
+        #[arg(long)]
+        corrupt: bool,
+        /// Why the block is being cleared (recorded in the history).
+        #[arg(long, value_name = "TEXT")]
+        reason: String,
+        /// Print JSON on success.
         #[arg(long)]
         json: bool,
     },
@@ -2944,6 +2997,20 @@ fn lease_command(lab_flag: Option<&str>, cmd: LeaseCmd) -> Result<()> {
             }
             let t = resolve_single_target(&lab, target.name())?;
             lease_cmd::status(&lab, &t, json)
+        }
+        LeaseCmd::Cleanup { target, id, json } => {
+            let t = resolve_single_target(&lab, target.name())?;
+            lease_cmd::cleanup_cmd(&lab, &t, &id, json)
+        }
+        LeaseCmd::OverrideCleanup {
+            target,
+            id,
+            corrupt,
+            reason,
+            json,
+        } => {
+            let t = resolve_single_target(&lab, target.name())?;
+            lease_cmd::override_cleanup(&lab, &t, id.as_deref(), corrupt, &reason, json)
         }
     }
 }

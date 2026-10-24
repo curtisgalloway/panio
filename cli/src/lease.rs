@@ -143,6 +143,18 @@ impl CleanupBlock {
     }
 }
 
+impl CleanupBlock {
+    /// The failed steps as history lines; a pending block that never recorded
+    /// a result says so instead.
+    pub fn failure_lines_or_unfinished(&self) -> Vec<String> {
+        let lines = failure_lines(&self.results);
+        if lines.is_empty() && self.phase == CleanupPhase::Pending {
+            return vec!["cleanup did not finish".to_string()];
+        }
+        lines
+    }
+}
+
 /// `"<step>: <message>"` for each failed result.
 pub fn failure_lines(results: &[StepResult]) -> Vec<String> {
     results

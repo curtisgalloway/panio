@@ -695,6 +695,196 @@ pub fn status_all(lab: &Lab, json: bool) -> Result<()> {
     Ok(())
 }
 
+/// The blocking record, if `id` names it. A target that is not blocked, or is
+/// blocked under a different id (a newer generation), is refused: recovery
+/// must act on the generation the person looked at.
+fn expect_block(lock: &StoreLock, target: &str, id: &str) -> Result<Lease> {
+    match read_state(lock, target)? {
+        State::Blocked(l) => match l.cleanup_block() {
+            Some(b) if b.cleanup_id == id => Ok(l),
+            _ => Err(error::cleanup_blocked(
+                target,
+                format!(
+                    "target '{target}' is blocked under a different cleanup id; \
+                     run `panio lease status {target}` for the current one"
+                ),
+            )
+            .into()),
+        },
+        State::Held(_) | State::Expired(_) | State::Unleased => Err(PanioError::new(
+            Kind::Usage,
+            format!("target '{target}' is not cleanup-blocked (id {id} is not current)"),
+        )
+        .target(target)
+        .into()),
+    }
+}
+
+/// `panio lease cleanup TARGET --id ID`: re-run every cleanup step against the
+/// stored registered processes. Success clears the block; failure keeps it.
+pub fn cleanup_cmd(lab: &Lab, target: &str, id: &str, json: bool) -> Result<()> {
+    dispatch_or_local(lab, target, &[])?;
+    let lock = open(target)?;
+    let mut rec = expect_block(&lock, target, id)?;
+    let mut block = rec.cleanup.take().expect("expect_block checked the block");
+    if lease::scope_snapshot(lab, target) != block.scope {
+        rec.cleanup = Some(block);
+        return Err(error::cleanup_blocked(
+            target,
+            format!(
+                "target '{target}': its serial, video, hid or netboot config changed since the \
+                 lease ended, so a retry would not clean up what was left; the block stays. \
+                 Fix the cleanup by hand, then run `panio lease override-cleanup {target} \
+                 --id {id} --reason TEXT`"
+            ),
+        )
+        .into());
+    }
+    let results = lease::cleanup(lab, target, &block.procs);
+    block.last_attempt_at = Some(lease::now());
+    block.results = results.clone();
+    let errors = lease::failure_lines(&results);
+    if !errors.is_empty() {
+        for e in &errors {
+            eprintln!("warning: {target}: cleanup: {e}");
+        }
+        block.phase = CleanupPhase::Failed;
+        let msg = lease::blocked_message(
+            target,
+            &Lease {
+                cleanup: Some(block.clone()),
+                ..rec.clone()
+            },
+        );
+        rec.cleanup = Some(block);
+        lock.write(&rec).context("recording the failed cleanup")?;
+        return Err(error::cleanup_blocked(target, msg).into());
+    }
+    lock.append_history(&HistoryEntry {
+        at: lease::now(),
+        previous_owner: block.previous_owner.clone(),
+        previous_token: block.previous_token.clone(),
+        new_owner: block.new_owner.clone(),
+        how: block.how.clone(),
+        cleanup_errors: Vec::new(),
+        resolution: Some("verified".to_string()),
+        cleanup_id: Some(block.cleanup_id.clone()),
+        reason: None,
+    })
+    .context("recording the lease history (the target stays blocked)")?;
+    lock.remove().context("removing the lease record")?;
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({"target": target, "cleanup_id": id, "resolution": "verified"})
+        );
+    } else {
+        println!("Cleanup of '{target}' verified; the target is unleased");
+    }
+    Ok(())
+}
+
+/// `panio lease override-cleanup`: clear a block without verifying cleanup.
+/// With `corrupt`, move an unreadable record aside instead.
+pub fn override_cleanup(
+    lab: &Lab,
+    target: &str,
+    id: Option<&str>,
+    corrupt: bool,
+    reason: &str,
+    json: bool,
+) -> Result<()> {
+    if reason.trim().is_empty() {
+        return Err(PanioError::new(Kind::Usage, "--reason must not be empty").into());
+    }
+    if id.is_some() == corrupt {
+        return Err(
+            PanioError::new(Kind::Usage, "give exactly one of --id ID or --corrupt").into(),
+        );
+    }
+    dispatch_or_local(lab, target, &[])?;
+    let lock = open(target)?;
+    if corrupt {
+        return override_corrupt(&lock, target, reason, json);
+    }
+    let id = id.unwrap_or_default();
+    let rec = expect_block(&lock, target, id)?;
+    let block = rec.cleanup_block().expect("expect_block checked the block");
+    let mut outstanding = block.failure_lines_or_unfinished();
+    if outstanding.is_empty() {
+        outstanding.push("cleanup was not verified".to_string());
+    }
+    lock.append_history(&HistoryEntry {
+        at: lease::now(),
+        previous_owner: block.previous_owner.clone(),
+        previous_token: block.previous_token.clone(),
+        new_owner: block.new_owner.clone(),
+        how: block.how.clone(),
+        cleanup_errors: outstanding,
+        resolution: Some("overridden".to_string()),
+        cleanup_id: Some(block.cleanup_id.clone()),
+        reason: Some(reason.trim().to_string()),
+    })
+    .context("recording the override in the lease history (the target stays blocked)")?;
+    lock.remove().context("removing the lease record")?;
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({"target": target, "cleanup_id": id, "resolution": "overridden"})
+        );
+    } else {
+        println!(
+            "Cleanup block on '{target}' cleared WITHOUT verifying that cleanup finished \
+             (reason: {}); the target is unleased",
+            reason.trim()
+        );
+    }
+    Ok(())
+}
+
+fn override_corrupt(lock: &StoreLock, target: &str, reason: &str, json: bool) -> Result<()> {
+    match lock.read() {
+        Err(ReadError::Corrupt(_)) => {}
+        Err(e @ ReadError::Io(_)) => {
+            return Err(anyhow!(e).context(format!("lease for '{target}'")))
+        }
+        Ok(_) => {
+            return Err(PanioError::new(
+                Kind::Usage,
+                format!("the lease record for '{target}' is not corrupt; use --id"),
+            )
+            .target(target)
+            .into())
+        }
+    }
+    let ts = lease::now();
+    lock.append_history(&HistoryEntry {
+        at: ts,
+        previous_owner: "unknown".to_string(),
+        how: "corrupt".to_string(),
+        cleanup_errors: vec!["the lease record was unreadable".to_string()],
+        resolution: Some("overridden".to_string()),
+        reason: Some(reason.trim().to_string()),
+        ..HistoryEntry::default()
+    })
+    .context("recording the override in the lease history (the record was not moved)")?;
+    let moved = lock
+        .quarantine(ts)
+        .context("moving the corrupt record aside")?;
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({"target": target, "resolution": "overridden", "moved_to": moved})
+        );
+    } else {
+        println!(
+            "Moved the unreadable lease record for '{target}' to {}; the target is unleased",
+            moved.display()
+        );
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
