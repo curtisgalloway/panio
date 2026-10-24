@@ -1584,6 +1584,87 @@ mod tests {
         }
     }
 
+    fn blocked_lease() -> Lease {
+        let block = CleanupBlock {
+            cleanup_id: "id1".into(),
+            phase: CleanupPhase::Failed,
+            how: "released".into(),
+            ended_at: 5000,
+            previous_owner: "alice@bench1".into(),
+            previous_token: "tok-a".into(),
+            new_owner: None,
+            procs: vec![],
+            scope: serde_json::Value::Null,
+            last_attempt_at: Some(5001),
+            results: vec![StepResult {
+                step: "hid_daemon".into(),
+                status: StepStatus::Failed,
+                message: Some("boom".into()),
+            }],
+        };
+        Lease::blocked(&lease(), block, 5000).unwrap()
+    }
+
+    #[test]
+    fn a_block_wins_over_expiry_idle_and_token() {
+        let b = blocked_lease();
+        // Far past every deadline, no live process, the old token: still blocked.
+        let st = state(Some(b.clone()), 10_000_000, |_| false);
+        assert_eq!(st, State::Blocked(b.clone()));
+        for access in [Access::Mutating] {
+            match decide(&st, access, Some("tok-a"), false, "pi5", 10_000_000) {
+                Verdict::CleanupBlocked(m) => {
+                    assert!(m.contains("cleanup id id1"), "{m}");
+                    assert!(m.contains("hid_daemon"), "{m}");
+                    assert!(m.contains("panio lease cleanup pi5 --id id1"), "{m}");
+                    assert!(m.contains("override-cleanup"), "{m}");
+                    assert!(!m.contains("tok-a"), "{m}");
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+        assert_eq!(
+            decide(&st, Access::Read, None, true, "pi5", 1),
+            Verdict::Run
+        );
+        let blk = block_for(&st, Some("tok-a"), "pi5", 1).expect("blocks everyone");
+        assert!(blk.cleanup_blocked);
+        assert_eq!(blk.owner, "alice@bench1");
+    }
+
+    #[test]
+    fn the_outer_fields_of_a_blocked_record_look_held_to_an_older_cli() {
+        let b = blocked_lease();
+        assert!(b.owner.starts_with("cleanup-blocked"), "{}", b.owner);
+        assert_ne!(b.token, "tok-a");
+        assert!(b.expires_at > 5000 + 365 * 86_400);
+        assert!(b.procs.is_empty());
+        // An older CLI deserializes it (unknown field ignored) as a live
+        // lease: not expired, not idle.
+        #[derive(Deserialize)]
+        struct Old {
+            expires_at: u64,
+            idle_secs: u64,
+            last_used_at: u64,
+        }
+        let old: Old = serde_json::from_str(&serde_json::to_string(&b).unwrap()).unwrap();
+        assert!(old.expires_at > 6000);
+        assert!(old.last_used_at.saturating_add(old.idle_secs) > 6000);
+    }
+
+    #[test]
+    fn a_record_written_before_blocks_existed_still_parses() {
+        let text = r#"{"owner":"a","token":"t","acquired_at":1,"expires_at":2,
+            "duration_secs":1,"idle_secs":1,"last_used_at":1,"procs":[]}"#;
+        let l: Lease = serde_json::from_str(text).unwrap();
+        assert!(l.cleanup.is_none());
+        assert!(!serde_json::to_string(&l).unwrap().contains("cleanup"));
+        let h = r#"{"at":1,"previous_owner":"a","previous_token":"t","new_owner":null,
+            "how":"expired","cleanup_errors":[]}"#;
+        let e: HistoryEntry = serde_json::from_str(h).unwrap();
+        assert_eq!(e.resolution, None);
+    }
+
     #[test]
     fn state_unleased() {
         assert_eq!(state(None, 5000, |_| false), State::Unleased);
