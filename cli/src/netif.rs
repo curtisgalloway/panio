@@ -344,37 +344,67 @@ pub fn guard_shared_subnet(interface: &str, host_ip: &str) -> Result<()> {
 }
 
 /// The interface's addresses: (inet, inet6) with IPv6 scope suffixes stripped.
+/// Empty when the interface is missing or the probe fails, so this is display
+/// and drift evidence only; never proof that an address is absent (use
+/// [`probe_addresses`] for that).
 pub fn iface_addresses(interface: &str) -> (Vec<String>, Vec<String>) {
+    probe_addresses(interface)
+        .ok()
+        .flatten()
+        .unwrap_or_default()
+}
+
+/// Strict address probe. `Ok(None)`: the interface does not exist (both
+/// `ifconfig` and `ip` say "does not exist" and exit nonzero). `Ok(Some(..))`:
+/// the probe succeeded, with the addresses as [`iface_addresses`] returns
+/// them. `Err`: the probe itself failed (could not spawn, or exited nonzero for
+/// any other reason), which says nothing about the addresses.
+fn probe_addresses(interface: &str) -> Result<Option<(Vec<String>, Vec<String>)>> {
+    let cmd: Vec<&str> = if macos() {
+        vec!["ifconfig", interface]
+    } else {
+        vec!["ip", "-brief", "addr", "show", "dev", interface]
+    };
+    let o = run(&cmd).map_err(|e| anyhow::anyhow!("{} failed to start: {e}", cmd.join(" ")))?;
+    let stderr = String::from_utf8_lossy(&o.stderr).into_owned();
+    if !o.status.success() {
+        if stderr.to_lowercase().contains("does not exist") {
+            return Ok(None);
+        }
+        bail!("{} failed: {}", cmd.join(" "), stderr.trim());
+    }
+    let text = String::from_utf8_lossy(&o.stdout).into_owned();
     let mut inet = Vec::new();
     let mut inet6 = Vec::new();
     if macos() {
-        if let Ok(o) = run(&["ifconfig", interface]) {
-            for line in String::from_utf8_lossy(&o.stdout).lines() {
-                let s = line.trim();
-                if let Some(rest) = s.strip_prefix("inet ") {
-                    if let Some(a) = rest.split_whitespace().next() {
-                        inet.push(a.to_string());
-                    }
-                } else if let Some(rest) = s.strip_prefix("inet6 ") {
-                    if let Some(a) = rest.split_whitespace().next() {
-                        inet6.push(a.split('%').next().unwrap_or(a).to_string());
-                    }
+        for line in text.lines() {
+            let s = line.trim();
+            if let Some(rest) = s.strip_prefix("inet ") {
+                if let Some(a) = rest.split_whitespace().next() {
+                    inet.push(a.to_string());
+                }
+            } else if let Some(rest) = s.strip_prefix("inet6 ") {
+                if let Some(a) = rest.split_whitespace().next() {
+                    inet6.push(a.split('%').next().unwrap_or(a).to_string());
                 }
             }
         }
-    } else if let Ok(o) = run(&["ip", "-brief", "addr", "show", "dev", interface]) {
-        if o.status.success() {
-            let text = String::from_utf8_lossy(&o.stdout).into_owned();
-            for addr in text.split_whitespace().skip(2) {
-                if addr.contains(':') {
-                    inet6.push(addr.to_string());
-                } else {
-                    inet.push(addr.to_string());
-                }
+    } else {
+        for addr in text.split_whitespace().skip(2) {
+            if addr.contains(':') {
+                inet6.push(addr.to_string());
+            } else {
+                inet.push(addr.to_string());
             }
         }
     }
-    (inet, inet6)
+    Ok(Some((inet, inet6)))
+}
+
+/// True when `addr` is in `held` (entries may carry a `/prefix`).
+fn holds_address(held: &[String], addr: &str) -> bool {
+    held.iter()
+        .any(|h| h.split('/').next().unwrap_or(h).eq_ignore_ascii_case(addr))
 }
 
 fn has_host_ll(inet6: &[String]) -> bool {
@@ -944,39 +974,108 @@ fn add_host_ll(interface: &str) -> Result<()> {
     Ok(())
 }
 
-fn del_host_ll(interface: &str) {
-    if macos() {
-        let _ = run(&[
+/// Run one removal command; `Some(reason)` when it did not succeed.
+fn run_removal(cmd: &[&str]) -> Option<String> {
+    match run(cmd) {
+        Ok(o) if o.status.success() => None,
+        Ok(o) => {
+            let stderr = String::from_utf8_lossy(&o.stderr).trim().to_string();
+            Some(format!(
+                "{} exited with {}{}",
+                cmd.join(" "),
+                o.status,
+                if stderr.is_empty() {
+                    String::new()
+                } else {
+                    format!(": {stderr}")
+                }
+            ))
+        }
+        Err(e) => Some(format!("{} failed to start: {e}", cmd.join(" "))),
+    }
+}
+
+/// After a removal attempt, decide whether `addr` is gone from `interface`. A
+/// failed delete is still success when a strict probe shows the interface
+/// absent or the address not on it; an address still present, or a probe that
+/// cannot say, is a failure naming the address, the interface and the delete's
+/// own error.
+fn confirm_released(
+    interface: &str,
+    addr: &str,
+    v6: bool,
+    delete_failure: Option<String>,
+) -> Result<(), String> {
+    let delete_note = delete_failure
+        .map(|f| format!(" ({f}; {SUDO_HINT})"))
+        .unwrap_or_default();
+    match probe_addresses(interface) {
+        Ok(None) => Ok(()),
+        Ok(Some((inet, inet6))) => {
+            let held = if v6 { &inet6 } else { &inet };
+            if holds_address(held, addr) {
+                Err(format!(
+                    "{addr} is still assigned to {interface}{delete_note}"
+                ))
+            } else {
+                Ok(())
+            }
+        }
+        Err(e) => Err(format!(
+            "could not confirm {addr} was released from {interface}: {e}{delete_note}"
+        )),
+    }
+}
+
+/// Remove the ffx host IPv6 link-local. `Err` when it cannot be confirmed gone.
+fn del_host_ll(interface: &str) -> Result<(), String> {
+    let failure = if macos() {
+        run_removal(&[
             "sudo",
             "ifconfig",
             interface,
             "inet6",
             FFX_HOST_LL,
             "-alias",
-        ]);
+        ])
     } else {
         let cidr = format!("{FFX_HOST_LL}/{FFX_PREFIX}");
-        let _ = run(&["sudo", "ip", "-6", "addr", "del", &cidr, "dev", interface]);
-    }
+        run_removal(&["sudo", "ip", "-6", "addr", "del", &cidr, "dev", interface])
+    };
+    confirm_released(interface, FFX_HOST_LL, true, failure)
 }
 
-fn del_host_ip(interface: &str, host_ip: &str) {
-    if macos() {
+/// Remove the host IPv4. `Err` when it cannot be confirmed gone.
+fn del_host_ip(interface: &str, host_ip: &str) -> Result<(), String> {
+    let mut errors = Vec::new();
+    let failure = if macos() {
         // Release the static IP by returning the service to DHCP — an
         // `ifconfig` delete won't unset a `networksetup -setmanual` IP, so
         // `mode off` from `link` mode (no netboot stop to restore it) would
-        // otherwise leave the host IP assigned.
+        // otherwise leave the host IP assigned. The probe cannot see the
+        // persistent service configuration, so a failure here is reported
+        // whatever the probe shows.
         if let Some(service) = find_network_service(interface) {
-            let _ = run(&["sudo", "networksetup", "-setdhcp", &service]);
+            if let Some(f) = run_removal(&["sudo", "networksetup", "-setdhcp", &service]) {
+                errors.push(format!("{f}; {SUDO_HINT}"));
+            }
         }
         // `-setdhcp` reconfigures the service, but the address `ifconfig` put
         // on the interface can outlive it as an alias; release it explicitly so
         // a stale host IP cannot survive `mode off`.
-        let _ = run(&["sudo", "ifconfig", interface, "inet", host_ip, "-alias"]);
-        return;
+        run_removal(&["sudo", "ifconfig", interface, "inet", host_ip, "-alias"])
+    } else {
+        let cidr = format!("{host_ip}/24");
+        run_removal(&["sudo", "ip", "addr", "del", &cidr, "dev", interface])
+    };
+    if let Err(e) = confirm_released(interface, host_ip, false, failure) {
+        errors.push(e);
     }
-    let cidr = format!("{host_ip}/24");
-    let _ = run(&["sudo", "ip", "addr", "del", &cidr, "dev", interface]);
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("\n"))
+    }
 }
 
 /// Best-effort: disable Wake-on-LAN so the NIC doesn't keep the PHY (and the
@@ -1094,7 +1193,7 @@ pub fn mode_netboot(
 ) -> Result<()> {
     guard_primary_interface("mode netboot", interface)?;
     link_up(target, interface, hooks)?;
-    del_host_ll(interface);
+    let _ = del_host_ll(interface);
     if crate::state::is_netboot_running(target) {
         return Ok(());
     }
@@ -1113,7 +1212,7 @@ pub fn mode_link(target: &str, interface: &str, host_ip: &str, hooks: &LinkHooks
     if crate::state::is_netboot_running(target) {
         crate::netboot::stop(target)?;
     }
-    del_host_ll(interface);
+    let _ = del_host_ll(interface);
     configure_interface(interface, host_ip)
 }
 
@@ -1129,15 +1228,30 @@ pub fn mode_ffx(target: &str, interface: &str, hooks: &LinkHooks) -> Result<()> 
     add_host_ll(interface)
 }
 
-/// off: stop netboot, remove the ffx LL and any stale IPv4.
+/// off: stop netboot, remove the ffx LL and any stale IPv4. Both removals are
+/// attempted; the call fails, naming each address, when either cannot be
+/// confirmed gone (the delete failed and the interface still holds it, or the
+/// probe could not say).
 pub fn mode_off(target: &str, interface: &str, host_ip: &str) -> Result<()> {
     guard_primary_interface("mode off", interface)?;
     if crate::state::is_netboot_running(target) {
         crate::netboot::stop(target)?;
     }
-    del_host_ll(interface);
-    del_host_ip(interface, host_ip);
-    Ok(())
+    let mut errors = Vec::new();
+    if let Err(e) = del_host_ll(interface) {
+        errors.push(e);
+    }
+    if let Err(e) = del_host_ip(interface, host_ip) {
+        errors.push(e);
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        bail!(
+            "netif mode off could not release the host addresses on '{interface}':\n{}",
+            errors.join("\n")
+        )
+    }
 }
 
 /// Force the link down *hard*: do everything `mode off` does (stop netboot,
@@ -1151,7 +1265,10 @@ pub fn mode_off(target: &str, interface: &str, host_ip: &str) -> Result<()> {
 /// When the channel has a `link_down_cmd` it runs first, before the host-side
 /// steps, so it can still reach a switch managed through this adapter: that
 /// is the guaranteed drop (e.g. a managed-switch port disable). If it fails
-/// the host-side steps still run and the error says so.
+/// the host-side steps still run and the error says so. They also still run
+/// when `mode off` cannot confirm the host addresses released (Wake-on-LAN
+/// disable and admin-down are attempted anyway), and the call then fails; when
+/// the hook failed too, its `hook_failed` error carries both messages.
 pub fn down_hard(target: &str, interface: &str, host_ip: &str, hooks: &LinkHooks) -> Result<()> {
     guard_primary_interface("down-hard", interface)?;
     // The hook runs first, while the host side is still up: the switch may be
@@ -1160,13 +1277,24 @@ pub fn down_hard(target: &str, interface: &str, host_ip: &str, hooks: &LinkHooks
         target,
         "link_down_cmd",
         hooks.down_cmd.as_deref(),
-        " (the host-side steps still ran: netboot stopped, addresses released, \
-         Wake-on-LAN disabled, interface admin-down; the carrier may still be up)",
+        " (the host-side steps were still attempted: netboot stopped, addresses \
+         released, Wake-on-LAN disabled, interface admin-down; the carrier may still be up)",
     );
-    mode_off(target, interface, host_ip)?;
+    let off = mode_off(target, interface, host_ip);
     disable_wol(interface);
     admin_down(interface);
-    hook
+    match (hook, off) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Ok(()), Err(off)) => Err(off),
+        (Err(hook), Ok(())) => Err(hook),
+        (Err(hook), Err(off)) => Err(match hook.downcast::<crate::error::PanioError>() {
+            Ok(mut e) => {
+                e.message = format!("{}\n{off:#}", e.message);
+                e.into()
+            }
+            Err(other) => anyhow::anyhow!("{other:#}\n{off:#}"),
+        }),
+    }
 }
 
 pub struct NetifStatus {

@@ -447,29 +447,55 @@ fn stopped(r: anyhow::Result<crate::Stopped>) -> Result<(), String> {
 
 /// Terminate a registered process that is still the same process (pid plus
 /// start time, so a recycled pid is never signaled): TERM, a short grace, then
-/// KILL after re-checking identity.
+/// KILL after re-checking identity, then confirm it is gone.
 fn terminate_registered(p: &Proc) -> Result<(), String> {
-    if !proc_is_live(p) {
+    terminate_with(
+        p.pid,
+        || proc_is_live(p),
+        |sig| platform::try_signal_pid(p.pid, sig),
+        std::time::Duration::from_secs(2),
+    )
+}
+
+/// [`terminate_registered`] over injected OS primitives: `is_live` is the
+/// identity-checked liveness test, `signal` sends one signal, and `grace`
+/// bounds each wait (after TERM, and again after KILL).
+fn terminate_with(
+    pid: i32,
+    is_live: impl Fn() -> bool,
+    signal: impl Fn(platform::Signal) -> std::io::Result<()>,
+    grace: std::time::Duration,
+) -> Result<(), String> {
+    let wait_gone = || {
+        let deadline = std::time::Instant::now() + grace;
+        while is_live() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        !is_live()
+    };
+    if !is_live() {
         return Ok(());
     }
-    if let Err(e) = platform::try_signal_pid(p.pid, platform::Signal::Term) {
-        if !proc_is_live(p) {
+    if let Err(e) = signal(platform::Signal::Term) {
+        if !is_live() {
             return Ok(());
         }
-        return Err(format!("could not stop pid {}: {e}", p.pid));
+        return Err(format!("could not stop pid {pid}: {e}"));
     }
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-    while proc_is_live(p) && std::time::Instant::now() < deadline {
-        std::thread::sleep(std::time::Duration::from_millis(50));
+    if wait_gone() {
+        return Ok(());
     }
-    if proc_is_live(p) {
-        if let Err(e) = platform::try_signal_pid(p.pid, platform::Signal::Kill) {
-            if proc_is_live(p) {
-                return Err(format!("could not kill pid {}: {e}", p.pid));
-            }
+    if let Err(e) = signal(platform::Signal::Kill) {
+        if is_live() {
+            return Err(format!("could not kill pid {pid}: {e}"));
         }
+        return Ok(());
     }
-    Ok(())
+    if wait_gone() {
+        Ok(())
+    } else {
+        Err(format!("pid {pid} survived SIGKILL"))
+    }
 }
 
 /// Tear down what a departing holder left on the target: its registered
@@ -1134,6 +1160,56 @@ mod tests {
             "the hid step must have run and failed: {out:?}"
         );
         assert!(out[0].starts_with("hid daemon:"), "{out:?}");
+    }
+
+    #[test]
+    fn terminate_with_fails_when_the_process_survives_sigkill() {
+        let signals = std::cell::RefCell::new(Vec::new());
+        let r = terminate_with(
+            4242,
+            || true,
+            |sig| {
+                signals.borrow_mut().push(format!("{sig:?}"));
+                Ok(())
+            },
+            std::time::Duration::from_millis(100),
+        );
+        let err = r.expect_err("a process that survives KILL is not terminated");
+        assert!(err.contains("4242") && err.contains("survived"), "{err}");
+        assert_eq!(*signals.borrow(), vec!["Term", "Kill"]);
+    }
+
+    #[test]
+    fn terminate_with_succeeds_when_the_process_dies_after_kill() {
+        let killed = std::cell::Cell::new(false);
+        let r = terminate_with(
+            4243,
+            || !killed.get(),
+            |sig| {
+                if matches!(sig, platform::Signal::Kill) {
+                    killed.set(true);
+                }
+                Ok(())
+            },
+            std::time::Duration::from_millis(100),
+        );
+        assert_eq!(r, Ok(()));
+        assert!(killed.get(), "KILL must have been sent");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn terminate_registered_kills_a_process_that_ignores_term() {
+        let mut child = std::process::Command::new("sh")
+            .args(["-c", "trap \"\" TERM; sleep 30"])
+            .spawn()
+            .expect("spawn sh");
+        let p = registered(&child);
+        let waiter = std::thread::spawn(move || child.wait());
+        assert!(terminate_registered(&p).is_ok());
+        assert!(!proc_is_live(&p), "process must be gone");
+        let status = waiter.join().expect("waiter").expect("wait");
+        assert!(!status.success(), "killed, not a clean exit: {status:?}");
     }
 
     #[cfg(unix)]
