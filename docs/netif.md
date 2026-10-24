@@ -127,12 +127,25 @@ panio netif status <target>        # mode=off, inet (none)
 physical link. Many NICs keep the PHY (physical-layer chip) powered for
 Wake-on-LAN (WoL), so `carrier` can read `up` in `off` mode.
 
+`mode off` tries to remove both host addresses (the IPv4 and the IPv6
+link-local) even if one removal fails. It exits nonzero when it cannot confirm
+an address is gone: the removal command failed and the interface still holds
+the address, or the follow-up probe of the interface failed. A removal command
+that errors is not a failure if the probe shows the address absent or the
+interface itself missing. On macOS a failed `networksetup -setdhcp` is always
+reported, since the probe cannot see the saved service configuration. The
+error names each address and includes the command's stderr.
+
 **`netif down-hard` is the harder down.** After `mode off` it:
 
 - **Linux:** disables WoL (`sudo ethtool -s <iface> wol d`), then admin-downs
   the interface (`sudo ip link set <iface> down`).
 - **macOS:** admin-downs the interface (`sudo ifconfig <iface> down`); WoL is
   system-wide there (`pmset womp`).
+
+If `mode off` cannot confirm the addresses released, `down-hard` still runs
+the WoL and admin-down steps, then exits nonzero with that error (and, when the
+`link_down_cmd` hook failed too, both messages).
 
 `mode link` or `mode netboot` bring the link back. **WoL stays disabled**
 until you run `sudo ethtool -s <iface> wol g` or replug the adapter.
@@ -232,7 +245,8 @@ With the hooks set:
 - `panio netif down-hard` runs `link_down_cmd` first, while the host side is
   still up (the switch may be managed through this same adapter), then does
   its host-side steps (stop netboot, release addresses, WoL off, admin-down).
-  If the hook fails, the host-side steps still run, the command exits
+  If the hook fails (or the addresses cannot be confirmed released), the
+  host-side steps still run, the command exits
   `hook_failed` (a failing program, or exit 127 for a missing one is
   `not_configured`) and the message says the carrier may still be up.
 - `panio netif mode link`, `netboot` and `ffx` admin-up the interface and run

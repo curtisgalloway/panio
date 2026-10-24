@@ -401,6 +401,9 @@ interface is down, so the peer's link LED stays lit and `carrier` can still read
 disables WoL (`ethtool -s <iface> wol d` on Linux) and admin-downs the
 interface. Bring the link back with `netif mode link` (or `netboot`); WoL stays
 off until you re-enable it (`ethtool -s <iface> wol g`) or replug the adapter.
+`mode off` (and so `down-hard`) exits nonzero when it cannot confirm the host
+IPv4 and ffx link-local were released; `down-hard` still runs WoL-off and
+admin-down before failing.
 
 **`down-hard` does not guarantee the target sees link loss.** Common USB
 adapters keep the PHY up when admin-down (measured: AX88179A/B and RTL8153 on
@@ -415,7 +418,7 @@ factory defaults): `panio skill managed-switch`. Configure the channel's link ho
 panio: `panio netboot set -t <name> --link-down-cmd 'switchport -d sw1
 --mgmt-port 8 port 3 off' --link-up-cmd 'switchport -d sw1 --mgmt-port 8 port 3 on'`.
 `down-hard` then runs the down hook first, before its host-side steps (a failing
-hook exits `hook_failed` after those steps still ran); `netif mode
+hook exits `hook_failed` after those steps were still attempted); `netif mode
 link|netboot|ffx` run the up hook first, so it must be idempotent; `mode off`
 runs none; `netif status` shows a `link hooks` line. An empty value clears a
 hook. One netboot link serves one target; don't put several targets behind

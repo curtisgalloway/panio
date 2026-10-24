@@ -922,7 +922,9 @@ enum NetifCmd {
     ///
     /// `link` brings just the host IP up (no DHCP/TFTP daemon, no ffx
     /// link-local) and `off` releases it — together they test the bare link
-    /// up/down. `off` releases the IP only; it does not force the carrier down.
+    /// up/down. `off` releases the IP only; it does not force the carrier down. It
+    /// exits nonzero when it cannot confirm the host IPv4 and ffx link-local
+    /// are gone.
     ///
     /// `link`, `netboot` and `ffx` first run the channel's `link_up_cmd` (set
     /// with `netboot set --link-up-cmd`) when one is configured, so a link
@@ -944,8 +946,9 @@ enum NetifCmd {
     /// --link-down-cmd` (e.g. a managed-switch port disable via `switchport`):
     /// down-hard then runs that hook first (so it can still reach a switch
     /// managed through this adapter), and a failing hook exits as
-    /// `hook_failed` after the host-side steps still ran. Bring the link back
-    /// with `mode link`/`netboot`/`ffx`, which admin-up the interface and run
+    /// `hook_failed` after the host-side steps were still attempted; those steps
+    /// also run when `mode off` cannot confirm the addresses released, and the
+    /// command then exits nonzero. Bring the link back with `mode link`/`netboot`/`ffx`, which admin-up the interface and run
     /// `--link-up-cmd` first.
     DownHard {
         #[command(flatten)]
