@@ -1611,17 +1611,22 @@ mod tests {
         // Far past every deadline, no live process, the old token: still blocked.
         let st = state(Some(b.clone()), 10_000_000, |_| false);
         assert_eq!(st, State::Blocked(b.clone()));
-        for access in [Access::Mutating] {
-            match decide(&st, access, Some("tok-a"), false, "pi5", 10_000_000) {
-                Verdict::CleanupBlocked(m) => {
-                    assert!(m.contains("cleanup id id1"), "{m}");
-                    assert!(m.contains("hid_daemon"), "{m}");
-                    assert!(m.contains("panio lease cleanup pi5 --id id1"), "{m}");
-                    assert!(m.contains("override-cleanup"), "{m}");
-                    assert!(!m.contains("tok-a"), "{m}");
-                }
-                other => panic!("{other:?}"),
+        match decide(
+            &st,
+            Access::Mutating,
+            Some("tok-a"),
+            false,
+            "pi5",
+            10_000_000,
+        ) {
+            Verdict::CleanupBlocked(m) => {
+                assert!(m.contains("cleanup id id1"), "{m}");
+                assert!(m.contains("hid_daemon"), "{m}");
+                assert!(m.contains("panio lease cleanup pi5 --id id1"), "{m}");
+                assert!(m.contains("override-cleanup"), "{m}");
+                assert!(!m.contains("tok-a"), "{m}");
             }
+            other => panic!("{other:?}"),
         }
         assert_eq!(
             decide(&st, Access::Read, None, true, "pi5", 1),
