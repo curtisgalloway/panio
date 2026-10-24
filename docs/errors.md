@@ -25,6 +25,7 @@ program's status ([below](#passthrough-commands)).
 | 4 | `unreachable` | `infrastructure` | SSH to the control host failed. The command may not have run, or may have been killed part way. |
 | 22 | `timeout` | `transient` | No answer within a deadline (daemon startup, a daemon request, an SSH port forward). The outcome is unknown: check state before repeating a change such as a power cycle. |
 | 23 | `target_leased` | `transient` | The target is leased to someone else, or the lab requires a lease and none is held. The message names the holder and when the lease ends. Wait (`panio lease acquire --wait`) and retry. |
+| 24 | `target_cleanup_blocked` | `device_state` | The last lease on the target ended but cleaning up after it failed (or the lease record is unreadable), so the target is refused to everyone, `--preempt` included, until a person recovers it. The message names the failed steps and the cleanup id. Waiting does not help: run `panio lease cleanup TARGET --id ID` to retry, or `panio lease override-cleanup TARGET --id ID --reason TEXT` to clear it without verification. See [target leases](leases.md#cleanup). |
 | 100 | `daemon_down` | `infrastructure` | The channel's daemon is not running and the command needs it, or its record is stale. Start it with `panio serial watch` or `panio video watch`; `panio daemons` lists what is running. |
 | 101 | `helper_failed` | `device_state` | A hook or helper ran and failed: it exited non-zero (its code is in `child_exit`), a daemon exited during startup, or a running daemon refused the request (its reason is the message). |
 | 109 | `internal` | null | An unclassified failure; likely a bug. The message says what went wrong. |
@@ -42,7 +43,7 @@ workflow should look, for a caller that does not need the full kind:
 |---|---|---|
 | `infrastructure` | `not_configured`, `unreachable`, `daemon_down` | panio's own setup failed: the lab file, a control host, a daemon. The target was not reached. Fix the setup; retrying will not help. |
 | `transient` | `timeout`, `target_leased` | A retry may succeed. After a `timeout` the first attempt's outcome is unknown: check state before repeating a change. A `target_leased` refusal ran nothing; retry once the lease ends. |
-| `device_state` | `helper_failed` | The target or the hardware panio drives refused or failed: a hook or helper reported failure, a daemon rejected the request (such as "no video signal"). |
+| `device_state` | `helper_failed`, `target_cleanup_blocked` | The target or the hardware panio drives refused or failed: a hook or helper reported failure, a daemon rejected the request (such as "no video signal"), or the cleanup after a lease left the hardware in a state a person must resolve. |
 | null | `usage`, `internal` | A caller's mistake or an unclassified failure; neither points at the setup or the target. |
 
 The category is derived from the kind, so exit codes do not change with it. A

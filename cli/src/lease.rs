@@ -45,18 +45,173 @@ pub struct Lease {
     pub idle_secs: u64,
     pub last_used_at: u64,
     pub procs: Vec<Proc>,
+    /// Present while the previous holder's cleanup is unfinished or failed:
+    /// the target is blocked and nobody holds it. Absent on every ordinary
+    /// record, including those written before this field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cleanup: Option<CleanupBlock>,
+}
+
+/// How far ahead the outer fields of a blocked record are pushed, so a CLI
+/// that ignores [`Lease::cleanup`] still sees a lease nobody can idle out.
+const BLOCKED_HORIZON_SECS: u64 = 10 * 365 * 86_400;
+
+/// Where a [`CleanupBlock`] stands.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum CleanupPhase {
+    /// Written before cleanup ran. Seen later only when the process that was
+    /// cleaning up died before recording a result.
+    Pending,
+    /// Cleanup ran and at least one step failed.
+    Failed,
+}
+
+impl CleanupPhase {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CleanupPhase::Pending => "pending",
+            CleanupPhase::Failed => "failed",
+        }
+    }
+}
+
+/// How one cleanup step ended.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum StepStatus {
+    /// The step changed something.
+    Ok,
+    /// There was nothing to do: the daemon was not running, the process was
+    /// already gone.
+    AlreadySatisfied,
+    Failed,
+}
+
+/// One cleanup step's outcome. `step` is a stable id (`registered_processes`,
+/// `serial_daemon`, `video_daemon`, `hid_daemon`, `netboot_session`,
+/// `netif_mode_off`).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct StepResult {
+    pub step: String,
+    pub status: StepStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+impl StepResult {
+    pub fn failed(&self) -> bool {
+        self.status == StepStatus::Failed
+    }
+}
+
+/// What a target is blocked on: the departed holder's cleanup, and enough
+/// about it to retry or to explain an override later.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct CleanupBlock {
+    /// Names this block in `lease cleanup --id`. Public, unlike the token: it
+    /// is printed.
+    pub cleanup_id: String,
+    pub phase: CleanupPhase,
+    /// How the lease ended: `"expired"`, `"released"` or `"preempted"`.
+    pub how: String,
+    pub ended_at: u64,
+    pub previous_owner: String,
+    /// The ended holder's token, kept so the history can explain it. Never
+    /// printed.
+    pub previous_token: String,
+    pub new_owner: Option<String>,
+    /// The registered processes the retry must still terminate.
+    pub procs: Vec<Proc>,
+    /// The target's cleanup-relevant config when the lease ended
+    /// ([`scope_snapshot`]); a retry under different config needs an override.
+    pub scope: serde_json::Value,
+    #[serde(default)]
+    pub last_attempt_at: Option<u64>,
+    #[serde(default)]
+    pub results: Vec<StepResult>,
+}
+
+impl CleanupBlock {
+    /// Ids of the steps that failed.
+    pub fn failed_steps(&self) -> Vec<&str> {
+        self.results
+            .iter()
+            .filter(|r| r.failed())
+            .map(|r| r.step.as_str())
+            .collect()
+    }
+}
+
+impl CleanupBlock {
+    /// The failed steps as history lines; a pending block that never recorded
+    /// a result says so instead.
+    pub fn failure_lines_or_unfinished(&self) -> Vec<String> {
+        let lines = failure_lines(&self.results);
+        if lines.is_empty() && self.phase == CleanupPhase::Pending {
+            return vec!["cleanup did not finish".to_string()];
+        }
+        lines
+    }
+}
+
+/// `"<step>: <message>"` for each failed result.
+pub fn failure_lines(results: &[StepResult]) -> Vec<String> {
+    results
+        .iter()
+        .filter(|r| r.failed())
+        .map(|r| format!("{}: {}", r.step, r.message.as_deref().unwrap_or("failed")))
+        .collect()
+}
+
+impl Lease {
+    /// The cleanup block, when this record is one.
+    pub fn cleanup_block(&self) -> Option<&CleanupBlock> {
+        self.cleanup.as_ref()
+    }
+
+    /// The record that blocks the target after `old` ended. The outer fields
+    /// describe a lease nobody can token into and that outlives any idle or
+    /// duration check, so a CLI that does not know about `cleanup` still
+    /// refuses other callers instead of reusing the target. (Such a CLI's
+    /// `--preempt` still overrides it; the block binds only CLIs that read
+    /// the field.)
+    pub(crate) fn blocked(old: &Lease, block: CleanupBlock, now: u64) -> std::io::Result<Lease> {
+        let horizon = now.saturating_add(BLOCKED_HORIZON_SECS);
+        Ok(Lease {
+            owner: format!("cleanup-blocked (was {})", old.owner),
+            token: platform::random_token()?,
+            acquired_at: old.acquired_at,
+            expires_at: horizon,
+            duration_secs: MAX_SECS,
+            idle_secs: MAX_SECS,
+            last_used_at: horizon,
+            procs: Vec::new(),
+            cleanup: Some(block),
+        })
+    }
 }
 
 /// One line of `lease-history.jsonl`: why a token stopped working.
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
 pub struct HistoryEntry {
     pub at: u64,
     pub previous_owner: String,
     pub previous_token: String,
     pub new_owner: Option<String>,
-    /// `"preempted"`, `"released"` or `"expired"`.
+    /// `"preempted"`, `"released"`, `"expired"` or `"corrupt"`.
     pub how: String,
     pub cleanup_errors: Vec<String>,
+    /// How a cleanup block was cleared: `"verified"` (a retry succeeded) or
+    /// `"overridden"` (a person cleared it without verification). Separate
+    /// from `how`, which keeps the original end reason.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolution: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cleanup_id: Option<String>,
+    /// The reason given to `override-cleanup`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 /// What a command does to the target, for the lease check.
@@ -69,8 +224,8 @@ pub enum Access {
     Unchecked,
 }
 
-/// `lease.json` exists but cannot be used. The caller treats it as no lease
-/// and replaces it on the next write.
+/// `lease.json` exists but cannot be used. A mutation is refused until
+/// `lease override-cleanup --corrupt` moves the file aside.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CorruptLease(pub String);
 
@@ -82,8 +237,8 @@ impl std::fmt::Display for CorruptLease {
 
 impl std::error::Error for CorruptLease {}
 
-/// Why [`StoreLock::read`] failed. Only `Corrupt` means "treat as no lease and
-/// replace it"; `Io` (permissions, a directory in the way, a failing disk)
+/// Why [`StoreLock::read`] failed. `Corrupt` blocks the target until it is
+/// quarantined; `Io` (permissions, a directory in the way, a failing disk)
 /// must not be overwritten, so callers surface it.
 #[derive(Debug)]
 pub enum ReadError {
@@ -205,6 +360,14 @@ impl StoreLock {
         write_private(&self.record_path(), &data)
     }
 
+    /// Move an unreadable record aside as `lease.json.corrupt-<ts>` and return
+    /// the new path.
+    pub fn quarantine(&self, ts: u64) -> std::io::Result<PathBuf> {
+        let to = self.dir.join(format!("lease.json.corrupt-{ts}"));
+        std::fs::rename(self.record_path(), &to)?;
+        Ok(to)
+    }
+
     /// Delete the record. Already gone is success.
     pub fn remove(&self) -> std::io::Result<()> {
         match std::fs::remove_file(self.record_path()) {
@@ -267,16 +430,23 @@ pub enum State {
     Unleased,
     Held(Lease),
     Expired(Lease),
+    /// The previous holder's cleanup did not finish; carries the blocking
+    /// record. Nobody holds the target and nobody can acquire it.
+    Blocked(Lease),
 }
 
 /// Classify a record at `now`. Registered processes for which `alive` is
-/// false are dropped from the returned lease. A lease is expired past
-/// `expires_at`, or when idle (`last_used_at + idle_secs` has passed) with no
-/// live registered process.
+/// false are dropped from the returned lease. A record with a cleanup block is
+/// `Blocked` before anything else is looked at, and never expires. A lease is
+/// expired past `expires_at`, or when idle (`last_used_at + idle_secs` has
+/// passed) with no live registered process.
 pub fn state(l: Option<Lease>, now: u64, alive: impl Fn(&Proc) -> bool) -> State {
     let Some(mut lease) = l else {
         return State::Unleased;
     };
+    if lease.cleanup.is_some() {
+        return State::Blocked(lease);
+    }
     lease.procs.retain(|p| alive(p));
     let past_expiry = now > lease.expires_at;
     let idle = now > lease.last_used_at.saturating_add(lease.idle_secs) && lease.procs.is_empty();
@@ -300,6 +470,9 @@ pub enum Verdict {
     /// Clean up the expired holder's leftovers, then refuse: the target is
     /// now unleased and `lease_required` is set.
     CleanupThenRefuse(Lease, String),
+    /// Do not run: the target's last cleanup failed. The string is the
+    /// refusal; the error kind is `target_cleanup_blocked`.
+    CleanupBlocked(String),
 }
 
 /// `HH:MM local`, or `HH:MM UTC` when the system cannot convert.
@@ -346,6 +519,13 @@ pub fn decide(
                 Verdict::Run
             }
         }
+        State::Blocked(lease) => {
+            if access == Access::Mutating {
+                Verdict::CleanupBlocked(blocked_message(target, lease))
+            } else {
+                Verdict::Run
+            }
+        }
         State::Held(lease) => {
             if token == Some(lease.token.as_str()) {
                 Verdict::RunAndTouch
@@ -365,19 +545,65 @@ pub fn decide(
     }
 }
 
+/// The refusal for a target whose last cleanup did not finish: names the
+/// failed steps, the cleanup id, and both recovery commands.
+pub fn blocked_message(target: &str, lease: &Lease) -> String {
+    let Some(b) = lease.cleanup.as_ref() else {
+        return format!("target '{target}' is cleanup-blocked");
+    };
+    let what = match b.phase {
+        CleanupPhase::Failed => format!("failed ({})", b.failed_steps().join(", ")),
+        CleanupPhase::Pending => "did not finish".to_string(),
+    };
+    format!(
+        "target '{target}' is cleanup-blocked: cleaning up after {}'s lease ({}) {what}; \
+         cleanup id {id}; retry with `panio lease cleanup {target} --id {id}`, or clear \
+         it without verification with `panio lease override-cleanup {target} --id {id} \
+         --reason TEXT`",
+        b.previous_owner,
+        b.how,
+        id = b.cleanup_id,
+    )
+}
+
+/// The refusal for an unreadable record.
+pub fn corrupt_message(target: &str, c: &CorruptLease) -> String {
+    format!(
+        "target '{target}' is cleanup-blocked: its lease record is unreadable ({}); \
+         move it aside with `panio lease override-cleanup {target} --corrupt --reason TEXT`",
+        c.0
+    )
+}
+
 /// Why a lease stops this caller from touching a target's daemons.
 #[derive(Debug, PartialEq)]
 pub struct Block {
     pub owner: String,
-    /// `HH:MM local` when the lease ends.
+    /// `HH:MM local` when the lease ends; empty for a cleanup block.
     pub until: String,
     /// The full refusal text, the same wording the central check uses.
     pub message: String,
+    /// The target is blocked on a failed cleanup (or an unreadable record)
+    /// rather than leased: the refusal is `target_cleanup_blocked`.
+    pub cleanup_blocked: bool,
 }
 
 /// `Some` only when `state` is a live lease held by someone other than the
-/// holder of `token`. An unleased or expired target blocks no one.
+/// holder of `token`, or a cleanup block (which binds everyone). An unleased
+/// or expired target blocks no one.
 pub fn block_for(state: &State, token: Option<&str>, target: &str, now: u64) -> Option<Block> {
+    if let State::Blocked(lease) = state {
+        let owner = lease
+            .cleanup
+            .as_ref()
+            .map_or_else(|| lease.owner.clone(), |b| b.previous_owner.clone());
+        return Some(Block {
+            owner,
+            until: String::new(),
+            message: blocked_message(target, lease),
+            cleanup_blocked: true,
+        });
+    }
     let State::Held(lease) = state else {
         return None;
     };
@@ -386,6 +612,7 @@ pub fn block_for(state: &State, token: Option<&str>, target: &str, now: u64) -> 
             owner: lease.owner.clone(),
             until: clock(lease.expires_at),
             message,
+            cleanup_blocked: false,
         }),
         _ => None,
     }
@@ -394,8 +621,9 @@ pub fn block_for(state: &State, token: Option<&str>, target: &str, now: u64) -> 
 /// [`block_for`] against the lease on disk for `target`, for callers that run
 /// without a lab (`daemons stop|restart`). Reads only: it never creates the
 /// state directory, cleans up an expired lease, or touches a held one. A
-/// target with no `lease.json` is not blocked; an unreadable record is
-/// reported on stderr and not treated as a block.
+/// target with no `lease.json` is not blocked; an unreadable file (corrupt)
+/// blocks; a record that cannot be opened at all is reported on stderr and
+/// not treated as a block.
 pub fn foreign_holder(target: &str) -> Option<Block> {
     let store = Store::for_target(target);
     if !store.record_exists() {
@@ -410,6 +638,14 @@ pub fn foreign_holder(target: &str) -> Option<Block> {
     };
     let rec = match lock.read() {
         Ok(r) => r,
+        Err(ReadError::Corrupt(c)) => {
+            return Some(Block {
+                owner: "unknown".to_string(),
+                until: String::new(),
+                message: corrupt_message(target, &c),
+                cleanup_blocked: true,
+            });
+        }
         Err(e) => {
             eprintln!("warning: {target}: cannot read its lease: {e}");
             return None;
@@ -424,23 +660,36 @@ pub fn foreign_holder(target: &str) -> Option<Block> {
     )
 }
 
-/// One cleanup step: a label for the failure message and the work itself.
-type Step<'a> = (&'static str, Box<dyn FnOnce() -> Result<(), String> + 'a>);
+/// What one cleanup step found.
+type StepOutcome = Result<StepStatus, String>;
 
-/// Run every step in order, whatever happens to the earlier ones; one message
-/// per step that failed.
-fn run_steps(steps: Vec<Step<'_>>) -> Vec<String> {
+/// One cleanup step: a stable id and the work itself.
+type Step<'a> = (&'static str, Box<dyn FnOnce() -> StepOutcome + 'a>);
+
+/// Run every step in order, whatever happens to the earlier ones.
+fn run_steps(steps: Vec<Step<'_>>) -> Vec<StepResult> {
     steps
         .into_iter()
-        .filter_map(|(label, step)| step().err().map(|e| format!("{label}: {e}")))
+        .map(|(step, work)| match work() {
+            Ok(status) => StepResult {
+                step: step.to_string(),
+                status,
+                message: None,
+            },
+            Err(message) => StepResult {
+                step: step.to_string(),
+                status: StepStatus::Failed,
+                message: Some(message),
+            },
+        })
         .collect()
 }
 
-/// Map a local capture-daemon stop to a step result.
-fn stopped(r: anyhow::Result<crate::Stopped>) -> Result<(), String> {
+/// Map a local capture-daemon stop to a step outcome.
+fn stopped(r: anyhow::Result<crate::Stopped>) -> StepOutcome {
     match r {
         Ok(crate::Stopped::Daemon(st)) if !st.success() => Err(format!("stop exited with {st}")),
-        Ok(_) => Ok(()),
+        Ok(_) => Ok(StepStatus::Ok),
         Err(e) => Err(e.to_string()),
     }
 }
@@ -498,29 +747,69 @@ fn terminate_with(
     }
 }
 
+/// The part of `target`'s config that [`cleanup`] acts on: its host binding
+/// and its serial, video, hid and netboot channels, as far as cleanup reads
+/// them. Not power, not the rest of the lab. A missing target is `Null`. A
+/// retry compares this with the snapshot stored when the lease ended.
+pub fn scope_snapshot(lab: &crate::model::Lab, target: &str) -> serde_json::Value {
+    use serde_json::json;
+    let Some(t) = lab.targets.get(target) else {
+        return serde_json::Value::Null;
+    };
+    json!({
+        "host": t.host,
+        "serial": t.serial.iter().map(|s| json!({
+            "name": s.name,
+            "device": s.device,
+            "host": s.host,
+            "port": s.port,
+        })).collect::<Vec<_>>(),
+        "video": t.video.as_ref().map(|v| json!({
+            "device": v.device,
+            "host": v.host,
+            "port": v.port,
+        })),
+        "hid": t.hid.as_ref().map(|h| json!({
+            "cmd": h.cmd,
+            "host": h.host,
+            "port": h.port,
+        })),
+        "netboot": t.netboot.as_ref().map(|n| json!({
+            "interface": n.interface,
+            "host_ip": n.effective_host_ip(),
+            "host": n.host,
+        })),
+    })
+}
+
 /// Tear down what a departing holder left on the target: its registered
-/// processes, the target's daemons, the netboot link. Returns one message per
-/// step that failed.
+/// processes, the target's daemons, the netboot link. One result per step the
+/// target has a channel for, in a fixed order; a daemon that is not running
+/// is `already_satisfied`, never omitted. A target missing from the lab has
+/// no steps.
 ///
 /// Runs with the lease's [`StoreLock`] held, so it calls only the library
 /// functions beneath the runtime handlers (`serial_stop_local`,
 /// `video_stop_local`, `hid_stop_local`, `netboot::stop`,
 /// `netif::mode_off`), never `panio` itself and never `lease::enforce`.
-pub fn cleanup(lab: &crate::model::Lab, target: &str, lease: &Lease) -> Vec<String> {
+pub fn cleanup(lab: &crate::model::Lab, target: &str, procs: &[Proc]) -> Vec<StepResult> {
     let Some(t) = lab.targets.get(target) else {
         return Vec::new();
     };
     let mut steps: Vec<Step<'_>> = Vec::new();
     steps.push((
-        "registered processes",
+        "registered_processes",
         Box::new(move || {
-            let errs: Vec<String> = lease
-                .procs
-                .iter()
+            let live: Vec<&Proc> = procs.iter().filter(|p| proc_is_live(p)).collect();
+            if live.is_empty() {
+                return Ok(StepStatus::AlreadySatisfied);
+            }
+            let errs: Vec<String> = live
+                .into_iter()
                 .filter_map(|p| terminate_registered(p).err())
                 .collect();
             if errs.is_empty() {
-                Ok(())
+                Ok(StepStatus::Ok)
             } else {
                 Err(errs.join("; "))
             }
@@ -529,12 +818,12 @@ pub fn cleanup(lab: &crate::model::Lab, target: &str, lease: &Lease) -> Vec<Stri
     if !t.serial.is_empty() {
         let serials = &t.serial;
         steps.push((
-            "serial daemon",
+            "serial_daemon",
             Box::new(move || {
                 if crate::serial::daemon(target).is_none()
                     && crate::serial::untracked(serials).is_none()
                 {
-                    return Ok(());
+                    return Ok(StepStatus::AlreadySatisfied);
                 }
                 stopped(crate::serial_stop_local(target, serials))
             }),
@@ -543,36 +832,52 @@ pub fn cleanup(lab: &crate::model::Lab, target: &str, lease: &Lease) -> Vec<Stri
     if let Some(v) = &t.video {
         let device = v.device.as_deref();
         steps.push((
-            "video daemon",
+            "video_daemon",
             Box::new(move || {
                 if crate::video::daemon(target).is_none()
                     && device.is_none_or(|d| crate::video::untracked(d).is_none())
                 {
-                    return Ok(());
+                    return Ok(StepStatus::AlreadySatisfied);
                 }
                 stopped(crate::video_stop_local(target, device))
             }),
         ));
     }
-    if t.hid.is_some() && crate::daemons::daemon_pid("hid", Some(target)).is_some() {
+    if t.hid.is_some() {
         steps.push((
-            "hid daemon",
-            Box::new(move || crate::hid_stop_local(lab, target).map_err(|e| e.to_string())),
+            "hid_daemon",
+            Box::new(move || {
+                if crate::daemons::daemon_pid("hid", Some(target)).is_none() {
+                    return Ok(StepStatus::AlreadySatisfied);
+                }
+                crate::hid_stop_local(lab, target)
+                    .map(|()| StepStatus::Ok)
+                    .map_err(|e| e.to_string())
+            }),
         ));
     }
-    if t.netboot.is_some() && crate::state::is_netboot_running(target) {
+    if t.netboot.is_some() {
         steps.push((
-            "netboot session",
-            Box::new(move || crate::netboot::stop(target).map_err(|e| e.to_string())),
+            "netboot_session",
+            Box::new(move || {
+                if !crate::state::is_netboot_running(target) {
+                    return Ok(StepStatus::AlreadySatisfied);
+                }
+                crate::netboot::stop(target)
+                    .map(|()| StepStatus::Ok)
+                    .map_err(|e| e.to_string())
+            }),
         ));
     }
     if let Some(nb) = &t.netboot {
         if let Some(iface) = nb.interface.as_deref() {
             let host_ip = nb.effective_host_ip().to_string();
             steps.push((
-                "netif mode off",
+                "netif_mode_off",
                 Box::new(move || {
-                    crate::netif::mode_off(target, iface, &host_ip).map_err(|e| e.to_string())
+                    crate::netif::mode_off(target, iface, &host_ip)
+                        .map(|()| StepStatus::Ok)
+                        .map_err(|e| e.to_string())
                 }),
             ));
         }
@@ -704,6 +1009,11 @@ fn note_no_lease(
     }
 }
 
+/// The `target_cleanup_blocked` error for the blocking record `lease`.
+pub fn blocked_error(target: &str, lease: &Lease) -> anyhow::Error {
+    crate::error::cleanup_blocked(target, blocked_message(target, lease)).into()
+}
+
 /// The lease check for the running command against `target`, on the host
 /// where it executes. Takes the store lock, decides, and releases the lock
 /// before returning: it is never held while the command runs.
@@ -744,9 +1054,12 @@ pub fn enforce_with(
         .with_context(|| format!("locking the lease store for '{target}'"))?;
     let rec = match lock.read() {
         Ok(r) => r,
+        Err(ReadError::Corrupt(c)) if access == Access::Mutating => {
+            return Err(crate::error::cleanup_blocked(target, corrupt_message(target, &c)).into());
+        }
         Err(ReadError::Corrupt(c)) => {
-            eprintln!("warning: {target}: {c}; treating it as no lease and replacing it");
-            None
+            eprintln!("warning: {}", corrupt_message(target, &c));
+            return Ok(());
         }
         Err(e @ ReadError::Io(_)) => {
             return Err(anyhow::anyhow!(e).context(format!("lease for '{target}'")));
@@ -763,6 +1076,10 @@ pub fn enforce_with(
             State::Unleased => note_no_lease(Some(&lock), access, token.as_deref(), target, None),
             State::Expired(l) => {
                 note_no_lease(Some(&lock), access, token.as_deref(), target, Some(l))
+            }
+            State::Blocked(l) => {
+                eprintln!("warning: {}", blocked_message(target, l));
+                Ok(())
             }
             State::Held(l) => {
                 // A read that carries a token which is not the holder's runs,
@@ -798,15 +1115,20 @@ pub fn enforce_with(
                 _ => Err(refuse(&lock, msg)),
             }
         }
+        Verdict::CleanupBlocked(msg) => Err(crate::error::cleanup_blocked(target, msg).into()),
         Verdict::CleanupThenRun(old) => {
-            crate::lease_cmd::retire(lab, target, &lock, &old, "expired", None)?;
-            lock.remove().context("removing the expired lease")?;
-            note_no_lease(Some(&lock), access, token.as_deref(), target, None)
+            match crate::lease_cmd::retire(lab, target, &lock, &old, "expired", None)? {
+                crate::lease_cmd::Retired::Clean => {
+                    note_no_lease(Some(&lock), access, token.as_deref(), target, None)
+                }
+                crate::lease_cmd::Retired::Blocked(b) => Err(blocked_error(target, &b)),
+            }
         }
         Verdict::CleanupThenRefuse(old, msg) => {
-            crate::lease_cmd::retire(lab, target, &lock, &old, "expired", None)?;
-            lock.remove().context("removing the expired lease")?;
-            Err(refuse(&lock, msg))
+            match crate::lease_cmd::retire(lab, target, &lock, &old, "expired", None)? {
+                crate::lease_cmd::Retired::Clean => Err(refuse(&lock, msg)),
+                crate::lease_cmd::Retired::Blocked(b) => Err(blocked_error(target, &b)),
+            }
         }
     }
 }
@@ -862,6 +1184,7 @@ fn lost_reason(store: &Store, token: &str, target: &str, now: u64) -> Poll {
              this target's daemons",
             clock(l.expires_at.min(l.last_used_at.saturating_add(l.idle_secs)))
         )),
+        State::Blocked(l) => Poll::Lost(blocked_message(target, &l)),
         State::Expired(_) | State::Unleased => Poll::Lost(
             lost_lease_message(&lock, Some(token), target)
                 .unwrap_or_else(|| format!("'{target}' is no longer leased to you")),
@@ -921,6 +1244,7 @@ mod tests {
             idle_secs: 1800,
             last_used_at: 1000,
             procs: vec![],
+            cleanup: None,
         }
     }
 
@@ -977,7 +1301,7 @@ mod tests {
                 previous_token: token.into(),
                 new_owner: new_owner.map(str::to_string),
                 how: how.into(),
-                cleanup_errors: vec![],
+                ..HistoryEntry::default()
             })
             .unwrap();
     }
@@ -1066,7 +1390,16 @@ mod tests {
     #[test]
     fn cleanup_with_no_channels_is_noop() {
         let lab = lab_from("[targets.t6-empty]\n");
-        assert!(cleanup(&lab, "t6-empty", &lease()).is_empty());
+        let r = cleanup(&lab, "t6-empty", &[]);
+        assert_eq!(
+            r,
+            vec![StepResult {
+                step: "registered_processes".into(),
+                status: StepStatus::AlreadySatisfied,
+                message: None
+            }]
+        );
+        assert!(cleanup(&lab, "not-in-the-lab", &[]).is_empty());
     }
 
     #[cfg(unix)]
@@ -1075,7 +1408,9 @@ mod tests {
         let lab = lab_from("[targets.t6-kill]\n");
         let mut child = sleeper();
         let l = lease_with(vec![registered(&child)]);
-        assert!(cleanup(&lab, "t6-kill", &l).is_empty());
+        let r = cleanup(&lab, "t6-kill", &l.procs);
+        assert_eq!(r.len(), 1, "{r:?}");
+        assert_eq!(r[0].status, StepStatus::Ok, "{r:?}");
         let status = child.try_wait().expect("try_wait");
         assert!(status.is_some(), "child should have been terminated");
     }
@@ -1088,7 +1423,8 @@ mod tests {
         let mut p = registered(&child);
         p.start_time += 1;
         let l = lease_with(vec![p]);
-        assert!(cleanup(&lab, "t6-recycled", &l).is_empty());
+        let r = cleanup(&lab, "t6-recycled", &l.procs);
+        assert_eq!(r[0].status, StepStatus::AlreadySatisfied, "{r:?}");
         std::thread::sleep(std::time::Duration::from_millis(200));
         assert!(
             child.try_wait().expect("try_wait").is_none(),
@@ -1114,12 +1450,13 @@ mod tests {
                 "second",
                 Box::new(|| {
                     ran.borrow_mut().push("second");
-                    Ok(())
+                    Ok(StepStatus::Ok)
                 }),
             ),
         ];
         let errs = run_steps(steps);
-        assert_eq!(errs, vec!["first: boom".to_string()]);
+        assert_eq!(failure_lines(&errs), vec!["first: boom".to_string()]);
+        assert_eq!(errs[1].status, StepStatus::Ok);
         assert_eq!(*ran.borrow(), vec!["first", "second"]);
     }
 
@@ -1146,7 +1483,7 @@ mod tests {
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let lab = lab_from("[targets.t6-locked]\n[targets.t6-locked.hid]\ncmd = \"false\"\n");
-            let _ = tx.send(cleanup(&lab, "t6-locked", &lease()));
+            let _ = tx.send(cleanup(&lab, "t6-locked", &[]));
         });
         let out = rx.recv_timeout(std::time::Duration::from_secs(10));
         match prev {
@@ -1154,12 +1491,13 @@ mod tests {
             None => unsafe { std::env::remove_var("PANIO_RUNTIME_BASE") },
         }
         let out = out.expect("cleanup must not block on the held lock");
+        let failed: Vec<_> = out.iter().filter(|r| r.failed()).collect();
         assert_eq!(
-            out.len(),
+            failed.len(),
             1,
             "the hid step must have run and failed: {out:?}"
         );
-        assert!(out[0].starts_with("hid daemon:"), "{out:?}");
+        assert_eq!(failed[0].step, "hid_daemon", "{out:?}");
     }
 
     #[test]
@@ -1244,6 +1582,92 @@ mod tests {
         ] {
             assert!(parse_duration(bad).is_err(), "{bad:?} should be an error");
         }
+    }
+
+    fn blocked_lease() -> Lease {
+        let block = CleanupBlock {
+            cleanup_id: "id1".into(),
+            phase: CleanupPhase::Failed,
+            how: "released".into(),
+            ended_at: 5000,
+            previous_owner: "alice@bench1".into(),
+            previous_token: "tok-a".into(),
+            new_owner: None,
+            procs: vec![],
+            scope: serde_json::Value::Null,
+            last_attempt_at: Some(5001),
+            results: vec![StepResult {
+                step: "hid_daemon".into(),
+                status: StepStatus::Failed,
+                message: Some("boom".into()),
+            }],
+        };
+        Lease::blocked(&lease(), block, 5000).unwrap()
+    }
+
+    #[test]
+    fn a_block_wins_over_expiry_idle_and_token() {
+        let b = blocked_lease();
+        // Far past every deadline, no live process, the old token: still blocked.
+        let st = state(Some(b.clone()), 10_000_000, |_| false);
+        assert_eq!(st, State::Blocked(b.clone()));
+        match decide(
+            &st,
+            Access::Mutating,
+            Some("tok-a"),
+            false,
+            "pi5",
+            10_000_000,
+        ) {
+            Verdict::CleanupBlocked(m) => {
+                assert!(m.contains("cleanup id id1"), "{m}");
+                assert!(m.contains("hid_daemon"), "{m}");
+                assert!(m.contains("panio lease cleanup pi5 --id id1"), "{m}");
+                assert!(m.contains("override-cleanup"), "{m}");
+                assert!(!m.contains("tok-a"), "{m}");
+            }
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(
+            decide(&st, Access::Read, None, true, "pi5", 1),
+            Verdict::Run
+        );
+        let blk = block_for(&st, Some("tok-a"), "pi5", 1).expect("blocks everyone");
+        assert!(blk.cleanup_blocked);
+        assert_eq!(blk.owner, "alice@bench1");
+    }
+
+    #[test]
+    fn the_outer_fields_of_a_blocked_record_look_held_to_an_older_cli() {
+        let b = blocked_lease();
+        assert!(b.owner.starts_with("cleanup-blocked"), "{}", b.owner);
+        assert_ne!(b.token, "tok-a");
+        assert!(b.expires_at > 5000 + 365 * 86_400);
+        assert!(b.procs.is_empty());
+        // An older CLI deserializes it (unknown field ignored) as a live
+        // lease: not expired, not idle.
+        #[derive(Deserialize)]
+        struct Old {
+            expires_at: u64,
+            idle_secs: u64,
+            last_used_at: u64,
+        }
+        let old: Old = serde_json::from_str(&serde_json::to_string(&b).unwrap()).unwrap();
+        assert!(old.expires_at > 6000);
+        assert!(old.last_used_at.saturating_add(old.idle_secs) > 6000);
+    }
+
+    #[test]
+    fn a_record_written_before_blocks_existed_still_parses() {
+        let text = r#"{"owner":"a","token":"t","acquired_at":1,"expires_at":2,
+            "duration_secs":1,"idle_secs":1,"last_used_at":1,"procs":[]}"#;
+        let l: Lease = serde_json::from_str(text).unwrap();
+        assert!(l.cleanup.is_none());
+        assert!(!serde_json::to_string(&l).unwrap().contains("cleanup"));
+        let h = r#"{"at":1,"previous_owner":"a","previous_token":"t","new_owner":null,
+            "how":"expired","cleanup_errors":[]}"#;
+        let e: HistoryEntry = serde_json::from_str(h).unwrap();
+        assert_eq!(e.resolution, None);
     }
 
     #[test]
@@ -1534,7 +1958,7 @@ mod tests {
             previous_token: token.into(),
             new_owner: Some("bob@bench2".into()),
             how: "preempted".into(),
-            cleanup_errors: vec![],
+            ..HistoryEntry::default()
         }
     }
 

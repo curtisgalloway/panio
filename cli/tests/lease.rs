@@ -539,6 +539,14 @@ fn expired_lease_cleaned_by_mutating_not_by_read() {
     assert_eq!(o.status.code(), Some(0), "{o:?}");
     assert!(!lease_path(&dir).exists());
     assert!(history(&dir).contains("\"expired\""), "{}", history(&dir));
+    // Lazy expiry that cleans up cleanly clears the record entirely. (The
+    // failing-cleanup twin is `lazy_expiry_during_a_mutation_blocks_and_the_
+    // mutation_never_runs`: it used to run the mutation anyway.)
+    assert!(
+        history(&dir).contains("\"cleanup_errors\":[]"),
+        "{}",
+        history(&dir)
+    );
 }
 
 #[test]
@@ -856,4 +864,666 @@ fn console_does_not_register_its_pid_under_the_lease() {
         1,
         "other commands still register: {v}"
     );
+}
+
+// ---- cleanup block (#372) ----
+//
+// A target whose hid helper cannot be stopped: the lab's hid command is a
+// script that fails while `fail-hid` exists, and a live `sleep` stands in for
+// the hid daemon (its discovery file is what makes the hid step run).
+
+/// A scratch target with a failing hid stop hook and a marker-writing power
+/// hook. Dropping it kills the stand-in daemon.
+struct Blockable {
+    dir: PathBuf,
+    daemon: std::process::Child,
+}
+
+impl Drop for Blockable {
+    fn drop(&mut self) {
+        let _ = self.daemon.kill();
+        let _ = self.daemon.wait();
+    }
+}
+
+impl Blockable {
+    fn new(name: &str) -> Blockable {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let dir = scratch(name, "");
+        let child = Command::new("sleep").arg("300").spawn().unwrap();
+        let b = Blockable { dir, daemon: child };
+        b.write_lab("");
+        let run = b.dir.join("run");
+        let uid = run.metadata().unwrap().uid();
+        let base = run.join(format!("panio-{uid}"));
+        let rt = base.join("hid/dut");
+        std::fs::create_dir_all(&rt).unwrap();
+        std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let disc = rt.join("daemon.json");
+        std::fs::write(
+            &disc,
+            format!("{{\"pid\":{},\"port\":12345}}", b.daemon.id()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&disc, std::fs::Permissions::from_mode(0o600)).unwrap();
+        std::fs::write(b.dir.join("fail-hid"), "").unwrap();
+        b
+    }
+
+    fn write_lab(&self, extra_hid: &str) {
+        let d = self.dir.display();
+        let lab = format!(
+            "[targets.dut]\n\n[targets.dut.power]\ncycle_cmd = \"true\"\non_cmd = \"touch '{d}/ran'\"\n\
+             off_cmd = \"true\"\nstate_cmd = \"echo on\"\n\n[targets.dut.hid]\n\
+             cmd = \"sh '{d}/hid.sh'\"\n{extra_hid}\n[targets.dut.netboot]\ntftp_root = \"/nonexistent-tftp\"\n"
+        );
+        std::fs::write(self.dir.join("lab.toml"), lab).unwrap();
+        std::fs::write(
+            self.dir.join("hid.sh"),
+            format!("echo x >> '{d}/stops'\n[ -f '{d}/fail-hid' ] && exit 1\nexit 0\n"),
+        )
+        .unwrap();
+    }
+
+    /// Make the hid stop succeed, and the daemon look already stopped.
+    fn fix(&self) {
+        let _ = std::fs::remove_file(self.dir.join("fail-hid"));
+        let _ = std::fs::remove_dir_all(
+            self.dir
+                .join("run")
+                .join(format!("panio-{}", self.uid()))
+                .join("hid"),
+        );
+    }
+
+    fn uid(&self) -> u32 {
+        use std::os::unix::fs::MetadataExt;
+        self.dir.join("run").metadata().unwrap().uid()
+    }
+
+    fn stops(&self) -> usize {
+        std::fs::read_to_string(self.dir.join("stops"))
+            .map(|t| t.lines().count())
+            .unwrap_or(0)
+    }
+
+    fn ran(&self) -> bool {
+        self.dir.join("ran").exists()
+    }
+
+    fn status(&self) -> serde_json::Value {
+        let o = panio(&self.dir, &["lease", "status", "dut", "--json"], None);
+        assert_eq!(o.status.code(), Some(0), "{o:?}");
+        serde_json::from_str(&stdout(&o)).unwrap()
+    }
+
+    /// Acquire, then release with the token: the lease ends, cleanup fails,
+    /// and the target is blocked. Returns the departed token.
+    fn block_by_release(&self) -> String {
+        let tok = acquire(&self.dir);
+        let o = panio(&self.dir, &["lease", "release", "dut"], Some(&tok));
+        assert_eq!(o.status.code(), Some(24), "{o:?}");
+        tok
+    }
+
+    fn cleanup_id(&self) -> String {
+        self.status()["cleanup"]["cleanup_id"]
+            .as_str()
+            .expect("a cleanup id")
+            .to_string()
+    }
+
+    fn assert_blocked(&self) {
+        let s = self.status();
+        assert_eq!(s["state"], "blocked", "{s}");
+        assert_eq!(s["held"], false, "{s}");
+    }
+}
+
+fn assert_blocked_refusal(o: &Output) {
+    assert_eq!(o.status.code(), Some(24), "{o:?}");
+    assert!(stderr(o).contains("cleanup-blocked"), "{}", stderr(o));
+    assert!(
+        stderr(o).contains("lease cleanup dut --id"),
+        "{}",
+        stderr(o)
+    );
+}
+
+#[test]
+fn release_with_a_failing_cleanup_blocks_the_target() {
+    let b = Blockable::new("block_release");
+    let tok = acquire(&b.dir);
+    let o = panio(&b.dir, &["lease", "release", "dut"], Some(&tok));
+    assert_blocked_refusal(&o);
+    assert!(stderr(&o).contains("hid_daemon"), "{}", stderr(&o));
+    let s = b.status();
+    assert_eq!(s["state"], "blocked", "{s}");
+    assert_eq!(s["cleanup"]["phase"], "failed", "{s}");
+    assert_eq!(s["cleanup"]["how"], "released", "{s}");
+    let steps: Vec<(&str, &str)> = s["cleanup"]["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| (r["step"].as_str().unwrap(), r["status"].as_str().unwrap()))
+        .collect();
+    // A failure does not stop the later steps: netboot_session still ran.
+    assert_eq!(
+        steps,
+        vec![
+            ("registered_processes", "already_satisfied"),
+            ("hid_daemon", "failed"),
+            ("netboot_session", "already_satisfied"),
+        ],
+        "{s}"
+    );
+    assert!(!s.to_string().contains(&tok), "status leaked a token: {s}");
+    assert!(
+        !s["cleanup"].to_string().contains("token"),
+        "status shows no token field: {s}"
+    );
+    // The record has an owner nobody can name, for CLIs that predate the block.
+    let rec: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(lease_path(&b.dir)).unwrap()).unwrap();
+    assert!(
+        rec["owner"]
+            .as_str()
+            .unwrap()
+            .starts_with("cleanup-blocked"),
+        "{rec}"
+    );
+    assert_ne!(rec["token"], tok.as_str(), "{rec}");
+    let h = history(&b.dir);
+    assert!(h.contains("hid_daemon"), "{h}");
+}
+
+#[test]
+fn expired_acquire_does_not_hand_out_a_blocked_target() {
+    let b = Blockable::new("block_expired_acquire");
+    write_lease(&b.dir, "old", now() - 10, now() - 20);
+    let o = panio(&b.dir, &["lease", "acquire", "dut"], None);
+    assert_blocked_refusal(&o);
+    assert_eq!(stdout(&o).trim(), "", "no token on a refusal: {o:?}");
+    b.assert_blocked();
+    let o = panio(&b.dir, &["lease", "acquire", "dut"], None);
+    assert_blocked_refusal(&o);
+}
+
+#[test]
+fn preempt_does_not_hand_out_a_blocked_target() {
+    let b = Blockable::new("block_preempt");
+    let _holder = acquire(&b.dir);
+    let o = panio(
+        &b.dir,
+        &[
+            "lease",
+            "acquire",
+            "dut",
+            "--preempt",
+            "--owner",
+            "bob@bench1",
+        ],
+        None,
+    );
+    assert_blocked_refusal(&o);
+    assert_eq!(stdout(&o).trim(), "", "{o:?}");
+    b.assert_blocked();
+    let again = panio(
+        &b.dir,
+        &["lease", "acquire", "dut", "--preempt", "--wait", "5s"],
+        None,
+    );
+    assert_blocked_refusal(&again);
+}
+
+#[test]
+fn acquire_after_a_failed_release_is_refused() {
+    let b = Blockable::new("block_release_then_acquire");
+    b.block_by_release();
+    let o = panio(&b.dir, &["lease", "acquire", "dut"], None);
+    assert_blocked_refusal(&o);
+    let t0 = Instant::now();
+    let o = panio(&b.dir, &["lease", "acquire", "dut", "--wait", "30s"], None);
+    assert_blocked_refusal(&o);
+    assert!(
+        t0.elapsed() < Duration::from_secs(10),
+        "--wait must fail at once on a block"
+    );
+}
+
+#[test]
+fn lazy_expiry_during_a_mutation_blocks_and_the_mutation_never_runs() {
+    let b = Blockable::new("block_lazy_expiry");
+    write_lease(&b.dir, "old", now() - 10, now() - 20);
+    let o = panio(&b.dir, &["power", "on", "dut"], None);
+    assert_blocked_refusal(&o);
+    assert!(!b.ran(), "the mutation must not have run");
+    b.assert_blocked();
+    let o = panio(&b.dir, &["power", "on", "dut"], None);
+    assert_blocked_refusal(&o);
+    assert!(!b.ran());
+}
+
+#[test]
+fn the_departed_token_does_not_get_through_a_block() {
+    let b = Blockable::new("block_departed_token");
+    let tok = b.block_by_release();
+    let o = panio(&b.dir, &["power", "on", "dut"], Some(&tok));
+    assert_blocked_refusal(&o);
+    assert!(!b.ran());
+    for args in [
+        &["lease", "renew", "dut"][..],
+        &["lease", "release", "dut"][..],
+    ] {
+        let o = panio(&b.dir, args, Some(&tok));
+        assert_blocked_refusal(&o);
+    }
+    let o = panio(&b.dir, &["lease", "release", "dut", "--preempt"], None);
+    assert_blocked_refusal(&o);
+}
+
+#[test]
+fn a_block_binds_a_target_that_does_not_require_leases_and_one_that_does() {
+    let b = Blockable::new("block_regardless_of_required");
+    b.block_by_release();
+    let o = panio(&b.dir, &["power", "on", "dut"], None);
+    assert_blocked_refusal(&o);
+    let mut lab = std::fs::read_to_string(b.dir.join("lab.toml")).unwrap();
+    lab = lab.replace("[targets.dut]\n", "[targets.dut]\nlease_required = true\n");
+    std::fs::write(b.dir.join("lab.toml"), lab).unwrap();
+    let o = panio(&b.dir, &["power", "on", "dut"], None);
+    assert_blocked_refusal(&o);
+    assert!(!b.ran());
+}
+
+#[test]
+fn reads_run_on_a_blocked_target_with_a_warning() {
+    let b = Blockable::new("block_reads");
+    let tok = b.block_by_release();
+    let o = panio(&b.dir, &["power-state", "dut"], Some(&tok));
+    assert_eq!(o.status.code(), Some(0), "{o:?}");
+    assert!(stderr(&o).contains("cleanup-blocked"), "{}", stderr(&o));
+    let stops = b.stops();
+    let o = panio(&b.dir, &["power-state", "dut"], Some(&tok));
+    assert_eq!(o.status.code(), Some(0), "{o:?}");
+    assert_eq!(b.stops(), stops, "a read must not retry cleanup");
+}
+
+#[test]
+fn status_triggered_expiry_cleans_up_once_then_only_reports() {
+    let b = Blockable::new("block_status_expiry");
+    write_lease(&b.dir, "old", now() - 10, now() - 20);
+    let s = b.status();
+    assert_eq!(s["state"], "blocked", "{s}");
+    assert_eq!(s["held"], false, "{s}");
+    let stops = b.stops();
+    assert_eq!(stops, 1, "cleanup ran once");
+    let id = b.cleanup_id();
+    let text = panio(&b.dir, &["lease", "status", "dut"], None);
+    assert_eq!(text.status.code(), Some(0), "{text:?}");
+    let t = stdout(&text);
+    assert!(
+        t.contains("blocked: cleanup failed (hid_daemon)")
+            && t.contains(&format!("cleanup id {id}"))
+            && t.contains(&format!("panio lease cleanup dut --id {id}")),
+        "{t}"
+    );
+    assert_eq!(b.stops(), stops, "later status calls only read");
+}
+
+#[test]
+fn expired_renew_blocks() {
+    let b = Blockable::new("block_expired_renew");
+    write_lease(&b.dir, "old", now() - 10, now() - 20);
+    let o = panio(&b.dir, &["lease", "renew", "dut"], Some("old"));
+    assert_blocked_refusal(&o);
+    b.assert_blocked();
+}
+
+#[test]
+fn daemon_operations_on_a_blocked_target_are_refused_or_skipped() {
+    let b = Blockable::new("block_daemons");
+    b.block_by_release();
+    let o = panio(&b.dir, &["hid", "stop", "dut"], None);
+    assert_blocked_refusal(&o);
+    let o = panio(&b.dir, &["daemons", "stop", "hid[dut]"], None);
+    assert_eq!(o.status.code(), Some(24), "{o:?}");
+    let o = panio(&b.dir, &["daemons", "stop", "--all"], None);
+    assert!(
+        stderr(&o).contains("skipped hid/dut: target is cleanup-blocked"),
+        "{}",
+        stderr(&o)
+    );
+    assert!(
+        process_alive(b.daemon.id()),
+        "the blocked target's daemon must be left alone"
+    );
+}
+
+fn process_alive(pid: u32) -> bool {
+    Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+#[test]
+fn block_is_visible_from_a_separate_process_and_retry_fails_then_succeeds() {
+    let b = Blockable::new("block_retry");
+    b.block_by_release();
+    let id = b.cleanup_id();
+    let o = panio(&b.dir, &["lease", "cleanup", "dut", "--id", &id], None);
+    assert_eq!(o.status.code(), Some(24), "{o:?}");
+    assert!(stderr(&o).contains(&id), "{}", stderr(&o));
+    let s = b.status();
+    assert_eq!(s["state"], "blocked", "{s}");
+    assert_eq!(s["cleanup"]["cleanup_id"], id.as_str(), "the id is stable");
+    assert_eq!(b.stops(), 2, "the retry re-ran the failing step");
+    b.fix();
+    let o = panio(&b.dir, &["lease", "cleanup", "dut", "--id", &id], None);
+    assert_eq!(o.status.code(), Some(0), "{o:?}");
+    assert!(stdout(&o).contains("verified"), "{}", stdout(&o));
+    let s = b.status();
+    assert_eq!(s["state"], "unleased", "{s}");
+    let h = history(&b.dir);
+    assert!(h.contains("\"resolution\":\"verified\""), "{h}");
+    assert!(h.contains("\"how\":\"released\""), "{h}");
+    assert!(h.contains(&id), "{h}");
+    let tok = acquire(&b.dir);
+    assert_eq!(tok.len(), 32);
+}
+
+#[test]
+fn override_clears_the_block_and_audits_it() {
+    let b = Blockable::new("block_override");
+    b.block_by_release();
+    let id = b.cleanup_id();
+    for args in [
+        vec!["lease", "override-cleanup", "dut", "--id", &id],
+        vec![
+            "lease",
+            "override-cleanup",
+            "dut",
+            "--id",
+            &id,
+            "--reason",
+            "  ",
+        ],
+    ] {
+        let o = panio(&b.dir, &args, None);
+        assert_eq!(o.status.code(), Some(2), "a reason is required: {o:?}");
+        b.assert_blocked();
+    }
+    let o = panio(
+        &b.dir,
+        &[
+            "lease",
+            "override-cleanup",
+            "dut",
+            "--id",
+            &id,
+            "--reason",
+            "hid dongle unplugged",
+        ],
+        None,
+    );
+    assert_eq!(o.status.code(), Some(0), "{o:?}");
+    assert!(stdout(&o).contains("WITHOUT verifying"), "{}", stdout(&o));
+    let h = history(&b.dir);
+    assert!(h.contains("\"resolution\":\"overridden\""), "{h}");
+    assert!(h.contains("hid dongle unplugged"), "{h}");
+    assert!(h.contains("hid_daemon"), "the outstanding failure: {h}");
+    assert!(h.contains(&id), "{h}");
+    assert_eq!(b.status()["state"], "unleased");
+    let o = panio(&b.dir, &["lease", "acquire", "dut"], None);
+    assert_eq!(o.status.code(), Some(0), "override does not acquire: {o:?}");
+}
+
+#[test]
+fn recovery_refuses_a_stale_or_wrong_generation() {
+    let b = Blockable::new("block_stale_id");
+    b.block_by_release();
+    let old = b.cleanup_id();
+    // Override, take the target, and let it block again under a new id.
+    let o = panio(
+        &b.dir,
+        &[
+            "lease",
+            "override-cleanup",
+            "dut",
+            "--id",
+            &old,
+            "--reason",
+            "r",
+        ],
+        None,
+    );
+    assert_eq!(o.status.code(), Some(0), "{o:?}");
+    let tok = acquire(&b.dir);
+    // Held: nothing to recover.
+    let o = panio(&b.dir, &["lease", "cleanup", "dut", "--id", &old], None);
+    assert_eq!(o.status.code(), Some(2), "{o:?}");
+    assert!(stderr(&o).contains("not cleanup-blocked"), "{}", stderr(&o));
+    assert_eq!(b.status()["state"], "held");
+    let o = panio(
+        &b.dir,
+        &[
+            "lease",
+            "override-cleanup",
+            "dut",
+            "--id",
+            &old,
+            "--reason",
+            "r",
+        ],
+        None,
+    );
+    assert_eq!(o.status.code(), Some(2), "{o:?}");
+    // Blocked again under a different id.
+    let o = panio(&b.dir, &["lease", "release", "dut"], Some(&tok));
+    assert_eq!(o.status.code(), Some(24), "{o:?}");
+    let new = b.cleanup_id();
+    assert_ne!(new, old);
+    let o = panio(&b.dir, &["lease", "cleanup", "dut", "--id", &old], None);
+    assert_eq!(o.status.code(), Some(24), "{o:?}");
+    assert!(
+        stderr(&o).contains("different cleanup id"),
+        "{}",
+        stderr(&o)
+    );
+    b.fix();
+    let o = panio(&b.dir, &["lease", "cleanup", "dut", "--id", &old], None);
+    assert_eq!(
+        o.status.code(),
+        Some(24),
+        "the old id must not clear it: {o:?}"
+    );
+    b.assert_blocked();
+}
+
+#[test]
+fn a_changed_cleanup_scope_forces_an_override() {
+    let b = Blockable::new("block_scope");
+    b.block_by_release();
+    let id = b.cleanup_id();
+    b.fix();
+    b.write_lab("port = 4242\n");
+    let o = panio(&b.dir, &["lease", "cleanup", "dut", "--id", &id], None);
+    assert_eq!(o.status.code(), Some(24), "{o:?}");
+    assert!(stderr(&o).contains("config changed"), "{}", stderr(&o));
+    assert!(stderr(&o).contains("override-cleanup"), "{}", stderr(&o));
+    b.assert_blocked();
+    let o = panio(
+        &b.dir,
+        &[
+            "lease",
+            "override-cleanup",
+            "dut",
+            "--id",
+            &id,
+            "--reason",
+            "r",
+        ],
+        None,
+    );
+    assert_eq!(o.status.code(), Some(0), "{o:?}");
+}
+
+#[test]
+fn an_interrupted_pending_record_still_blocks_other_processes() {
+    let b = Blockable::new("block_pending");
+    b.fix();
+    let rec = serde_json::json!({
+        "owner": "cleanup-blocked (was alice@bench1)",
+        "token": "never-printed",
+        "acquired_at": 1000,
+        "expires_at": now() + 400_000_000,
+        "duration_secs": 86400,
+        "idle_secs": 86400,
+        "last_used_at": now() + 400_000_000,
+        "procs": [],
+        "cleanup": {
+            "cleanup_id": "abc123",
+            "phase": "pending",
+            "how": "expired",
+            "ended_at": 1000,
+            "previous_owner": "alice@bench1",
+            "previous_token": "old",
+            "new_owner": null,
+            "procs": [],
+            "scope": null,
+            "last_attempt_at": null,
+            "results": [],
+        },
+    });
+    std::fs::create_dir_all(lease_path(&b.dir).parent().unwrap()).unwrap();
+    std::fs::write(lease_path(&b.dir), rec.to_string()).unwrap();
+    let o = panio(&b.dir, &["lease", "acquire", "dut"], None);
+    assert_eq!(o.status.code(), Some(24), "{o:?}");
+    assert!(stderr(&o).contains("did not finish"), "{}", stderr(&o));
+    let o = panio(&b.dir, &["power", "on", "dut"], None);
+    assert_eq!(o.status.code(), Some(24), "{o:?}");
+    assert!(!b.ran());
+    let s = b.status();
+    assert_eq!(s["cleanup"]["phase"], "pending", "{s}");
+    let o = panio(&b.dir, &["lease", "cleanup", "dut", "--id", "abc123"], None);
+    assert_eq!(
+        o.status.code(),
+        Some(24),
+        "scope null differs from the lab: {o:?}"
+    );
+}
+
+#[test]
+fn a_history_write_failure_leaves_the_target_blocked_and_mints_no_token() {
+    let b = Blockable::new("block_history_failure");
+    b.fix();
+    write_lease(&b.dir, "old", now() - 10, now() - 20);
+    // A directory where the history file belongs: the append cannot succeed.
+    let hist = b
+        .dir
+        .join("home/.local/share/panio/dut/lease-history.jsonl");
+    std::fs::create_dir_all(hist.join("x")).unwrap();
+    let o = panio(&b.dir, &["lease", "acquire", "dut"], None);
+    assert_ne!(o.status.code(), Some(0), "{o:?}");
+    assert_eq!(stdout(&o).trim(), "", "no token: {o:?}");
+    assert!(lease_path(&b.dir).exists(), "the record must survive");
+    let rec = std::fs::read_to_string(lease_path(&b.dir)).unwrap();
+    assert!(rec.contains("\"cleanup\""), "still blocked: {rec}");
+    let o = panio(&b.dir, &["power", "on", "dut"], None);
+    assert_eq!(o.status.code(), Some(24), "{o:?}");
+    assert!(!b.ran());
+}
+
+#[test]
+fn a_corrupt_record_refuses_and_shows_unknown_until_moved_aside() {
+    let b = Blockable::new("block_corrupt");
+    let p = lease_path(&b.dir);
+    std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+    std::fs::write(&p, "{not json").unwrap();
+    for args in [
+        &["lease", "acquire", "dut"][..],
+        &["lease", "renew", "dut"][..],
+        &["lease", "release", "dut"][..],
+        &["power", "on", "dut"][..],
+    ] {
+        let o = panio(&b.dir, args, None);
+        assert_eq!(o.status.code(), Some(24), "{args:?}: {o:?}");
+        assert!(stderr(&o).contains("--corrupt"), "{}", stderr(&o));
+    }
+    assert!(!b.ran());
+    assert_eq!(std::fs::read_to_string(&p).unwrap(), "{not json");
+    let s = b.status();
+    assert_eq!(s["state"], "blocked", "{s}");
+    assert!(s["error"].as_str().unwrap().contains("unreadable"), "{s}");
+    let o = panio(&b.dir, &["power-state", "dut"], Some("t"));
+    assert_eq!(o.status.code(), Some(0), "reads run: {o:?}");
+    let o = panio(
+        &b.dir,
+        &[
+            "lease",
+            "override-cleanup",
+            "dut",
+            "--corrupt",
+            "--reason",
+            "test",
+        ],
+        None,
+    );
+    assert_eq!(o.status.code(), Some(0), "{o:?}");
+    assert!(!p.exists());
+    let moved: Vec<_> = std::fs::read_dir(p.parent().unwrap())
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            e.file_name()
+                .to_string_lossy()
+                .starts_with("lease.json.corrupt-")
+        })
+        .collect();
+    assert_eq!(moved.len(), 1);
+    assert!(history(&b.dir).contains("\"how\":\"corrupt\""));
+    let o = panio(&b.dir, &["lease", "acquire", "dut"], None);
+    assert_eq!(o.status.code(), Some(0), "{o:?}");
+    let o = panio(
+        &b.dir,
+        &[
+            "lease",
+            "override-cleanup",
+            "dut",
+            "--corrupt",
+            "--reason",
+            "x",
+        ],
+        None,
+    );
+    assert_eq!(
+        o.status.code(),
+        Some(2),
+        "a readable record is not corrupt: {o:?}"
+    );
+}
+
+#[test]
+fn override_takes_exactly_one_of_id_and_corrupt() {
+    let b = Blockable::new("block_override_args");
+    for args in [
+        &["lease", "override-cleanup", "dut", "--reason", "r"][..],
+        &[
+            "lease",
+            "override-cleanup",
+            "dut",
+            "--id",
+            "a",
+            "--corrupt",
+            "--reason",
+            "r",
+        ][..],
+        &["lease", "override-cleanup", "dut", "--corrupt"][..],
+        &["lease", "cleanup", "dut"][..],
+    ] {
+        let o = panio(&b.dir, args, None);
+        assert_eq!(o.status.code(), Some(2), "{args:?}: {o:?}");
+    }
 }

@@ -33,6 +33,9 @@ Exit status:
   22   timeout           no answer within a deadline; outcome unknown
   23   target_leased     the target is leased to someone else, or the lab requires
                          a lease and none is held
+  24   target_cleanup_blocked  the last lease's cleanup failed; the target is
+                         refused to everyone until `lease cleanup` or
+                         `lease override-cleanup` clears it
   100  daemon_down       the channel's daemon is not running
   101  helper_failed     a hook, helper or daemon ran and failed
   109  internal          not yet classified
@@ -42,7 +45,8 @@ PANIO_JSON_ERRORS=1, or --json-errors before any trailing arguments, adds a
 one-line JSON object as the last line of stderr:
 {\"error\": {kind, code, category, message, target, channel, host, child_exit}}.
 category: infrastructure (not_configured, unreachable, daemon_down),
-transient (timeout, target_leased), device_state (helper_failed), or null
+transient (timeout, target_leased), device_state (helper_failed,
+target_cleanup_blocked), or null
 (usage, internal).";
 
 /// What went wrong, in the house exit-code bands.
@@ -62,6 +66,10 @@ pub enum Kind {
     /// The target is leased to someone else, or the lab requires a lease and
     /// none is held.
     TargetLeased,
+    /// The previous lease's cleanup failed, so the target is blocked for
+    /// everyone (or its lease record is unreadable). Recover with
+    /// `lease cleanup` or `lease override-cleanup`; waiting does not help.
+    TargetCleanupBlocked,
     /// The channel's daemon is not running and the command needs it.
     DaemonDown,
     /// A hook or helper ran and exited non-zero.
@@ -73,12 +81,13 @@ pub enum Kind {
 impl Kind {
     /// Every kind, for the tests that pin the help text and the bands.
     #[cfg(test)]
-    pub const ALL: [Kind; 8] = [
+    pub const ALL: [Kind; 9] = [
         Kind::Usage,
         Kind::NotConfigured,
         Kind::Unreachable,
         Kind::Timeout,
         Kind::TargetLeased,
+        Kind::TargetCleanupBlocked,
         Kind::DaemonDown,
         Kind::HelperFailed,
         Kind::Internal,
@@ -96,6 +105,7 @@ impl Kind {
             | Kind::Unreachable
             | Kind::Timeout
             | Kind::TargetLeased
+            | Kind::TargetCleanupBlocked
             | Kind::DaemonDown
             | Kind::HelperFailed
             | Kind::Internal => {}
@@ -110,6 +120,7 @@ impl Kind {
             Kind::Unreachable => 4,
             Kind::Timeout => 22,
             Kind::TargetLeased => 23,
+            Kind::TargetCleanupBlocked => 24,
             Kind::DaemonDown => 100,
             Kind::HelperFailed => 101,
             Kind::Internal => 109,
@@ -125,6 +136,7 @@ impl Kind {
             4 => Kind::Unreachable,
             22 => Kind::Timeout,
             23 => Kind::TargetLeased,
+            24 => Kind::TargetCleanupBlocked,
             100 => Kind::DaemonDown,
             101 => Kind::HelperFailed,
             109 => Kind::Internal,
@@ -141,7 +153,7 @@ impl Kind {
                 Some(Category::Infrastructure)
             }
             Kind::Timeout | Kind::TargetLeased => Some(Category::Transient),
-            Kind::HelperFailed => Some(Category::DeviceState),
+            Kind::HelperFailed | Kind::TargetCleanupBlocked => Some(Category::DeviceState),
             Kind::Usage | Kind::Internal => None,
         }
     }
@@ -154,6 +166,7 @@ impl Kind {
             Kind::Unreachable => "unreachable",
             Kind::Timeout => "timeout",
             Kind::TargetLeased => "target_leased",
+            Kind::TargetCleanupBlocked => "target_cleanup_blocked",
             Kind::DaemonDown => "daemon_down",
             Kind::HelperFailed => "helper_failed",
             Kind::Internal => "internal",
@@ -422,6 +435,11 @@ pub fn target_leased(target: &str, message: String) -> PanioError {
     PanioError::new(Kind::TargetLeased, message).target(target)
 }
 
+/// The target is blocked on a failed lease cleanup (exit 24).
+pub fn cleanup_blocked(target: &str, message: String) -> PanioError {
+    PanioError::new(Kind::TargetCleanupBlocked, message).target(target)
+}
+
 impl fmt::Display for PanioError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.message)
@@ -628,6 +646,18 @@ mod tests {
     }
 
     #[test]
+    fn target_cleanup_blocked_is_24() {
+        assert_eq!(Kind::from_exit_code(24), Some(Kind::TargetCleanupBlocked));
+        assert_eq!(
+            Kind::TargetCleanupBlocked.as_str(),
+            "target_cleanup_blocked"
+        );
+        let e = cleanup_blocked("pi5", "blocked".into());
+        assert_eq!(e.kind, Kind::TargetCleanupBlocked);
+        assert_eq!(e.target.as_deref(), Some("pi5"));
+    }
+
+    #[test]
     fn help_lists_exactly_the_emitted_codes() {
         let listed: Vec<(i32, Option<&str>)> = EXIT_STATUS_HELP
             .lines()
@@ -657,6 +687,7 @@ mod tests {
                 ("unreachable", Some("infrastructure")),
                 ("timeout", Some("transient")),
                 ("target_leased", Some("transient")),
+                ("target_cleanup_blocked", Some("device_state")),
                 ("daemon_down", Some("infrastructure")),
                 ("helper_failed", Some("device_state")),
                 ("internal", None),

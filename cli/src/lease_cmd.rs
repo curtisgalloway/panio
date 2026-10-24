@@ -14,7 +14,10 @@ use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{self, Kind, PanioError};
-use crate::lease::{self, HistoryEntry, Lease, ReadError, State, Store, StoreLock};
+use crate::lease::{
+    self, CleanupBlock, CleanupPhase, HistoryEntry, Lease, ReadError, State, StepResult, Store,
+    StoreLock,
+};
 use crate::model::Lab;
 
 /// How often `acquire --wait` looks again.
@@ -35,6 +38,11 @@ pub struct AcquireOpts {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct StatusRow {
     pub target: String,
+    /// `"held"`, `"unleased"`, `"blocked"` (the last lease's cleanup failed or
+    /// the record is unreadable), or `"unknown"` when the host could not be
+    /// asked.
+    #[serde(default)]
+    pub state: String,
     /// `None` when the target's host could not be asked.
     pub held: Option<bool>,
     pub owner: Option<String>,
@@ -50,6 +58,34 @@ pub struct StatusRow {
     pub last_change: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// The cleanup block, when `state` is `"blocked"` because of one. Never
+    /// the ended holder's token.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cleanup: Option<CleanupInfo>,
+}
+
+/// What `lease status` shows of a [`CleanupBlock`].
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct CleanupInfo {
+    pub cleanup_id: String,
+    pub phase: String,
+    pub how: String,
+    pub ended_at: u64,
+    pub previous_owner: String,
+    pub results: Vec<StepResult>,
+}
+
+impl CleanupInfo {
+    fn of(b: &CleanupBlock) -> CleanupInfo {
+        CleanupInfo {
+            cleanup_id: b.cleanup_id.clone(),
+            phase: b.phase.as_str().to_string(),
+            how: b.how.clone(),
+            ended_at: b.ended_at,
+            previous_owner: b.previous_owner.clone(),
+            results: b.results.clone(),
+        }
+    }
 }
 
 /// Parse a duration flag and enforce the 24 h cap. A bad value is a usage
@@ -121,15 +157,15 @@ fn dispatch_or_local(lab: &Lab, target: &str, extra: &[String]) -> Result<()> {
     Ok(())
 }
 
-/// Read the record and classify it. A corrupt record is reported and treated
-/// as no lease; a record that cannot be read at all is an error, so it is
-/// never overwritten.
+/// Read the record and classify it. An unreadable record is a
+/// `target_cleanup_blocked` error (`override-cleanup --corrupt` moves it
+/// aside), and one that cannot be read at all is an error too, so neither is
+/// ever overwritten.
 fn read_state(lock: &StoreLock, target: &str) -> Result<State> {
     let rec = match lock.read() {
         Ok(r) => r,
         Err(ReadError::Corrupt(c)) => {
-            eprintln!("warning: {target}: {c}; treating it as no lease and replacing it");
-            None
+            return Err(error::cleanup_blocked(target, lease::corrupt_message(target, &c)).into());
         }
         Err(e @ ReadError::Io(_)) => {
             return Err(anyhow!(e).context(format!("lease for '{target}'")));
@@ -144,7 +180,26 @@ fn open(target: &str) -> Result<StoreLock> {
         .with_context(|| format!("locking the lease store for '{target}'"))
 }
 
-/// Clean up after `old` and record why its token stopped working.
+/// How [`retire`] ended.
+#[derive(Debug)]
+pub(crate) enum Retired {
+    /// Cleanup verified, history written, record removed.
+    Clean,
+    /// Cleanup failed or could not be recorded as done: the target stays
+    /// blocked, and this is the blocking record.
+    Blocked(Box<Lease>),
+}
+
+/// End `old`: block the target, clean up after the holder, and either clear
+/// the block (every step ok or already satisfied) or leave it. Owns the whole
+/// transition, so callers never remove the record themselves.
+///
+/// Order, under the held lock: (1) persist a `pending` block before touching
+/// anything, so a crash mid-cleanup still leaves the target blocked; (2) run
+/// every cleanup step; (3) on success append the history, then remove the
+/// record; on failure record the results and keep the block. An `Err` means
+/// persistence failed: the record is never removed on that path, and no new
+/// token is minted.
 pub(crate) fn retire(
     lab: &Lab,
     target: &str,
@@ -152,20 +207,57 @@ pub(crate) fn retire(
     old: &Lease,
     how: &str,
     new_owner: Option<&str>,
-) -> Result<()> {
-    let errs = lease::cleanup(lab, target, old);
-    for e in &errs {
+) -> Result<Retired> {
+    let started = lease::now();
+    let cleanup_id = crate::platform::random_token().context("minting a cleanup id")?;
+    let mut block = CleanupBlock {
+        cleanup_id: cleanup_id.clone(),
+        phase: CleanupPhase::Pending,
+        how: how.to_string(),
+        ended_at: started,
+        previous_owner: old.owner.clone(),
+        previous_token: old.token.clone(),
+        new_owner: new_owner.map(str::to_string),
+        procs: old.procs.clone(),
+        scope: lease::scope_snapshot(lab, target),
+        last_attempt_at: None,
+        results: Vec::new(),
+    };
+    let pending = Lease::blocked(old, block.clone(), started).context("minting a lease token")?;
+    lock.write(&pending)
+        .context("recording the pending cleanup")?;
+
+    let results = lease::cleanup(lab, target, &old.procs);
+    block.last_attempt_at = Some(lease::now());
+    block.results = results.clone();
+    let errors = lease::failure_lines(&results);
+    for e in &errors {
         eprintln!("warning: {target}: cleanup: {e}");
     }
-    lock.append_history(&HistoryEntry {
+    let entry = HistoryEntry {
         at: lease::now(),
         previous_owner: old.owner.clone(),
         previous_token: old.token.clone(),
         new_owner: new_owner.map(str::to_string),
         how: how.to_string(),
-        cleanup_errors: errs,
-    })
-    .context("recording the lease history")
+        cleanup_errors: errors.clone(),
+        cleanup_id: Some(cleanup_id),
+        ..HistoryEntry::default()
+    };
+    if errors.is_empty() {
+        lock.append_history(&entry)
+            .context("recording the lease history (the target stays blocked; run `panio lease cleanup` to finish)")?;
+        lock.remove().context("removing the lease record")?;
+        return Ok(Retired::Clean);
+    }
+    block.phase = CleanupPhase::Failed;
+    let failed = Lease::blocked(old, block, lease::now()).context("minting a lease token")?;
+    lock.write(&failed)
+        .context("recording the failed cleanup")?;
+    if let Err(e) = lock.append_history(&entry) {
+        eprintln!("warning: {target}: could not record the lease history: {e}");
+    }
+    Ok(Retired::Blocked(Box::new(failed)))
 }
 
 fn mins(secs: u64) -> u64 {
@@ -238,16 +330,19 @@ fn try_acquire(lab: &Lab, target: &str, a: &AcquireArgs) -> Result<Outcome> {
             idle_secs: a.idle.unwrap_or(lease::DEFAULT_IDLE),
             last_used_at: now,
             procs: Vec::new(),
+            cleanup: None,
         };
         lock.write(&l).context("writing the lease record")?;
         Ok(Outcome::Got(l))
     };
+    let after = |r: Retired| match r {
+        Retired::Clean => fresh(&lock),
+        Retired::Blocked(b) => Err(lease::blocked_error(target, &b)),
+    };
     match read_state(&lock, target)? {
         State::Unleased => fresh(&lock),
-        State::Expired(old) => {
-            retire(lab, target, &lock, &old, "expired", Some(&a.owner))?;
-            fresh(&lock)
-        }
+        State::Blocked(b) => Err(lease::blocked_error(target, &b)),
+        State::Expired(old) => after(retire(lab, target, &lock, &old, "expired", Some(&a.owner))?),
         State::Held(mut l) => {
             if env_token().as_deref() == Some(l.token.as_str()) {
                 let duration = a.duration.unwrap_or(l.duration_secs);
@@ -260,8 +355,7 @@ fn try_acquire(lab: &Lab, target: &str, a: &AcquireArgs) -> Result<Outcome> {
                 lock.write(&l).context("writing the lease record")?;
                 Ok(Outcome::Got(l))
             } else if a.preempt {
-                retire(lab, target, &lock, &l, "preempted", Some(&a.owner))?;
-                fresh(&lock)
+                after(retire(lab, target, &lock, &l, "preempted", Some(&a.owner))?)
             } else {
                 Ok(Outcome::Held(l))
             }
@@ -340,10 +434,12 @@ pub fn renew(lab: &Lab, target: &str, duration: &Option<String>) -> Result<()> {
             Ok(())
         }
         State::Held(_) => Err(not_holder_error(&lock, target, token.as_deref(), what)),
+        State::Blocked(b) => Err(lease::blocked_error(target, &b)),
         State::Expired(l) => {
             // Retire it now so the history can say what happened to this token.
-            retire(lab, target, &lock, &l, "expired", None)?;
-            lock.remove().context("removing the expired lease")?;
+            if let Retired::Blocked(b) = retire(lab, target, &lock, &l, "expired", None)? {
+                return Err(lease::blocked_error(target, &b));
+            }
             let msg = lease::lost_lease_message(&lock, token.as_deref(), target)
                 .unwrap_or_else(|| format!("the lease on '{target}' has expired"));
             Err(error::target_leased(target, format!("{what}: {msg}")).into())
@@ -359,11 +455,12 @@ pub fn release(lab: &Lab, target: &str, preempt: bool) -> Result<()> {
     let token = env_token();
     let what = "cannot release";
     match read_state(&lock, target)? {
+        State::Blocked(b) => Err(lease::blocked_error(target, &b)),
         State::Held(l) => {
-            if token.as_deref() == Some(l.token.as_str()) {
-                retire(lab, target, &lock, &l, "released", None)?;
+            let retired = if token.as_deref() == Some(l.token.as_str()) {
+                retire(lab, target, &lock, &l, "released", None)?
             } else if preempt {
-                retire(lab, target, &lock, &l, "preempted", None)?;
+                retire(lab, target, &lock, &l, "preempted", None)?
             } else if let Some(msg) = lease::lost_lease_message(&lock, token.as_deref(), target) {
                 // The caller's own lease already ended and someone else holds
                 // the target now: nothing of theirs is left to release, and
@@ -372,14 +469,17 @@ pub fn release(lab: &Lab, target: &str, preempt: bool) -> Result<()> {
                 return Ok(());
             } else {
                 return Err(not_holder_error(&lock, target, token.as_deref(), what));
+            };
+            if let Retired::Blocked(b) = retired {
+                return Err(lease::blocked_error(target, &b));
             }
-            lock.remove().context("removing the lease record")?;
             println!("Lease on '{target}' released");
             Ok(())
         }
         State::Expired(l) => {
-            retire(lab, target, &lock, &l, "expired", None)?;
-            lock.remove().context("removing the lease record")?;
+            if let Retired::Blocked(b) = retire(lab, target, &lock, &l, "expired", None)? {
+                return Err(lease::blocked_error(target, &b));
+            }
             println!("The lease on '{target}' had expired; cleaned up");
             Ok(())
         }
@@ -407,6 +507,7 @@ pub fn release(lab: &Lab, target: &str, preempt: bool) -> Result<()> {
 /// Fill `row` from a live lease. While a registered process is alive the lease
 /// cannot idle out, so there is no idle countdown to report.
 fn fill_held(row: &mut StatusRow, l: Lease, now: u64) {
+    row.state = "held".to_string();
     row.held = Some(true);
     row.expires_in_secs = Some(l.expires_at.saturating_sub(now));
     row.idle_left_secs = if l.procs.is_empty() {
@@ -424,11 +525,11 @@ fn fill_held(row: &mut StatusRow, l: Lease, now: u64) {
     row.owner = Some(l.owner);
 }
 
-/// This host's view of one target, cleaning up an expired lease first.
-fn local_row(lab: &Lab, target: &str) -> Result<StatusRow> {
-    let lock = open(target)?;
-    let mut row = StatusRow {
+/// A status row with nothing filled in.
+fn blank_row(target: &str) -> StatusRow {
+    StatusRow {
         target: target.to_string(),
+        state: "unleased".to_string(),
         held: Some(false),
         owner: None,
         expires_in_secs: None,
@@ -437,22 +538,75 @@ fn local_row(lab: &Lab, target: &str) -> Result<StatusRow> {
         idle_secs: None,
         last_change: None,
         error: None,
-    };
+        cleanup: None,
+    }
+}
+
+/// Fill `row` from a cleanup-blocked record. Nobody holds the target.
+fn fill_blocked(row: &mut StatusRow, l: &Lease) {
+    row.state = "blocked".to_string();
+    row.held = Some(false);
+    row.cleanup = l.cleanup_block().map(CleanupInfo::of);
+    row.last_change = l.cleanup_block().map(|b| b.ended_at);
+}
+
+/// This host's view of one target, cleaning up an expired lease first (once:
+/// a blocked target is only reported afterward).
+fn local_row(lab: &Lab, target: &str) -> Result<StatusRow> {
+    let lock = open(target)?;
+    let mut row = blank_row(target);
     let now = lease::now();
-    match read_state(&lock, target)? {
-        State::Held(l) => fill_held(&mut row, l, now),
-        State::Expired(l) => {
-            retire(lab, target, &lock, &l, "expired", None)?;
-            lock.remove().context("removing the lease record")?;
-            row.last_change = lock.last_history().map(|h| h.at);
+    let rec = match lock.read() {
+        Ok(r) => r,
+        Err(ReadError::Corrupt(c)) => {
+            row.state = "blocked".to_string();
+            row.held = None;
+            row.error = Some(format!(
+                "lease record unreadable ({}); `panio lease override-cleanup {target} \
+                 --corrupt --reason TEXT` moves it aside",
+                c.0
+            ));
+            return Ok(row);
         }
+        Err(e @ ReadError::Io(_)) => {
+            return Err(anyhow!(e).context(format!("lease for '{target}'")));
+        }
+    };
+    match lease::state(rec, now, lease::proc_is_live) {
+        State::Held(l) => fill_held(&mut row, l, now),
+        State::Blocked(l) => fill_blocked(&mut row, &l),
+        State::Expired(l) => match retire(lab, target, &lock, &l, "expired", None)? {
+            Retired::Clean => row.last_change = lock.last_history().map(|h| h.at),
+            Retired::Blocked(b) => fill_blocked(&mut row, &b),
+        },
         State::Unleased => row.last_change = lock.last_history().map(|h| h.at),
     }
     Ok(row)
 }
 
 fn row_text(r: &StatusRow) -> String {
+    if r.state == "blocked" {
+        if let Some(c) = &r.cleanup {
+            let failed: Vec<&str> = c
+                .results
+                .iter()
+                .filter(|x| x.failed())
+                .map(|x| x.step.as_str())
+                .collect();
+            let what = if c.phase == "pending" {
+                "cleanup did not finish".to_string()
+            } else {
+                format!("cleanup failed ({})", failed.join(", "))
+            };
+            return format!(
+                "{t}: blocked: {what}; cleanup id {id}; run panio lease cleanup {t} --id {id}",
+                t = r.target,
+                id = c.cleanup_id,
+            );
+        }
+    }
     match (&r.error, r.held) {
+        (Some(e), _) if r.state == "blocked" => format!("{}: blocked: {e}", r.target),
         (Some(e), _) => format!("{}: unknown ({e})", r.target),
         (None, Some(true)) => {
             let idle = match r.idle_left_secs {
@@ -486,15 +640,10 @@ pub fn status(lab: &Lab, target: &str, json: bool) -> Result<()> {
 /// reached becomes an `error` row instead of failing the rest.
 fn row_for(lab: &Lab, target: &str) -> StatusRow {
     let failed = |msg: String| StatusRow {
-        target: target.to_string(),
+        state: "unknown".to_string(),
         held: None,
-        owner: None,
-        expires_in_secs: None,
-        idle_left_secs: None,
-        procs: 0,
-        idle_secs: None,
-        last_change: None,
         error: Some(msg),
+        ..blank_row(target)
     };
     let Some(rt) = lab.resolved_target(target) else {
         return failed("not in the lab".to_string());
@@ -505,7 +654,19 @@ fn row_for(lab: &Lab, target: &str) -> StatusRow {
     }
     let args = ["lease", "status", "--json", "-t", target];
     match crate::dispatch::run_subcommand(lab, target, &host_name, &args) {
-        Ok(out) if out.status == 0 => serde_json::from_str(out.stdout.trim())
+        Ok(out) if out.status == 0 => serde_json::from_str::<StatusRow>(out.stdout.trim())
+            .map(|mut row| {
+                // A control host older than the cleanup block sends no state.
+                if row.state.is_empty() {
+                    row.state = match row.held {
+                        Some(true) => "held",
+                        Some(false) => "unleased",
+                        None => "unknown",
+                    }
+                    .to_string();
+                }
+                row
+            })
             .unwrap_or_else(|e| failed(format!("unreadable reply from '{host_name}': {e}"))),
         Ok(out) => failed(format!(
             "'{host_name}' exited {}: {}",
@@ -534,6 +695,196 @@ pub fn status_all(lab: &Lab, json: bool) -> Result<()> {
     Ok(())
 }
 
+/// The blocking record, if `id` names it. A target that is not blocked, or is
+/// blocked under a different id (a newer generation), is refused: recovery
+/// must act on the generation the person looked at.
+fn expect_block(lock: &StoreLock, target: &str, id: &str) -> Result<Lease> {
+    match read_state(lock, target)? {
+        State::Blocked(l) => match l.cleanup_block() {
+            Some(b) if b.cleanup_id == id => Ok(l),
+            _ => Err(error::cleanup_blocked(
+                target,
+                format!(
+                    "target '{target}' is blocked under a different cleanup id; \
+                     run `panio lease status {target}` for the current one"
+                ),
+            )
+            .into()),
+        },
+        State::Held(_) | State::Expired(_) | State::Unleased => Err(PanioError::new(
+            Kind::Usage,
+            format!("target '{target}' is not cleanup-blocked (id {id} is not current)"),
+        )
+        .target(target)
+        .into()),
+    }
+}
+
+/// `panio lease cleanup TARGET --id ID`: re-run every cleanup step against the
+/// stored registered processes. Success clears the block; failure keeps it.
+pub fn cleanup_cmd(lab: &Lab, target: &str, id: &str, json: bool) -> Result<()> {
+    dispatch_or_local(lab, target, &[])?;
+    let lock = open(target)?;
+    let mut rec = expect_block(&lock, target, id)?;
+    let mut block = rec.cleanup.take().expect("expect_block checked the block");
+    if lease::scope_snapshot(lab, target) != block.scope {
+        rec.cleanup = Some(block);
+        return Err(error::cleanup_blocked(
+            target,
+            format!(
+                "target '{target}': its serial, video, hid or netboot config changed since the \
+                 lease ended, so a retry would not clean up what was left; the block stays. \
+                 Fix the cleanup by hand, then run `panio lease override-cleanup {target} \
+                 --id {id} --reason TEXT`"
+            ),
+        )
+        .into());
+    }
+    let results = lease::cleanup(lab, target, &block.procs);
+    block.last_attempt_at = Some(lease::now());
+    block.results = results.clone();
+    let errors = lease::failure_lines(&results);
+    if !errors.is_empty() {
+        for e in &errors {
+            eprintln!("warning: {target}: cleanup: {e}");
+        }
+        block.phase = CleanupPhase::Failed;
+        let msg = lease::blocked_message(
+            target,
+            &Lease {
+                cleanup: Some(block.clone()),
+                ..rec.clone()
+            },
+        );
+        rec.cleanup = Some(block);
+        lock.write(&rec).context("recording the failed cleanup")?;
+        return Err(error::cleanup_blocked(target, msg).into());
+    }
+    lock.append_history(&HistoryEntry {
+        at: lease::now(),
+        previous_owner: block.previous_owner.clone(),
+        previous_token: block.previous_token.clone(),
+        new_owner: block.new_owner.clone(),
+        how: block.how.clone(),
+        cleanup_errors: Vec::new(),
+        resolution: Some("verified".to_string()),
+        cleanup_id: Some(block.cleanup_id.clone()),
+        reason: None,
+    })
+    .context("recording the lease history (the target stays blocked)")?;
+    lock.remove().context("removing the lease record")?;
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({"target": target, "cleanup_id": id, "resolution": "verified"})
+        );
+    } else {
+        println!("Cleanup of '{target}' verified; the target is unleased");
+    }
+    Ok(())
+}
+
+/// `panio lease override-cleanup`: clear a block without verifying cleanup.
+/// With `corrupt`, move an unreadable record aside instead.
+pub fn override_cleanup(
+    lab: &Lab,
+    target: &str,
+    id: Option<&str>,
+    corrupt: bool,
+    reason: &str,
+    json: bool,
+) -> Result<()> {
+    if reason.trim().is_empty() {
+        return Err(PanioError::new(Kind::Usage, "--reason must not be empty").into());
+    }
+    if id.is_some() == corrupt {
+        return Err(
+            PanioError::new(Kind::Usage, "give exactly one of --id ID or --corrupt").into(),
+        );
+    }
+    dispatch_or_local(lab, target, &[])?;
+    let lock = open(target)?;
+    if corrupt {
+        return override_corrupt(&lock, target, reason, json);
+    }
+    let id = id.unwrap_or_default();
+    let rec = expect_block(&lock, target, id)?;
+    let block = rec.cleanup_block().expect("expect_block checked the block");
+    let mut outstanding = block.failure_lines_or_unfinished();
+    if outstanding.is_empty() {
+        outstanding.push("cleanup was not verified".to_string());
+    }
+    lock.append_history(&HistoryEntry {
+        at: lease::now(),
+        previous_owner: block.previous_owner.clone(),
+        previous_token: block.previous_token.clone(),
+        new_owner: block.new_owner.clone(),
+        how: block.how.clone(),
+        cleanup_errors: outstanding,
+        resolution: Some("overridden".to_string()),
+        cleanup_id: Some(block.cleanup_id.clone()),
+        reason: Some(reason.trim().to_string()),
+    })
+    .context("recording the override in the lease history (the target stays blocked)")?;
+    lock.remove().context("removing the lease record")?;
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({"target": target, "cleanup_id": id, "resolution": "overridden"})
+        );
+    } else {
+        println!(
+            "Cleanup block on '{target}' cleared WITHOUT verifying that cleanup finished \
+             (reason: {}); the target is unleased",
+            reason.trim()
+        );
+    }
+    Ok(())
+}
+
+fn override_corrupt(lock: &StoreLock, target: &str, reason: &str, json: bool) -> Result<()> {
+    match lock.read() {
+        Err(ReadError::Corrupt(_)) => {}
+        Err(e @ ReadError::Io(_)) => {
+            return Err(anyhow!(e).context(format!("lease for '{target}'")))
+        }
+        Ok(_) => {
+            return Err(PanioError::new(
+                Kind::Usage,
+                format!("the lease record for '{target}' is not corrupt; use --id"),
+            )
+            .target(target)
+            .into())
+        }
+    }
+    let ts = lease::now();
+    lock.append_history(&HistoryEntry {
+        at: ts,
+        previous_owner: "unknown".to_string(),
+        how: "corrupt".to_string(),
+        cleanup_errors: vec!["the lease record was unreadable".to_string()],
+        resolution: Some("overridden".to_string()),
+        reason: Some(reason.trim().to_string()),
+        ..HistoryEntry::default()
+    })
+    .context("recording the override in the lease history (the record was not moved)")?;
+    let moved = lock
+        .quarantine(ts)
+        .context("moving the corrupt record aside")?;
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({"target": target, "resolution": "overridden", "moved_to": moved})
+        );
+    } else {
+        println!(
+            "Moved the unreadable lease record for '{target}' to {}; the target is unleased",
+            moved.display()
+        );
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -549,21 +900,12 @@ mod tests {
             idle_secs: 1800,
             last_used_at: 100,
             procs,
+            cleanup: None,
         }
     }
 
     fn row(l: Lease, now: u64) -> StatusRow {
-        let mut r = StatusRow {
-            target: "dut".into(),
-            held: Some(false),
-            owner: None,
-            expires_in_secs: None,
-            idle_left_secs: None,
-            procs: 0,
-            idle_secs: None,
-            last_change: None,
-            error: None,
-        };
+        let mut r = blank_row("dut");
         fill_held(&mut r, l, now);
         r
     }

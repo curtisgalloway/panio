@@ -1069,7 +1069,9 @@ fn tool_list() -> Value {
             "name": "lease_renew",
             "description": "Extend the lease this server holds on a target. The server \
                 applies its stored token itself. Fails (exit 23) if the lease already \
-                ended or was taken; the message says why.",
+                ended or was taken; the message says why. Fails (exit 24, target_cleanup_blocked) \
+                if cleaning up after an ended lease failed; a person must run `panio \
+                lease cleanup` or `override-cleanup`.",
             "inputSchema": schema(&[
                 ("duration", json!({ "type": "string", "description": "New length from now (default: the lease's original duration)." })),
             ]),
@@ -1080,7 +1082,9 @@ fn tool_list() -> Value {
             "description": "End the lease this server holds on a target and clean the \
                 target up (daemons the lease started are stopped). The server forgets \
                 its token for the target. Set preempt to end someone else's lease \
-                instead; use it only when the user said to.",
+                instead; use it only when the user said to. Fails with exit 24 \
+                (target_cleanup_blocked) when cleanup failed: the lease is over but the \
+                target stays blocked for everyone until a person recovers it.",
             "inputSchema": schema(&[
                 ("preempt", json!({ "type": "boolean", "description": "End another holder's lease without its token." })),
             ]),
@@ -1091,7 +1095,8 @@ fn tool_list() -> Value {
             "description": "Show who holds a target and for how long, as JSON; never \
                 shows a token. Omit target to list every target's lease. Not read-only: \
                 it cleans up a lease that has expired, stopping the old holder's \
-                leftovers.",
+                leftovers. A target whose cleanup failed shows state \"blocked\" with a \
+                cleanup object (cleanup_id, step results); status still succeeds.",
             "inputSchema": {
                 "type": "object",
                 "properties": { "target": { "type": "string", "description": "Target name, as listed by target_list. Omit to list all." } },

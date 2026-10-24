@@ -223,8 +223,11 @@ cli/src/
                 or warn), `cleanup` (registered procs, serialcap/hdmicap/hid
                 daemons, netboot, link down; never power and never the lease
                 check, since it runs under the lock), `--lease-file` handoff
-  lease_cmd.rs  `panio lease acquire|renew|release|status` bodies and `retire`
-                (cleanup + history line). main.rs `remote_console` runs a
+  lease_cmd.rs  `panio lease acquire|renew|release|status|cleanup|override-cleanup`
+                bodies and `retire` (#372: persists a `State::Blocked` cleanup
+                block before cleanup, then clears it with a history line or
+                keeps it; owns the record removal, so callers never `remove()`;
+                a failed cleanup is `target_cleanup_blocked`, exit 24). main.rs `remote_console` runs a
                 `Keepalive` thread (holder read every min(idle/2, 5 min)) while
                 a caller with a token has a console open. main.rs `lease_scope` classifies every
                 command as Read/Mutating/Unchecked with no `_` arm, so a new

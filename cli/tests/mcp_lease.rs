@@ -81,3 +81,24 @@ fn mcp_acquire_parses_the_real_cli_output_and_hides_the_token() {
         "{o:?}"
     );
 }
+
+#[test]
+fn mcp_reports_a_cleanup_blocked_target_with_exit_24() {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("mcp_lease_blocked");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("run")).unwrap();
+    std::fs::create_dir_all(dir.join("home")).unwrap();
+    std::fs::write(dir.join("lab.toml"), LAB).unwrap();
+    let state = dir.join("home/.local/share/panio/dut");
+    std::fs::create_dir_all(&state).unwrap();
+    std::fs::write(state.join("lease.json"), "{not json").unwrap();
+    let call = |name: &str| serde_json::json!({"name": name, "arguments": {"target": "dut"}});
+    let r = mcp(&dir, &[call("lease_acquire"), call("lease_status")]);
+    assert_eq!(r[0]["result"]["isError"], true, "{}", r[0]);
+    let text = r[0]["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(text.contains("exited 24"), "{text}");
+    assert!(text.contains("target_cleanup_blocked"), "{text}");
+    assert_eq!(r[1]["result"]["isError"], false, "{}", r[1]);
+    let status = r[1]["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(status.contains("\"state\":\"blocked\""), "{status}");
+}
