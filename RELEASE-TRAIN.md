@@ -1,6 +1,6 @@
 # Release train profile: panio
 
-Derived from commit 6049b75 on 2026-09-16. Executed by the `release-train`
+Derived from commit acb12ce on 2026-09-16. Executed by the `release-train`
 skill (public-skills, `plugins/dev-tools/skills/release-train`); kept honest by
 its `profile_check.py` against the `## Sources` table below. Read `AGENTS.md`
 "Cutting a release" first: everything there still holds, this file only adds
@@ -112,7 +112,7 @@ enough.
 - artifact: `panio_X.Y.Z_<arch>.deb` plus `.sha256`, via `packaging/nfpm.yaml`
 - workflow job: package
 - host: linux-builder
-- build: rsync the worktree to a VM-local dir that only this arm uses (never build on a shared mount), with `--delete-excluded --filter='P target/' --exclude=target/ --exclude=/.venv/ --exclude=/.git/ --exclude=/dist/ --exclude=/logs/ --exclude=/packaging/stage/` — leading slashes anchor each pattern at the transfer root, since an unanchored `dist*` also matches `docs/distributed-control.md`. `target/` is deliberately unanchored: this repo has no workspace `target/`, only per-crate ones (cli/target, hdmicap/target and so on, gitignored), and the `P` (protect) filter is what keeps them warm on the builder — `--delete-excluded` deletes excluded paths at the destination too, so a bare `--exclude=target/` still cold-builds all nine crates every train (#227; verified with rsync 3.2.7 on the builder). `--delete-excluded` is what stops last train's staging and `.deb` surviving on the builder (see the rule above the channels); build `cli` and every helper `--release` with `PANIO_VERSION=X.Y.Z` exported; stage the gitignored staging tree under `packaging` (`stage/bin` with the CLI, `stage/libexec` with the helpers plus `ocr/linuxocr` and `ocr/rapidocr`) as the `package` job does; fetch `nfpm` at the workflow's `NFPM_VERSION` and verify its `checksums.txt`; `VERSION=X.Y.Z ARCH=<arch> nfpm package -f packaging/nfpm.yaml -p deb`
+- build: rsync the worktree to a VM-local dir that only this arm uses (never build on a shared mount), with `--delete-excluded --filter='P target/' --exclude=target/ --exclude=/.venv/ --exclude=/.git/ --exclude=/dist/ --exclude=/logs/ --exclude=/packaging/stage/` — leading slashes anchor each pattern at the transfer root, since an unanchored `dist*` also matches `docs/distributed-control.md`. `target/` is deliberately unanchored: this repo has no workspace `target/`, only per-crate ones (cli/target, hdmicap/target and so on, gitignored), and the `P` (protect) filter is what keeps them warm on the builder — `--delete-excluded` deletes excluded paths at the destination too, so a bare `--exclude=target/` still cold-builds all nine crates every train (#227; verified with rsync 3.2.7 on the builder). `--delete-excluded` is what stops last train's staging and `.deb` surviving on the builder (see the rule above the channels); build `cli` and every helper `--release` with `PANIO_VERSION=X.Y.Z` exported (the builder needs `libdbus-1-dev` for `dsdble`, as the `package` job installs; the `.deb` declares `libdbus-1-3` at runtime); stage the gitignored staging tree under `packaging` (`stage/bin` with the CLI, `stage/libexec` with the helpers plus `ocr/linuxocr` and `ocr/rapidocr`) as the `package` job does; fetch `nfpm` at the workflow's `NFPM_VERSION` and verify its `checksums.txt`; `VERSION=X.Y.Z ARCH=<arch> nfpm package -f packaging/nfpm.yaml -p deb`
 - install like a user: assemble a real repo with `packaging/scripts/build-apt-repo.sh <debs> <out> <fpr>` under a throwaway GPG key, install the public key under `/etc/apt/keyrings/panio-rt.asc`, write a deb822 `.sources` (`URIs: file:///<out>`, `Suites: stable`, `Components: main`, `Signed-By` that key), `apt-get update`, `apt-cache policy panio` shows X.Y.Z, `apt-get install panio=X.Y.Z`; record whether an older panio was present (upgrade path) or not (fresh path)
 - smoke: S1..S7 against `/usr/bin/panio`; S3 also `/usr/libexec/panio/bin/linuxocr --help` and `rapidocr --help`; also `/usr/share/panio/skills/panio/SKILL.md` and `/usr/lib/tmpfiles.d/panio.conf` exist
 - cleanup: `apt-get remove panio` unless it was installed before; remove the `.sources` file, the keyring, the throwaway key
@@ -170,15 +170,15 @@ feeds needs re-reading before `--update` re-pins it.
 
 | path | blob | feeds |
 |---|---|---|
-| `.github/workflows/release.yml` | bd38399097c2 | Channels (every arm's build and staging), Publish |
+| `.github/workflows/release.yml` | beca9e0319ee | Channels (every arm's build and staging), Publish |
 | `.github/workflows/docs.yml` | 206e9ae532f2 | Publish: re-verify apt |
-| `packaging/nfpm.yaml` | fc69c86857d8 | Channels: deb |
+| `packaging/nfpm.yaml` | aba2e911141a | Channels: deb |
 | `packaging/scripts/build-apt-repo.sh` | 391037a4ea4c | Channels: deb, install like a user |
-| `Makefile` | 9c703d624bb3 | Project: helpers; Channels: source |
-| `cli/src/setup.rs` | 61b8ad90b634 | Channels: source |
+| `Makefile` | b85a5bb5d00a | Project: helpers; Channels: source |
+| `cli/src/setup.rs` | ed61544d43f8 | Channels: source |
 | `cli/src/skills.rs` | 0cf3c3778373 | Smoke contract S2; Channels: homebrew, windows |
-| `cli/src/daemons.rs` | 3279e85db233 | Smoke contract S3 |
+| `cli/src/daemons.rs` | 3ff6d04c027d | Smoke contract S3 |
 | `scripts/ci-coverage-check.sh` | 14c39a57f1c7 | Project: helpers |
 | `scripts/sync-brik.sh` | 1920fb8f6241 | Channels: windows |
-| `README.md` | 4f78a40dcaeb | Channels: source; Publish: re-verify apt |
-| `AGENTS.md` | 0d81ad5aae42 | Project: bump rules, tag format; Publish |
+| `README.md` | 31eed0421c0d | Channels: source; Publish: re-verify apt |
+| `AGENTS.md` | 62960e842797 | Project: bump rules, tag format; Publish |
