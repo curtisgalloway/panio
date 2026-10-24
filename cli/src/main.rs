@@ -1969,6 +1969,13 @@ impl LeaseSkip {
 
     /// The stderr line `--all` prints for a daemon it skipped.
     fn line(&self) -> String {
+        if self.block.cleanup_blocked {
+            return format!(
+                "skipped {}: target is cleanup-blocked ({})",
+                self.label(),
+                self.block.message
+            );
+        }
         format!(
             "skipped {}: leased to {} until {}",
             self.label(),
@@ -1978,8 +1985,12 @@ impl LeaseSkip {
     }
 }
 
-/// The refusal for a daemon the caller named explicitly (exit 23).
+/// The refusal for a daemon the caller named explicitly: exit 23, or 24 when
+/// the target is blocked on a failed cleanup.
 fn leased_refusal(skip: &LeaseSkip) -> anyhow::Error {
+    if skip.block.cleanup_blocked {
+        return error::cleanup_blocked(&skip.target, skip.block.message.clone()).into();
+    }
     error::target_leased(&skip.target, skip.block.message.clone()).into()
 }
 
@@ -7173,6 +7184,7 @@ mod tests {
             owner: owner.into(),
             until: "10:30 local".into(),
             message: format!("target is leased to {owner}"),
+            cleanup_blocked: false,
         }
     }
 
