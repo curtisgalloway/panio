@@ -32,7 +32,8 @@ each term briefly on first use; this page is the longer reference.
 | **DUT** | Device under test. Same as target. |
 | **control host** | The machine cabled to the target that runs panio and its daemons. It can be your laptop or a dedicated box such as a Raspberry Pi. |
 | **lab file** | The single config file that describes your hosts, targets and their channels. Managed through the CLI; `panio config edit` opens it in your editor. |
-| **synced lab** | A lab file copied from a git repository by `panio config sync`. It is read-only where it was copied: edit the source and sync again. A `lab.source.toml` file beside it records where it came from. See [config sync](distributed-control.md#one-lab-on-every-control-host-config-sync). |
+| **synced lab** | A lab file copied from a git repository or an HTTPS URL by `panio config sync`. It is read-only where it was copied: edit the source and sync again. A `lab.source.toml` file beside it records where it came from. See [config sync](distributed-control.md#one-lab-on-every-control-host-config-sync). |
+| **ETag** | A version tag an HTTP server sends with a file. `panio config sync` records it and sends it back on the next sync, so the server can answer "unchanged" instead of sending the file again. |
 | **channel** | One connection to a target: `serial`, `video`, `hid`, `power`, `netboot`, `usb` and so on. |
 | **helper** | A separate program panio runs to drive one kind of hardware (`hdmicap`, `serialcap`, `amt`, `shellyplug`, `ch9329`, ...). |
 | **plugin root** | An install prefix outside panio's own install that holds extra helpers (`<root>/libexec/panio/bin`) and skills (`<root>/share/panio/skills`). Listed in the `PANIO_PLUGIN_PATH` environment variable, or a lab host's `plugin_path`. Plugins can add helpers and skills but never replace bundled ones. See [plugin roots](power.md#out-of-tree-helpers-and-skills-plugin-roots). |

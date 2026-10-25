@@ -82,3 +82,64 @@ fn a_synced_lab_is_read_only_until_detached() {
     let out = panio(&dir, &["target", "add", "nuc"]);
     assert!(out.status.success(), "{out:?}");
 }
+
+/// Answer one HTTP request on `listener` with `response`; yield the request.
+fn serve_one(
+    listener: std::net::TcpListener,
+    response: &'static [u8],
+) -> std::thread::JoinHandle<String> {
+    use std::io::{Read, Write};
+    std::thread::spawn(move || {
+        let (mut s, _) = listener.accept().unwrap();
+        let mut req = Vec::new();
+        let mut buf = [0u8; 1024];
+        while !req.windows(4).any(|w| w == b"\r\n\r\n") {
+            let n = s.read(&mut buf).unwrap();
+            if n == 0 {
+                break;
+            }
+            req.extend_from_slice(&buf[..n]);
+        }
+        s.write_all(response).unwrap();
+        s.shutdown(std::net::Shutdown::Write).ok();
+        String::from_utf8_lossy(&req).into_owned()
+    })
+}
+
+#[test]
+fn a_url_source_sends_the_token_file_and_is_read_only() {
+    let dir = scratch("url");
+    let token = dir.join("token");
+    std::fs::write(&token, "e2e-token\n").unwrap();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}/lab.toml", listener.local_addr().unwrap());
+    let req = serve_one(
+        listener,
+        b"HTTP/1.1 200 OK\r\nETag: \"e1\"\r\nContent-Length: 14\r\nConnection: close\r\n\r\n[targets.dut]\n",
+    );
+    let out = panio(
+        &dir,
+        &[
+            "config",
+            "sync",
+            "--url",
+            &url,
+            "--token-file",
+            token.to_str().unwrap(),
+        ],
+    );
+    let req = req.join().unwrap().to_ascii_lowercase();
+    assert!(out.status.success(), "{out:?}");
+    assert!(req.contains("authorization: bearer e2e-token"), "{req}");
+    assert!(text(&out.stdout).contains("ETag \"e1\""), "{out:?}");
+
+    let out = panio(&dir, &["target", "add", "nuc"]);
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+
+    let out = panio(
+        &dir,
+        &["config", "sync", "--url", "http://example.com/lab.toml"],
+    );
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    assert!(text(&out.stderr).contains("https://"), "{out:?}");
+}

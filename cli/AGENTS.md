@@ -18,8 +18,11 @@ migration the daemons started. Design: [`notes/config-redesign.md`](../notes/con
   host binding. Edited via `toml_edit` (comments survive); validated on load and
   before every save. Legacy `~/.config/panio/targets/*.toml` is unused.
 - **`config sync`** (`labsync.rs`, #375) copies the lab from git (depth-1
-  fetch by shelling out to `git`, no new crate), validates it, and writes a
-  `<stem>.source.toml` record beside it (source, commit, blob id, fetch time).
+  fetch by shelling out to `git`) or an HTTPS URL (ureq GET, bearer token via
+  the `secret` crate, `If-None-Match` on the recorded ETag; `https://` only,
+  except `http://` to loopback for tests), validates it, and writes a
+  `<stem>.source.toml` record beside it (source, revision, SHA-256 via `ring`,
+  fetch time). The token is never recorded, only `token_file`/`token_command`.
   The record's presence makes the lab read-only: `edit_lab`, `cmd_init` and
   `config_edit` call `labsync::ensure_writable` (exit 2 `usage`). A new lab
   writer must call it too. `load_for_read` prints the stale warning (> 7

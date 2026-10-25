@@ -226,6 +226,14 @@ repository:
 panio config sync --git <remote> --path <path/to/lab.toml>
 ```
 
+If the host should not hold repository credentials, sync from the raw file's
+HTTPS URL with a read-only token instead (`--token-file <path>` or
+`--token-command <cmd>`; the token itself is never recorded):
+
+```bash
+panio config sync --url <https-url-of-lab.toml> --token-file <path>
+```
+
 Re-run `panio config sync` after the source changes; commands warn once the
 copy is a week old.
 

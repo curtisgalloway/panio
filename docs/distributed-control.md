@@ -118,10 +118,13 @@ device = "0x8300000534d2109"      # USB Video — stable, port-derived id
 Commands dispatched from your dev machine need no lab on the control host:
 dispatch ships a one-target slice. A shell or agent session opened *on* a
 control host does need one. `panio config sync` gives it a copy of the lab
-from the git repository where you keep it, and keeps that copy read-only:
+from the git repository (or HTTPS URL) where you keep it, and keeps that copy
+read-only:
 
 ```bash
 panio config sync --git git@git.example.com:me/lab-config.git --path panio/lab.toml
+panio config sync --url https://git.example.com/me/lab-config/raw/main/panio/lab.toml \
+    --token-command 'op read op://Vault/lab-token/credential'
 panio config sync            # later: pull again from the recorded source
 ```
 
@@ -129,6 +132,18 @@ panio config sync            # later: pull again from the recorded source
   remote uses the host's own keys and needs no token. `--git` takes anything
   `git fetch` does; `--ref` picks a branch, tag or commit (default: the
   remote's default branch).
+- **Or an HTTPS URL** (`--url`), for a host that should not hold git
+  credentials or does not have git: one GET of the raw file. A token, when the
+  server needs one, is sent as `Authorization: Bearer <token>` and found the
+  way panio's helpers find secrets: `$PANIO_LAB_TOKEN`, then `--token-file
+  <path>`, then `--token-command <cmd>` (its stdout, 30 s limit). The sync
+  record keeps the file path or command, never the token. A re-sync sends
+  the recorded ETag (the server's version tag for the file) as
+  `If-None-Match`, so an unchanged file is not downloaded again. The URL must
+  be `https://`; plain `http://` is accepted only to a loopback address.
+  Redirects never carry the token. Server certificates are checked against
+  the public web roots bundled with panio, so a server behind a private CA is
+  refused.
 - **Commands never fetch.** Run `config sync` by hand or from a timer. Once the
   copy is more than 7 days old, every command prints a warning on stderr.
 - **The fetched file is validated before it replaces anything**, with the same
@@ -142,7 +157,8 @@ panio config sync            # later: pull again from the recorded source
   last sync, or it existed before the first sync with different contents,
   sync refuses; `--force` replaces it.
 - **The sync record** sits beside the lab (`lab.toml` → `lab.source.toml`)
-  and holds the source, the commit, the file's git blob id and the fetch time.
+  and holds the source, the revision (a commit, or the ETag), the file's
+  SHA-256 and the fetch time.
   `config show` and `doctor` print it. `doctor` counts a locally edited copy
   as a problem.
 - A lab that is a **symlink** (into a checkout on the host) already follows
@@ -347,7 +363,7 @@ file plus SSH. See [related work](dev/ci-integration/related-work.md).
   `~/.config/panio/lab.toml`. The legacy `~/.config/panio/targets/*.toml`
   files are never read.
 - Getting the lab onto a control host for local sessions is an explicit
-  `config sync` from git, not a remote source read on every command: the
+  `config sync` from git or HTTPS, not a remote source read on every command: the
   command path never needs the network, and a read-only copy cannot drift
   without `doctor` saying so (#375).
 - The per-command config slice travels as a temp file copied over SSH,
