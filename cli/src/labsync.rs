@@ -249,8 +249,27 @@ struct Fetched {
     bytes: Vec<u8>,
 }
 
+/// Refuse a remote or ref that git would read as an option (`--upload-pack=…`
+/// runs a program), whether it came from the command line or a record.
+fn check_source(source: &Source) -> Result<()> {
+    for (what, v) in [
+        ("--git", Some(source.git.as_str())),
+        ("--ref", source.git_ref.as_deref()),
+    ] {
+        if v.is_some_and(|v| v.is_empty() || v.starts_with('-')) {
+            return Err(PanioError::new(
+                Kind::Usage,
+                format!("{what} must not be empty or start with '-'"),
+            )
+            .into());
+        }
+    }
+    Ok(())
+}
+
 /// Fetch `source.path` at `source.git_ref` into a throwaway repository.
 fn fetch(source: &Source) -> Result<Fetched> {
+    check_source(source)?;
     let tmp = tempfile::tempdir()?;
     let dir = tmp.path();
     git(dir, &["init", "-q"])?;
@@ -258,11 +277,14 @@ fn fetch(source: &Source) -> Result<Fetched> {
     git(
         dir,
         &[
+            "-c",
+            "protocol.ext.allow=never",
             "fetch",
             "-q",
             "--depth",
             "1",
             "--no-tags",
+            "--",
             &source.git,
             want,
         ],
@@ -579,6 +601,22 @@ mod tests {
         s.git_ref = Some("no-such-branch".into());
         let e = sync(&r.lab, Some(s), false).unwrap_err();
         assert_eq!(kind(&e), Kind::Unreachable);
+        assert!(!r.lab.exists());
+    }
+
+    #[test]
+    fn option_shaped_remotes_and_refs_are_refused() {
+        let r = Repo::new(GOOD);
+        let mut s = r.source();
+        s.git = "--upload-pack=touch pwned".into();
+        let e = sync(&r.lab, Some(s), false).unwrap_err();
+        assert_eq!(kind(&e), Kind::Usage);
+        let mut s = r.source();
+        s.git_ref = Some("--output=x".into());
+        assert_eq!(
+            kind(&sync(&r.lab, Some(s), false).unwrap_err()),
+            Kind::Usage
+        );
         assert!(!r.lab.exists());
     }
 
