@@ -471,6 +471,46 @@ pub fn process_start_time(pid: i32) -> Option<u64> {
     }
 }
 
+/// The image file name of a running `pid` (`hdmicap.exe`), or `None` when the
+/// process does not exist or cannot be opened. Asks the kernel directly with
+/// the same access right as `pid_alive`, which a standard user holds for their
+/// own processes; `tasklist` needs more and prints "Access denied" (#379).
+#[cfg(windows)]
+pub fn process_image_name(pid: i32) -> Option<String> {
+    use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
+    use windows_sys::Win32::System::Threading::{
+        GetExitCodeProcess, OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
+        PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    if !is_real_pid(pid) {
+        return None;
+    }
+    // Safe: OpenProcess validates the pid; QueryFullProcessImageNameW writes at
+    // most `len` UTF-16 units and stores the count it wrote back in `len`.
+    let path = unsafe {
+        let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid as u32);
+        if h.is_null() {
+            return None;
+        }
+        let mut code: u32 = 0;
+        if GetExitCodeProcess(h, &mut code) == 0 || code != STILL_ACTIVE as u32 {
+            CloseHandle(h);
+            return None;
+        }
+        let mut buf = vec![0u16; 32768];
+        let mut len = buf.len() as u32;
+        let ok = QueryFullProcessImageNameW(h, PROCESS_NAME_WIN32, buf.as_mut_ptr(), &mut len);
+        CloseHandle(h);
+        if ok == 0 {
+            return None;
+        }
+        String::from_utf16_lossy(&buf[..len as usize])
+    };
+    // The file name only, as `tasklist` reported it: callers match a binary
+    // name, and a directory in the path must not satisfy that match.
+    path.rsplit('\\').next().map(str::to_string)
+}
+
 /// 32 lowercase hex characters from the operating system's random source,
 /// for lease tokens.
 pub fn random_token() -> std::io::Result<String> {
@@ -1096,6 +1136,22 @@ mod tests {
         }
         assert_eq!(process_start_time(pid), None);
         let _ = child.wait();
+    }
+
+    /// Names another live process by its image file name, without the
+    /// directory, and nothing once it has exited. A standard user running
+    /// `tasklist` got "Access denied" here, even for their own child (#379).
+    #[cfg(windows)]
+    #[test]
+    fn image_name_of_a_child_and_of_a_dead_pid() {
+        let mut child = spawn_sleeper();
+        let pid = child.id() as i32;
+        let name = process_image_name(pid);
+        let _ = child.kill();
+        let _ = child.wait();
+        drop(child);
+        assert_eq!(name.map(|n| n.to_ascii_lowercase()), Some("cmd.exe".into()));
+        assert_eq!(process_image_name(pid), None);
     }
 
     #[test]
