@@ -17,6 +17,13 @@ migration the daemons started. Design: [`notes/config-redesign.md`](../notes/con
   (`netboot`, `serial[]`, `power`, `video`, `hid`, `usb`, `adb`) with per-channel
   host binding. Edited via `toml_edit` (comments survive); validated on load and
   before every save. Legacy `~/.config/panio/targets/*.toml` is unused.
+- **`config sync`** (`labsync.rs`, #375) copies the lab from git (depth-1
+  fetch by shelling out to `git`, no new crate), validates it, and writes a
+  `<stem>.source.toml` record beside it (source, commit, blob id, fetch time).
+  The record's presence makes the lab read-only: `edit_lab`, `cmd_init` and
+  `config_edit` call `labsync::ensure_writable` (exit 2 `usage`). A new lab
+  writer must call it too. `load_for_read` prints the stale warning (> 7
+  days); dispatch slices have no record, so remote re-execs never warn.
 - **Dispatch is per-channel**: a command re-execs over SSH on the host of the
   channel it touches, against a shipped one-target slice. Composites (`console`)
   require co-located channels.

@@ -217,6 +217,18 @@ panio configure <target> -H <name>
 it into the lab file, and commits. Do not edit the lab file silently on their
 behalf.
 
+If people or agents will run panio in a shell *on* this host (not only
+dispatched from a dev machine), give it a read-only copy of the lab from the
+repository that holds it. Run on the host, with an SSH key that can read that
+repository:
+
+```bash
+panio config sync --git <remote> --path <path/to/lab.toml>
+```
+
+Re-run `panio config sync` after the source changes; commands warn once the
+copy is a week old.
+
 You should not need `panio setup` on a seeded host. On Linux its packaged
 mode only ensures the `dialout` and `video` groups and warns if Tesseract is
 missing, and the seed already does both.

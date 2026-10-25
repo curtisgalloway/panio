@@ -269,6 +269,9 @@ channel to a remote control host (see the lab section below).
 - Inspect: `panio config show` (whole lab; `config path` prints the file,
   `config edit` opens it) / `panio target list` / `panio target show
   <name>`; `panio target set <name>` updates its `--host`/`--description`.
+- Synced lab: `panio config sync --git <remote> --path <file>` copies the lab
+  from git and makes it read-only here; bare `config sync` pulls again.
+  `config show` prints the source and commit.
 - Remove: `panio target rm <name>`, or per channel (`netboot rm`,
   `serial rm <iface> -t <name>`, `power rm`, `video rm`, `hid rm`, `usb rm`,
   `adb rm`).
@@ -1267,6 +1270,11 @@ daemons**; `panio video watch` / `video stop` and `panio serial watch` /
 the device is free just because a daemon is gone from the tracked list.
 
 ## Quick reference — gotchas
+
+- **Synced lab.** `set`/`add`/`rm` exiting 2 with "is synced … and read-only"
+  means the lab is a copy from git (`panio config sync`). Don't `--detach` or
+  `--force` to get an edit in; the change belongs in the source repository, so
+  report it. A "last synced N days ago" warning means run `panio config sync`.
 
 - **Leased target.** Exit 23 means someone holds the board or your token's
   lease ended; exit 24 means the last cleanup failed and the target is blocked
