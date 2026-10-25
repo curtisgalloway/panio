@@ -20,8 +20,35 @@ Status: investigation notes, nothing built. libphidget22 is BSD-3 licensed
 - GET_DESCRIPTOR type `0x43` returned 42 bytes: port 0 `wID` 0x01A
   (REL1100), firmware version 130 (the `_120` failsafe + frequency variant);
   ports 1-5 empty.
-- No relay command was sent. The open questions below still need a write
-  test.
+
+## Write tests (2026-10-25, macOS, libusb via pyusb)
+
+Ground truth was a Bus Pirate 5 on channel 0's output: IO0 to the output
+terminal with its 10k pull-up to 3.3 V, GND to a REL1100 ground terminal.
+About 3.2 V means open (off), 0.0 V means conducting (on). The REL1100 has
+**no indicator LEDs**, so it cannot be checked by eye or camera.
+
+| Test | Result |
+|---|---|
+| Bare SETDUTYCYCLE (one 8-byte bulk OUT, no open reset, port mode, RESET or ENABLE) | switches both ways; ACK `0xE0` |
+| Same, sent to a freshly rebooted module (hub port power off/on) | works; **no handshake is needed** |
+| Module reboot (PORTPOWER `0x43` off, then on) | relay comes back **off**; port reads `wID` 0 while unpowered |
+| Process exit / interface release | state **holds** |
+| GPP open reset + close reset (`41 04 2000`, `41 04 2100`) | state **holds** |
+| RESET (`0xFA`) then bare ON | works (RESET does not disable the channel) |
+| Write to an empty hub port | status `0xE9` NOTATTACHED |
+| Starting counter nibble 0 repeated across processes, or 9 | ACKed; the hub does not check the nibble |
+
+Consequences for a panio helper:
+
+- A **one-shot, stateless** hook helper works: write one packet, wait for
+  its ACK on EP 0x81, exit. No daemon is needed, and the library's
+  close-time RESET (which turns relays off) is simply never sent.
+- **The ACK only proves the module is attached.** There is no state
+  read-back in the protocol, so `state` cannot be answered from hardware.
+  It is write-only, like `dsdble`.
+- A cold `cycle` via PORTPOWER off/on also turns every relay on that
+  module off; use per-channel SETDUTYCYCLE instead.
 
 Paths are relative to `libphidget22-1.26.20260828/src`. All multi-byte VINT payload
 fields are **big-endian** (`pack16`, util/packing.c:71-74). The USB descriptor structs
