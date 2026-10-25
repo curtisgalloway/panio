@@ -177,7 +177,7 @@ feeds needs re-reading before `--update` re-pins it.
 | `Makefile` | b85a5bb5d00a | Project: helpers; Channels: source |
 | `cli/src/setup.rs` | ed61544d43f8 | Channels: source |
 | `cli/src/skills.rs` | 0cf3c3778373 | Smoke contract S2; Channels: homebrew, windows |
-| `cli/src/daemons.rs` | 3ff6d04c027d | Smoke contract S3 |
+| `cli/src/daemons.rs` | 863b5e59da06 | Smoke contract S3 |
 | `scripts/ci-coverage-check.sh` | 14c39a57f1c7 | Project: helpers |
 | `scripts/sync-brik.sh` | 1920fb8f6241 | Channels: windows |
 | `README.md` | 31eed0421c0d | Channels: source; Publish: re-verify apt |
