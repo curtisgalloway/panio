@@ -444,9 +444,10 @@ enum ConfigCmd {
     Path,
     /// Open the raw lab file in $EDITOR.
     Edit,
-    /// Pull the lab file from a git repository; the local copy becomes read-only.
+    /// Pull the lab file from git or an HTTPS URL; the local copy becomes read-only.
     ///
-    /// The first run names the source; later runs re-pull from it. Commands
+    /// The first run names the source (`--git` + `--path`, or `--url`); later
+    /// runs re-pull from it. Commands
     /// never fetch on their own: run this (by hand or from a timer) to pick up
     /// changes. A copy more than 7 days old prints a warning on every command.
     /// The fetched file is validated first, so a bad push leaves the local lab
@@ -462,12 +463,25 @@ enum ConfigCmd {
         /// Branch, tag or commit to read (default: the remote's default branch).
         #[arg(long = "ref", value_name = "REF", requires = "git")]
         git_ref: Option<String>,
+        /// HTTPS URL of the lab file (plain http:// only to a loopback
+        /// address). Sent with `Authorization: Bearer <token>` when a token is
+        /// set; recorded for later runs.
+        #[arg(long, conflicts_with_all = ["git", "path", "git_ref"])]
+        url: Option<String>,
+        /// File holding the bearer token for --url. The path is recorded, not
+        /// the token. $PANIO_LAB_TOKEN, when set, takes precedence.
+        #[arg(long, requires = "url")]
+        token_file: Option<PathBuf>,
+        /// Command that prints the bearer token for --url (run with `sh -c`,
+        /// 30 s limit), such as `op read …`. The command is recorded, not the token.
+        #[arg(long, requires = "url")]
+        token_command: Option<String>,
         /// Replace a lab that was edited locally since the last sync, or one
         /// that was never synced.
         #[arg(long)]
         force: bool,
         /// Stop syncing: keep the lab as it is and make it locally editable again.
-        #[arg(long, conflicts_with_all = ["git", "path", "git_ref", "force"])]
+        #[arg(long, conflicts_with_all = ["git", "path", "git_ref", "url", "force"])]
         detach: bool,
     },
 }
@@ -1771,9 +1785,23 @@ fn run(cli: Cli) -> Result<()> {
                 git,
                 path,
                 git_ref,
+                url,
+                token_file,
+                token_command,
                 force,
                 detach,
-            } => config_sync(lab_flag, git, path, git_ref, force, detach),
+            } => {
+                let source = match (git.zip(path), url) {
+                    (Some((git, path)), _) => Some(labsync::Source::Git { git, path, git_ref }),
+                    (None, Some(url)) => Some(labsync::Source::Https {
+                        url,
+                        token_file,
+                        token_command,
+                    }),
+                    (None, None) => None,
+                };
+                config_sync(lab_flag, source, force, detach)
+            }
         },
         Command::Host { cmd } => host_cmd(lab_flag, cmd),
         Command::Target { cmd } => target_cmd(lab_flag, cmd),
@@ -3196,9 +3224,7 @@ fn config_edit(lab_flag: Option<&str>) -> Result<()> {
 
 fn config_sync(
     lab_flag: Option<&str>,
-    git: Option<String>,
-    path: Option<String>,
-    git_ref: Option<String>,
+    source: Option<labsync::Source>,
     force: bool,
     detach: bool,
 ) -> Result<()> {
@@ -3214,20 +3240,13 @@ fn config_sync(
         }
         return Ok(());
     }
-    let source = git
-        .zip(path)
-        .map(|(git, path)| labsync::Source { git, path, git_ref });
     match labsync::sync(&lab, source, force)? {
-        labsync::Outcome::Updated { commit } => println!(
-            "Synced {} from commit {}.",
-            lab.display(),
-            labsync::short(&commit)
-        ),
-        labsync::Outcome::Unchanged { commit } => println!(
-            "{} is up to date (commit {}).",
-            lab.display(),
-            labsync::short(&commit)
-        ),
+        labsync::Outcome::Updated { label } => {
+            println!("Synced {} ({label}).", lab.display())
+        }
+        labsync::Outcome::Unchanged { label } => {
+            println!("{} is up to date ({label}).", lab.display())
+        }
     }
     Ok(())
 }
