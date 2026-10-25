@@ -63,7 +63,8 @@ hdmicap/         Rust crate: warm-stream HDMI capture daemon
     server.rs    axum: GET / (dashboard; CSP frame-ancestors 'none'), /status
                  (adds `rfb_clients`, `rfb_input`), /snapshot, /preview, /ocr,
                  /devices, POST /power-cycle, GET /rfb, GET /novnc.js and
-                 /xterm.* assets (the only token-exempt routes; `PUBLIC_ASSETS`).
+                 /xterm.* assets (the only token-exempt routes; `PUBLIC_ASSETS`), POST /ticket and
+                 /proxy/* (session.rs, proxy.rs).
                  /snapshot matches the inner Result of `rx.changed()`, not just
                  the outer timeout: a dropped capture-thread Sender otherwise
                  spins at 100% CPU until the deadline instead of 503 "capture
@@ -89,6 +90,23 @@ hdmicap/         Rust crate: warm-stream HDMI capture daemon
                  /devices runs capture::enumerate() on spawn_blocking
     auth.rs      token + loopback Host/Origin layer (byte-identical in
                  serialcap/hidrig/ch9329)
+    session.rs   dashboard tickets: `POST /ticket` (bearer only) mints a
+                 single-use ticket (120 s); `GET /?ticket=` consumes it, sets
+                 an HttpOnly SameSite=Strict cookie `panio_hdmicap_<port>`
+                 (port from Host: two daemons on 127.0.0.1 share one cookie
+                 jar) and 303s to the URL without it. Middleware OUTSIDE
+                 auth.rs: a good ticket/cookie becomes `Authorization: Bearer`
+                 and auth.rs judges as usual, so auth.rs stays byte-identical.
+                 Cookie counts only same-origin (Origin == http(s)://Host;
+                 non-GET must send Origin): SameSite treats every loopback port
+                 as one site. In-memory: a daemon restart ends every session
+    proxy.rs     /proxy/serial/stream (WS, `interface` only passed on),
+                 /proxy/serial/interfaces, /proxy/hid (WS) to serialcap and the
+                 hid daemon. Discovery files from env HDMICAP_SERIAL_DISCOVERY
+                 (always set by `video watch`) and HDMICAP_HID_DISCOVERY, re-read
+                 per request; upstream connect first (502 if down), then
+                 upgrade; text/binary only cross. `upstream_ws` is shared with
+                 hid_link.rs
     daemon.rs    advisory lock, discovery file (pid, port, token; owner-only),
                  tokio runtime, graceful shutdown. Shutdown removes daemon.json
                  only, NOT the lock file, which stays flock'd until the process
@@ -105,7 +123,7 @@ hdmicap/         Rust crate: warm-stream HDMI capture daemon
 
 `GET /` is a two-pane page: noVNC view of `GET /rfb` on top, xterm.js terminal below. A **video VNC | MJPEG** toggle is stored in `localStorage` as `panio-video-mode`; MJPEG is also the fallback when `/rfb` cannot connect, and the Capture-input overlay exists only in MJPEG mode. xterm.js and noVNC are vendored (no CDN) so it works on an isolated lab network.
 
-The terminal opens a WebSocket to **serialcap** (separate daemon and port; hdmicap only references it by URL, keeping the subsystems decoupled). Default `ws://<host>:8724/stream`; override with `?serialws=<url>` (or `?serial=<port>`, which cannot carry a token). `panio console` passes `?serialws=` (serialcap's `/stream` with its own `?token=` percent-encoded inside) locally and through the tunnel, plus hdmicap's token as `?token=`. The page refuses a non-loopback URL.
+The terminal reaches **serialcap** through hdmicap's proxy (`proxy.rs`) when the page has `?serial=proxy`, which is what `panio console` passes (with `?ticket=`, and `?hid=proxy` for KVM input), locally and through the one tunnel; the page then never holds another daemon's token. Hand-opened forms still work: `?serialws=<url>` (serialcap's `/stream`, its own `?token=` inside) or `?serial=<port>` (no token); default `ws://<host>:8724/stream`. The page refuses a non-loopback URL. Tests in `proxy.rs` run the real router against a fake upstream on real sockets: use `#[tokio::test(flavor = "multi_thread")]` there, since blocking `ureq` calls on the default single-thread test runtime starve the in-process server and hang.
 
 **Multi-pane serial:** the page fetches serialcap's `GET /interfaces` and calls `buildPanes(names)`. One interface: a single terminal, status in the top bar. Several: one `.serial-pane` div each, side by side in bottom mode or stacked in right-panel mode; all fits are in `allFits[]` so resize and layout toggles re-fit every terminal. `?interface=<name>` skips the fetch and pins single-pane mode.
 

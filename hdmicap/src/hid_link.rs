@@ -33,13 +33,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result};
 use futures_util::{SinkExt, StreamExt};
-use tokio::net::TcpStream;
 use tokio::sync::mpsc;
-use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
-use tokio_tungstenite::WebSocketStream;
 use tracing::debug;
 
 /// Env var naming the target's hid daemon discovery file (`daemon.json`).
@@ -95,24 +92,12 @@ impl HidLink {
     }
 }
 
-type Ws = WebSocketStream<TcpStream>;
+use crate::proxy::Ws;
 
 async fn connect(discovery: &Path) -> Result<Ws> {
-    let (port, token) = crate::rfb::read_discovery(discovery)?;
-    let url = format!("ws://127.0.0.1:{port}/hid");
-    let mut req = url.as_str().into_client_request()?;
-    if let Some(t) = token {
-        req.headers_mut()
-            .insert("Authorization", format!("Bearer {t}").parse()?);
-    }
-    let tcp = TcpStream::connect(("127.0.0.1", port))
+    crate::proxy::upstream_ws(discovery, "/hid")
         .await
-        .with_context(|| format!("connecting to the hid daemon on port {port}"))?;
-    let _ = tcp.set_nodelay(true);
-    let (ws, _) = tokio_tungstenite::client_async(req, tcp)
-        .await
-        .map_err(|e| anyhow!("hid daemon websocket handshake: {e}"))?;
-    Ok(ws)
+        .context("hid daemon")
 }
 
 async fn run(discovery: PathBuf, mut rx: mpsc::Receiver<Item>) {

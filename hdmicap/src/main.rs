@@ -39,9 +39,11 @@ mod pixel;
 // may not use every primitive in it.
 #[allow(dead_code)]
 mod platform;
+mod proxy;
 mod rfb;
 mod rfb_serve;
 mod server;
+mod session;
 mod zrle;
 
 use std::io::{Read, Write};

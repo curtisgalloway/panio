@@ -151,7 +151,9 @@ pub fn run(device: DeviceSpec, port: u16, change_threshold: u8) -> Result<()> {
             AppState::new(frames)
                 .with_demand(demand)
                 .with_rfb(&name, hid)
-                .with_change_threshold(change_threshold),
+                .with_change_threshold(change_threshold)
+                .with_sessions(crate::session::Sessions::new(token.clone()))
+                .with_upstreams(crate::proxy::Upstreams::from_env()),
             crate::auth::Auth::new(token, server::PUBLIC_ASSETS),
         )
         .layer(axum::Extension(shutdown.clone()));

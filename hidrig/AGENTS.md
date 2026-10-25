@@ -98,7 +98,7 @@ This file holds the internals of hidrig/, moved out of the root AGENTS.md to kee
 
 The control link has one owner, so KVM streaming and CLI injection cannot both open it. `hidrig serve` owns the link and re-exposes the vocabulary over `GET /hid` (WebSocket) and `POST /send`. Every command, from a browser, `panio hid send` or a script, goes through the one `mpsc` queue in `uart.rs`, one in flight; that single queue makes events intermix correctly.
 
-- `panio console` starts the daemon when the target has a `hid` channel (local `?hid=PORT`; remote an SSH-tunnelled `?hidws=` URL).
+- `panio console` starts the daemon when the target has a `hid` channel ; the page reaches it through hdmicap's `/proxy/hid` (`?hid=proxy`), locally and through the one SSH tunnel to hdmicap.
 - In the default noVNC view, key and pointer events reach this daemon through hdmicap (`/rfb` -> hid_link.rs), not from the page. `video watch`, `console` and `daemons restart` start the local hid daemon for every video device (only `rfb+hid:` errors if it will not start), so starting video on a USB-capture target with a hid channel also makes the hid daemon own the injector.
 - In MJPEG mode the `⌨ Capture input` overlay button toggles capture (no click-to-grab, no host-key release); engaged, the page streams `down`/`up`/`moveabs`/`scroll`. The mouse is absolute, so the cursor follows the pointer; the local cursor stays visible as a crosshair (no Pointer Lock, deliberately). Mouse listeners live on the `<img>` so overlay buttons never inject; window blur releases.
 - panio finds the daemon by channel name (`daemons::daemon_port("hid")`), staying agnostic to the helper.

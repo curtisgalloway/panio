@@ -326,8 +326,10 @@ panio console [-i <interface>] # open in browser (auto-starts both)
 - **Slow clients.** A lagging client loses its own oldest output, never the
   capture log or other clients. The gap is marked:
   `── serial client lagged, dropped N chunks [HH:MM:SS UTC] ──`.
-- **Authentication.** `panio console` passes serialcap's token in the
-  `?serialws=` URL. serialcap's CORS header allows only that loopback origin.
+- **Authentication.** The dashboard reaches serialcap through hdmicap's
+  `/proxy/serial/*` routes, which send serialcap's token as a bearer header;
+  the page never sees it. serialcap's CORS header allows only loopback
+  origins.
 
 See [dashboard.md](dashboard.md) for layout and URL parameters.
 
