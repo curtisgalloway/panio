@@ -27,6 +27,7 @@ mod dispatch;
 mod doctor;
 mod error;
 mod labfile;
+mod labsync;
 mod lease;
 mod lease_cmd;
 mod mcp;
@@ -443,6 +444,32 @@ enum ConfigCmd {
     Path,
     /// Open the raw lab file in $EDITOR.
     Edit,
+    /// Pull the lab file from a git repository; the local copy becomes read-only.
+    ///
+    /// The first run names the source; later runs re-pull from it. Commands
+    /// never fetch on their own: run this (by hand or from a timer) to pick up
+    /// changes. A copy more than 7 days old prints a warning on every command.
+    /// The fetched file is validated first, so a bad push leaves the local lab
+    /// in place.
+    Sync {
+        /// Git remote holding the lab (anything `git fetch` accepts: an SSH or
+        /// HTTPS URL, or a local path). Recorded for later runs.
+        #[arg(long, requires = "path")]
+        git: Option<String>,
+        /// Path of the lab file inside that repository.
+        #[arg(long, requires = "git")]
+        path: Option<String>,
+        /// Branch, tag or commit to read (default: the remote's default branch).
+        #[arg(long = "ref", value_name = "REF", requires = "git")]
+        git_ref: Option<String>,
+        /// Replace a lab that was edited locally since the last sync, or one
+        /// that was never synced.
+        #[arg(long)]
+        force: bool,
+        /// Stop syncing: keep the lab as it is and make it locally editable again.
+        #[arg(long, conflicts_with_all = ["git", "path", "git_ref", "force"])]
+        detach: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1740,6 +1767,13 @@ fn run(cli: Cli) -> Result<()> {
             ConfigCmd::Show => config_show(lab_flag),
             ConfigCmd::Path => config_path(lab_flag),
             ConfigCmd::Edit => config_edit(lab_flag),
+            ConfigCmd::Sync {
+                git,
+                path,
+                git_ref,
+                force,
+                detach,
+            } => config_sync(lab_flag, git, path, git_ref, force, detach),
         },
         Command::Host { cmd } => host_cmd(lab_flag, cmd),
         Command::Target { cmd } => target_cmd(lab_flag, cmd),
@@ -3041,7 +3075,16 @@ fn resolve_single_target(lab: &Lab, name: Option<&str>) -> Result<String> {
 
 fn cmd_doctor(lab_flag: Option<&str>, target: Option<&str>, host: Option<&str>) -> Result<()> {
     let lab = load_for_read(lab_flag)?;
-    let problems = doctor::run(&lab, target, host);
+    let mut problems = 0;
+    if let Some(path) = model::resolve_lab_path(lab_flag) {
+        if let Some(line) = labsync::describe(&path)? {
+            println!("Lab {}: {line}", path.display());
+            if labsync::edited_locally(&path) {
+                problems += 1;
+            }
+        }
+    }
+    problems += doctor::run(&lab, target, host);
     if problems > 0 {
         eprintln!("{problems} problem(s) found.");
         std::process::exit(1);
@@ -3058,6 +3101,7 @@ fn load_for_read(lab_flag: Option<&str>) -> Result<Lab> {
              with --lab / PANIO_LAB.",
         )
     })?;
+    labsync::warn_if_stale(&path);
     Ok(model::load(&path)?)
 }
 
@@ -3082,6 +3126,7 @@ where
     F: FnOnce(&mut LabFile) -> Result<(), model::LabError>,
 {
     let path = model::resolve_lab_path(lab_flag).unwrap_or_else(model::default_lab_path);
+    labsync::ensure_writable(&path)?;
     let created = !path.exists();
     let mut lf = if created {
         LabFile::create(&path)
@@ -3106,6 +3151,7 @@ fn cmd_init(lab_flag: Option<&str>, path_opt: Option<&str>) -> Result<()> {
     if path.exists() {
         bail!("Lab file already exists: {}", path.display());
     }
+    labsync::ensure_writable(&path)?;
     LabFile::create(&path).save()?;
     println!("Created lab: {}", path.display());
     println!("  Add a host:   panio host add <name> --ssh user@host");
@@ -3127,6 +3173,7 @@ fn config_path(lab_flag: Option<&str>) -> Result<()> {
 fn config_edit(lab_flag: Option<&str>) -> Result<()> {
     let path = model::resolve_lab_path(lab_flag)
         .ok_or_else(|| anyhow!("No lab to edit. Create one with `panio init`."))?;
+    labsync::ensure_writable(&path)?;
     let editor = std::env::var("EDITOR")
         .or_else(|_| std::env::var("VISUAL"))
         .unwrap_or_else(|_| "vi".to_string());
@@ -3147,10 +3194,51 @@ fn config_edit(lab_flag: Option<&str>) -> Result<()> {
     std::process::exit(error::shell_code(status));
 }
 
+fn config_sync(
+    lab_flag: Option<&str>,
+    git: Option<String>,
+    path: Option<String>,
+    git_ref: Option<String>,
+    force: bool,
+    detach: bool,
+) -> Result<()> {
+    let lab = model::resolve_lab_path(lab_flag).unwrap_or_else(model::default_lab_path);
+    if detach {
+        if labsync::detach(&lab)? {
+            println!(
+                "Stopped syncing {}; it is locally editable now.",
+                lab.display()
+            );
+        } else {
+            println!("{} was not synced; nothing to do.", lab.display());
+        }
+        return Ok(());
+    }
+    let source = git
+        .zip(path)
+        .map(|(git, path)| labsync::Source { git, path, git_ref });
+    match labsync::sync(&lab, source, force)? {
+        labsync::Outcome::Updated { commit } => println!(
+            "Synced {} from commit {}.",
+            lab.display(),
+            labsync::short(&commit)
+        ),
+        labsync::Outcome::Unchanged { commit } => println!(
+            "{} is up to date (commit {}).",
+            lab.display(),
+            labsync::short(&commit)
+        ),
+    }
+    Ok(())
+}
+
 fn config_show(lab_flag: Option<&str>) -> Result<()> {
     let lab = load_for_read(lab_flag)?;
     let path = model::resolve_lab_path(lab_flag).unwrap_or_default();
     println!("Lab {}", path.display());
+    if let Some(line) = labsync::describe(&path)? {
+        println!("  {line}");
+    }
 
     println!("  Hosts");
     if lab.hosts.is_empty() {

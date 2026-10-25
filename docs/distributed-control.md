@@ -113,6 +113,41 @@ device = "0x8300000534d2109"      # USB Video — stable, port-derived id
   none exists it errors and points at `panio init`. Old per-target
   `~/.config/panio/targets/*.toml` files are not read.
 
+### One lab on every control host (`config sync`)
+
+Commands dispatched from your dev machine need no lab on the control host:
+dispatch ships a one-target slice. A shell or agent session opened *on* a
+control host does need one. `panio config sync` gives it a copy of the lab
+from the git repository where you keep it, and keeps that copy read-only:
+
+```bash
+panio config sync --git git@git.example.com:me/lab-config.git --path panio/lab.toml
+panio config sync            # later: pull again from the recorded source
+```
+
+- **Git does the fetch** (depth 1, into a throwaway repository), so an SSH
+  remote uses the host's own keys and needs no token. `--git` takes anything
+  `git fetch` does; `--ref` picks a branch, tag or commit (default: the
+  remote's default branch).
+- **Commands never fetch.** Run `config sync` by hand or from a timer. Once the
+  copy is more than 7 days old, every command prints a warning on stderr.
+- **The fetched file is validated before it replaces anything**, with the same
+  rules as a CLI save. A bad push fails the sync with exit 3 and leaves the
+  working copy in place.
+- **A synced lab is read-only.** `set`/`add`/`rm`, `config edit` and `init`
+  refuse with exit 2 and point at the source. Edit the lab where it lives,
+  commit, then sync. `config sync --detach` stops syncing and makes the file
+  editable again.
+- **Hand edits are not overwritten silently.** If the file changed since the
+  last sync, or it existed before the first sync with different contents,
+  sync refuses; `--force` replaces it.
+- **The sync record** sits beside the lab (`lab.toml` → `lab.source.toml`)
+  and holds the source, the commit, the file's git blob id and the fetch time.
+  `config show` and `doctor` print it. `doctor` counts a locally edited copy
+  as a problem.
+- A lab that is a **symlink** (into a checkout on the host) already follows
+  that file; sync refuses it rather than writing through the link.
+
 ## Transport (the "Fork B" model)
 
 The transport uses SSH only. The subsystem daemons (`serialcap`, `hdmicap`)
@@ -311,6 +346,10 @@ file plus SSH. See [related work](dev/ci-integration/related-work.md).
 - Lab lookup order: `--lab` flag, then `PANIO_LAB`, then
   `~/.config/panio/lab.toml`. The legacy `~/.config/panio/targets/*.toml`
   files are never read.
+- Getting the lab onto a control host for local sessions is an explicit
+  `config sync` from git, not a remote source read on every command: the
+  command path never needs the network, and a read-only copy cannot drift
+  without `doctor` saying so (#375).
 - The per-command config slice travels as a temp file copied over SSH,
   re-invoking with `--lab <path>` (`cli/src/dispatch.rs`).
 - `setup --host bench1` re-execs over SSH.
