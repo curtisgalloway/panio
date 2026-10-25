@@ -481,9 +481,8 @@ panio video stop [target]           # stop the daemon (on the target's host)
 - **Opening a browser is a human's job, not yours.** `panio video preview
   --open` only works on a machine with a desktop session, and it is refused
   outright when the video channel is on another host. On a headless control
-  host — where you usually are — it writes the URL to a `0600` file and prints
-  that path instead of opening anything, so it is not a way to get a browser
-  open. Hand the human `panio console <target>` and let them run it.
+  host — where you usually are — it opens nothing and prints a single-use
+  link, so it is not a way to get a browser open. Hand the human `panio console <target>` and let them run it.
 - The `device` may be a **stable id** (preferred — `video devices` prints
   `id=…`: the AVFoundation uniqueID on macOS, the `/dev/v4l/by-path` symlink on
   Linux), a name substring, or a `/dev/video*` path. Ids are derived from USB
@@ -1328,17 +1327,17 @@ the device is free just because a daemon is gone from the tracked list.
   **before** the helper name; flags after the name all go to the helper.
 - `panio console` auto-starts the video daemon, and the serial daemon when
   the target has a serial channel (a KVM-only target opens as video + input,
-  with no terminal pane), if they aren't running, and hands
-  the browser a URL carrying every daemon's token (`?token=`,
-  `?serialws=…token=…`, `?hidws=…`); the daemons answer nothing without it.
-  What `console` *prints* is the token-free address, because that line lands in
-  your transcript — so do not paste it into a browser and expect the page to
-  work. If no browser could be launched, `console` writes the full URL to a
-  `0600` file and prints that path — never the URL itself. Inside an SSH
-  session it opens no browser and prints an `ssh -N -L …` forwarding command
-  for the human to run on their own machine. **Never pass `--print-url`**: it
-  prints the token-bearing URL into your transcript; it is for a human at a
-  terminal. A daemon left over from an older panio has no token —
+  with no terminal pane), if they aren't running, and opens the browser on a
+  link carrying a **single-use ticket** (expires after 2 minutes), never a
+  daemon token. It prints that link; once the browser has used it, or it has
+  expired, the link opens nothing ("expired or was already used"), so to hand
+  the human a working link, rerun `panio console <target>` and pass on the
+  fresh one. Inside an SSH session it opens no browser and prints an `ssh -N
+  -L …` forwarding command (one port) and the link, for the human to run on
+  their own machine. If `console` says the video daemon "predates single-use
+  dashboard links", or that the serial terminal or KVM is disabled because the
+  daemon was started without it, run `panio video stop <target>` and rerun
+  `console`. A daemon left over from an older panio may have no token at all —
   a named `panio daemons restart` (unknown identity is excluded from `--stale`).
 - Netboot requires passwordless `sudo` (`ip` on Linux, `ifconfig` on macOS).
 - `netif down-hard` alone does not drop a USB adapter's carrier. If the target

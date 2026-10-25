@@ -1194,8 +1194,7 @@ pub fn untracked_on_devices(name: &str, devices: &[String]) -> Vec<Untracked> {
 /// Percent-encode a query-parameter value: everything but RFC 3986's
 /// unreserved characters. Used for every value spliced into a daemon URL or
 /// API path that didn't come from this process's own fixed vocabulary —
-/// interface names (user-chosen, land in `?interface=`), a nested URL
-/// (`?serialws=ws://…/stream?token=…`, which has to survive as one value) —
+/// interface names (user-chosen, land in `?interface=`), a dashboard ticket —
 /// so a name containing `&`, `=`, `#`, or a space can't reshape the query
 /// string it's placed into.
 pub fn query_escape(s: &str) -> String {
@@ -1279,11 +1278,6 @@ impl Endpoint {
     /// The URL a human opens in a browser (the dashboard is `GET /`).
     pub fn http_url(&self, path: &str) -> String {
         self.url_with_token("http", path)
-    }
-
-    /// The URL the dashboard page connects to (`/stream`, `/hid`).
-    pub fn ws_url(&self, path: &str) -> String {
-        self.url_with_token("ws", path)
     }
 }
 
@@ -2069,14 +2063,14 @@ mod tests {
         assert_eq!(ep.base_url(), "http://127.0.0.1:5555");
         assert_eq!(ep.http_url("/"), "http://127.0.0.1:5555/?token=t0k");
         assert_eq!(
-            ep.ws_url("/stream?interface=console"),
-            "ws://127.0.0.1:5555/stream?interface=console&token=t0k"
+            ep.http_url("/?interface=console"),
+            "http://127.0.0.1:5555/?interface=console&token=t0k"
         );
         let old = Endpoint {
             token: None,
             ..ep.clone()
         };
-        assert_eq!(old.ws_url("/hid"), "ws://127.0.0.1:5555/hid");
+        assert_eq!(old.http_url("/"), "http://127.0.0.1:5555/");
     }
 
     /// The liveness rule, executed against a real file: the current process's

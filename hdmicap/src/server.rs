@@ -16,9 +16,11 @@
 //! latest FrameState from their `watch::Receiver`. PNG encoding is lazy, here.
 //!
 //! Every route but the vendored xterm.js assets sits behind the auth layer
-//! (`auth.rs`): loopback Host and Origin, and the daemon token. The dashboard
-//! page reads the token from its own URL and appends it to every request it
-//! makes back here.
+//! (`auth.rs`): loopback Host and Origin, and the daemon token. A page opened
+//! by `panio console` authenticates with a session cookie, which `session.rs`
+//! turns into the token before the auth layer sees the request; one opened
+//! from `video preview` reads the token from its own URL and appends it to
+//! every request it makes back here.
 
 use std::io::Cursor;
 use std::process::Stdio;
@@ -80,6 +82,11 @@ pub struct AppState {
     pub(crate) rfb: crate::rfb_serve::RfbShared,
     /// The daemon's `--change-threshold`, reported by `/status`.
     change_threshold: u8,
+    /// Dashboard tickets and cookie sessions (`session.rs`).
+    pub(crate) sessions: Arc<crate::session::Sessions>,
+    /// The serial and hid daemons the dashboard reaches through this one
+    /// (`proxy.rs`).
+    pub(crate) upstreams: crate::proxy::Upstreams,
 }
 
 impl AppState {
@@ -91,7 +98,24 @@ impl AppState {
             demand: Demand::new(),
             rfb: crate::rfb_serve::RfbShared::new(),
             change_threshold: crate::frame::DEFAULT_CHANGE_THRESHOLD,
+            // No token: no cookie or ticket authorizes anything until
+            // `with_sessions` names the daemon's real one.
+            sessions: crate::session::Sessions::new(String::new()),
+            upstreams: crate::proxy::Upstreams::default(),
         }
+    }
+
+    /// The daemon's dashboard sessions; they must hold the same token as
+    /// the auth layer.
+    pub fn with_sessions(mut self, sessions: Arc<crate::session::Sessions>) -> Self {
+        self.sessions = sessions;
+        self
+    }
+
+    /// The other daemons to proxy for the dashboard.
+    pub fn with_upstreams(mut self, upstreams: crate::proxy::Upstreams) -> Self {
+        self.upstreams = upstreams;
+        self
     }
 
     /// Record the threshold the capture thread was started with.
@@ -143,8 +167,17 @@ pub const PUBLIC_ASSETS: &[&str] = &[
 ];
 
 pub fn router(state: AppState, auth: crate::auth::Auth) -> Router {
+    let sessions = state.sessions.clone();
+    let proxied = state.upstreams.proxied();
     Router::new()
         .route("/", get(index))
+        .route("/ticket", post(crate::session::mint_handler))
+        .route("/proxy/serial/stream", get(crate::proxy::serial_stream))
+        .route(
+            "/proxy/serial/interfaces",
+            get(crate::proxy::serial_interfaces),
+        )
+        .route("/proxy/hid", get(crate::proxy::hid))
         .route("/stop", post(stop))
         .route("/status", get(status))
         .route("/snapshot", get(snapshot))
@@ -163,6 +196,14 @@ pub fn router(state: AppState, auth: crate::auth::Auth) -> Router {
         // Vendored noVNC (one bundled ES module) for the video pane.
         .route("/novnc.js", get(novnc_js))
         .layer(middleware::from_fn_with_state(auth, crate::auth::require))
+        // Outside the auth layer, so it runs first: a good ticket or session
+        // cookie becomes the bearer token the auth layer then checks.
+        .layer(middleware::from_fn_with_state(
+            sessions.clone(),
+            crate::session::layer,
+        ))
+        .layer(Extension(sessions))
+        .layer(Extension(proxied))
         .with_state(state)
 }
 

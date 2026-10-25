@@ -363,8 +363,8 @@ Drives targets on **remote control hosts** over SSH only, with no coordinator da
   `run`/`forward`/`run_interactive`).
 - Commands that touch a remote channel **re-exec** on its host: `cli/src/dispatch.rs` ships the
   relevant lab slice as a temp file and re-invokes with `--lab`.
-- `console` **tunnels** the daemon ports back and stitches them together with the dashboard's
-  `?serialws=` override.
+- `console` **tunnels** the video daemon's port back; the page reaches serialcap and the hid
+  daemon through hdmicap's proxy, so one tunnel serves the whole dashboard.
 - `setup --host` provisions a host; `discover`/`configure` propose a lab block for review.
 - A target's channels may span hosts; only `console` requires them co-located.
 
@@ -383,21 +383,27 @@ Drives targets on **remote control hosts** over SSH only, with no coordinator da
 
 ## 7. Cross-subsystem coupling (the dashboard)
 
-hdmicap **serves the page** but references serialcap **only by URL**:
+hdmicap **serves the page** and **proxies** the other daemons it needs (#293):
 
-- `panio console` passes a complete loopback WebSocket URL, with serialcap's own token inside,
-  as `?serialws=` (for a remote target, the tunnel's local port). hdmicap's token rides as
-  `?token=`.
-- The page refuses a non-loopback URL. Its built-in `ws://<host>:8724/stream` fallback applies
-  only when the page is opened by hand.
-- The page fetches serialcap's `/interfaces` and builds one xterm.js terminal per interface.
+- `panio console` mints a single-use ticket (`POST /ticket`, ~2 min) and opens
+  `/?ticket=…&serial=proxy&hid=proxy`. hdmicap trades the ticket for an HttpOnly,
+  `SameSite=Strict` session cookie and redirects to the URL without it (`hdmicap/src/session.rs`).
+  The cookie stands in for the token only on same-origin requests.
+- The terminal and KVM input go to hdmicap's `/proxy/serial/stream`, `/proxy/serial/interfaces`
+  and `/proxy/hid` (`hdmicap/src/proxy.rs`), which read serialcap's and the hid daemon's
+  discovery files (paths from `HDMICAP_SERIAL_DISCOVERY` / `HDMICAP_HID_DISCOVERY`, set by
+  `video watch`) and connect over loopback with each daemon's own bearer token. The page never
+  sees another daemon's token, and a remote console needs one tunnel.
+- Hand-opened forms (`?serialws=`, `?serial=PORT`, `?hidws=`) still work; the page refuses a
+  non-loopback URL, and its `ws://<host>:8724/stream` fallback applies only with no parameters.
+- The page fetches the interface list and builds one xterm.js terminal per interface.
 
 The video pane is noVNC dialing hdmicap's own `GET /rfb`. hdmicap diffs the warm frame into
 changed 64x64 tiles and sends them as ZRLE; key and pointer events come back over the same
 socket and hdmicap forwards them to the target's hid daemon (`/hid`), found through the
 `HDMICAP_HID_DISCOVERY` discovery file the CLI sets when the target has a local `hid` channel.
-That is the one place hdmicap holds another daemon's token, read from the file, never the
-environment or a URL.
+It and the proxy are the only places hdmicap holds another daemon's token, read from the
+file on each connection, never the environment or a URL.
 
 No daemon learns another's token through the browser. xterm.js and noVNC are **vendored**, so the dashboard works on an
 isolated network. Power controls appear only when hdmicap was started with a target; their

@@ -16,33 +16,35 @@ panio console                  # open in the default browser
 and the hid daemon if the target has a `hid` channel), then opens the page.
 `panio video watch` / `panio serial watch` start them individually.
 
-**Use the URL the browser was handed**, not a bare `http://127.0.0.1:<port>/`:
-it carries each daemon's token (hdmicap's as `?token=`, the others inside
-`?serialws=`/`?hidws=`). `console` prints only the bare address, to keep tokens
-out of pasted output. If no browser launches, it writes the full URL to a
-`0600` `dashboard-url.txt` in the target's runtime dir and prints that path.
+`console` prints the link it opened. The link carries a **single-use
+ticket** that expires after 2 minutes, never a daemon token: hdmicap trades
+the ticket for an HttpOnly, `SameSite=Strict` session cookie and redirects to
+the same page without it. A link that has been used or has expired opens
+nothing ("This dashboard link has expired or was already used"), so it is safe
+in scrollback and transcripts. Rerun `panio console <target>` for a fresh one;
+the daemons are already running, so that only mints a new ticket.
+
+The terminal and the KVM input reach serialcap and the hid daemon **through
+hdmicap** (`/proxy/serial/*`, `/proxy/hid`), so the page talks to one daemon
+on one port and never sees another daemon's token. The session ends when
+hdmicap restarts; the page then reports `unauthorized` and needs a fresh link.
 
 ### Viewing from another machine over SSH
 
 When `console` runs inside an SSH session (`SSH_CONNECTION`, `SSH_CLIENT` or
 `SSH_TTY` is set), it does not launch a browser on the control host. It prints
-the command that forwards every dashboard port to your own machine, each to the
-same port number so the URL works unchanged:
+the command that forwards the dashboard's one port to your own machine, to the
+same port number so the link works unchanged, and then the link:
 
 ```text
 Running over SSH, so no browser was opened here. To view the dashboard from your own machine, run this there and keep it running:
-  ssh -N -L 41001:127.0.0.1:41001 -L 41002:127.0.0.1:41002 bench1
+  ssh -N -L 41001:127.0.0.1:41001 bench1
+Then open this link (single use; it expires in 2 minutes):
+http://127.0.0.1:41001/?ticket=…&serial=proxy&hid=proxy
 ```
 
-The daemons accept only a loopback `Host` and `Origin`, which a tunnel to
-`127.0.0.1` satisfies. The URL itself goes to the `0600` file, with an
-`ssh bench1 cat …` line to fetch it. `--print-url` prints it instead; the
-output is then a credential in your scrollback. `--open` launches a browser
-on the control host anyway.
-
-To get the URL again after the dashboard is open, rerun
-`panio console <target> --print-url`: the daemons are already running, so it
-only rebuilds the URL from their discovery files.
+hdmicap accepts only a loopback `Host` and `Origin`, which a tunnel to
+`127.0.0.1` satisfies. `--open` launches a browser on the control host anyway.
 
 The page shows one terminal pane per serialcap interface. To pin one
 interface (single-pane mode):
@@ -53,25 +55,25 @@ panio console -i bmc
 
 ### Fixed ports
 
-The daemons take a port from the OS on every start, so the dashboard's ports
-change. To reach it through a standing SSH forward instead, pin each daemon's
-port in the lab file:
+The daemons take a port from the OS on every start, so the dashboard's port
+changes. To reach it through a standing SSH forward instead, pin the video
+daemon's port in the lab file (the page reaches the others through it):
 
 ```bash
 panio video set -t target-machine --device <dev> --port 8723
-panio serial set console -t target-machine --port 8724
-panio hid set -t target-machine --cmd "<helper>" --port 8725
 ```
 
-Then, on the machine you browse from, forward them permanently in
+Then, on the machine you browse from, forward it permanently in
 `~/.ssh/config`:
 
 ```text
 Host bench1
   LocalForward 8723 127.0.0.1:8723
-  LocalForward 8724 127.0.0.1:8724
-  LocalForward 8725 127.0.0.1:8725
 ```
+
+The serial and hid daemons take `--port` too (`panio serial set console -t
+target-machine --port 8724`, `panio hid set -t target-machine --port 8725`),
+for clients that talk to them directly.
 
 serialcap is one daemon for all of a target's interfaces, so set its port on
 any one interface; interfaces naming different ports are refused. Two daemons
@@ -145,12 +147,15 @@ acts. Loading the page never powers the target (`GET /power` only reads).
 
 | Parameter | Effect |
 |---|---|
-| `?token=<token>` | hdmicap's own token; the page puts it on every request it makes back to hdmicap |
-| `?serialws=<url>` | Connect the terminal to this serialcap WebSocket URL, serialcap's `?token=` inside (percent-encoded; what `panio console` passes) |
+| `?ticket=<ticket>` | A single-use ticket from hdmicap's `POST /ticket` (what `panio console` passes); traded for a session cookie and removed from the URL by a redirect |
+| `?token=<token>` | hdmicap's own token (what `panio video preview` prints); the page puts it on every request it makes back to hdmicap |
+| `?serial=proxy` | Connect the terminal through hdmicap's `/proxy/serial/*` (what `panio console` passes) |
+| `?serialws=<url>` | Connect the terminal to this serialcap WebSocket URL, serialcap's `?token=` inside (percent-encoded) |
 | `?serial=<port>` | Connect to serialcap on this local port; no token, so only a daemon started without one accepts it |
 | `?serial=none` | No terminal pane (a target with no serial channel) |
 | `?interface=<name>` | Preselect a named serial interface |
-| `?hidws=<url>` | Enable KVM input via this hid WebSocket URL, hid's `?token=` inside (what `panio console` passes) |
+| `?hid=proxy` | Enable KVM input through hdmicap's `/proxy/hid` (what `panio console` passes) |
+| `?hidws=<url>` | Enable KVM input via this hid WebSocket URL, hid's `?token=` inside |
 | `?hid=<port>` | Enable KVM input via the hid daemon on this local port (no token, as for `?serial=`) |
 
 `serialws`/`hidws` (and URLs built from `serial`/`hid`) must be loopback
@@ -172,10 +177,20 @@ reproducibly from a pinned, checksummed release.
 
 ## Connecting the daemons
 
-`panio console` reads each daemon's discovery file (port and token) and
-passes `?serialws=ws://127.0.0.1:<port>/stream?token=…` and
-`?hidws=…/hid?token=…`; over a remote tunnel, `<port>` is the tunnel's local
-end.
+`panio video watch` starts hdmicap with the paths of the target's serialcap
+and hid discovery files (`HDMICAP_SERIAL_DISCOVERY`, `HDMICAP_HID_DISCOVERY`).
+hdmicap re-reads them on every proxied request and connects over loopback with
+each daemon's own bearer token, so a restarted serialcap or hid daemon is found
+again. `panio console` mints a ticket with `POST /ticket` (bearer token only;
+a cookie session cannot mint one) and passes `?ticket=…&serial=proxy&hid=proxy`.
+The ticket's reply also says which legs hdmicap can proxy; a video daemon
+started before the hid channel existed cannot, and `console` says to restart
+it (`panio video stop <target>`) instead of showing a pane that never connects.
+
+The session cookie stands in for the token only on a same-origin request: an
+`Origin`, when present, must name hdmicap's own host and port, and anything but
+a GET must send one. Browsers treat every port on `127.0.0.1` as the same site,
+so `SameSite` alone would let a page on another loopback port use it.
 
 The `?serial=` / `?hid=` port forms carry no token, so they work only against a
 daemon started by an older panio. With no parameters, the page falls back to

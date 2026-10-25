@@ -186,11 +186,11 @@ enum Command {
     },
     /// Open the combined video+serial dashboard, starting daemons if needed.
     ///
+    /// Prints the dashboard link: it carries a single-use ticket that expires
+    /// in 2 minutes, never a daemon token, so rerun `console` for a fresh one.
     /// Inside an SSH session (SSH_CONNECTION, SSH_CLIENT or SSH_TTY set) no
     /// browser is launched on this machine: instead it prints the `ssh -N -L`
-    /// command that forwards every dashboard port to your own machine, and
-    /// writes the token-bearing URL to a 0600 file (or prints it with
-    /// `--print-url`).
+    /// command that forwards the dashboard port to your own machine.
     Console {
         #[command(flatten)]
         target: TargetArg,
@@ -200,9 +200,9 @@ enum Command {
         /// Launch a browser on this machine even inside an SSH session.
         #[arg(long)]
         open: bool,
-        /// Print the dashboard URL, token included. Treat the output as a
-        /// credential: it lands in your terminal's scrollback.
-        #[arg(long)]
+        /// No longer needed: the link is always printed. Accepted so older
+        /// scripts keep working.
+        #[arg(long, hide = true)]
         print_url: bool,
     },
     /// Run the target's configured power-cycle command.
@@ -1545,8 +1545,8 @@ enum VideoCmd {
     ///
     /// The URL carries the daemon's token (a browser can present it no other
     /// way), so the output is a credential: paste it into a browser, not into
-    /// a log. `--open` hands it to the browser instead and prints only the
-    /// token-free address.
+    /// a log. `--open` instead opens the browser on a single-use ticket
+    /// link and prints that, which grants nothing once used.
     Preview {
         #[command(flatten)]
         target: TargetArg,
@@ -1819,12 +1819,12 @@ fn run(cli: Cli) -> Result<()> {
             target,
             interface,
             open,
-            print_url,
+            print_url: _,
         } => cmd_console(
             lab_flag,
             target.name(),
             interface.as_deref(),
-            ConsoleView { open, print_url },
+            ConsoleView { open },
         ),
         Command::PowerCycle { target, level } => {
             cmd_power_cycle(lab_flag, target.name(), level.as_deref())
@@ -4017,67 +4017,119 @@ fn dtr_opt_in_hint(target: &str, t: &model::Target, iface: Option<&str>) -> Stri
 
 // ── console (composite: video + serial dashboard) ───────────────────────────
 
-/// The other daemons the dashboard connects to, as URL query parameters. Each
-/// is a complete cross-port WebSocket URL with that daemon's own token inside
-/// (`daemons::Endpoint::ws_url`) — the local and the remote/tunnel paths look
-/// the same to the page.
+/// What the dashboard page is told about its other panes, as URL query
+/// parameters. The serial and hid legs go through the video daemon's proxy
+/// (`/proxy/serial/*`, `/proxy/hid`; #293), so nothing here names another
+/// daemon's port or carries a token.
 #[derive(Default)]
 struct DashboardLinks<'a> {
-    serial_ws: Option<&'a str>,
+    /// The terminal pane goes through the proxy. False for a target with no
+    /// serial channel at all (a KVM-only console, #223): the page then drops
+    /// its terminal pane instead of trying the hand-opened default port and
+    /// reporting a failed connection.
+    serial: bool,
     interface: Option<&'a str>,
-    hid_ws: Option<&'a str>,
-    /// The target has no serial channel at all (a KVM-only console, #223):
-    /// tells the page to drop its terminal pane instead of trying the
-    /// hand-opened default port and reporting a failed connection.
-    video_only: bool,
+    /// KVM input goes through the proxy.
+    hid: bool,
 }
 
-/// The dashboard URL: the video daemon's `GET /`, its token as `?token=` (the
-/// page reads it back and puts it on every request it makes), plus the links.
-fn dashboard_url(video: &daemons::Endpoint, links: &DashboardLinks) -> String {
-    let mut params: Vec<String> = Vec::new();
-    if let Some(t) = &video.token {
-        params.push(format!("token={}", daemons::query_escape(t)));
+/// The video daemon's answer to `POST /ticket`: a single-use dashboard ticket,
+/// and which of the other daemons it was started knowing how to reach.
+#[derive(Debug, serde::Deserialize)]
+struct Ticket {
+    ticket: String,
+    #[serde(default)]
+    expires_in: u64,
+    #[serde(default)]
+    serial: bool,
+    #[serde(default)]
+    hid: bool,
+}
+
+/// Ask the video daemon for a dashboard ticket. `where_` names the daemon in
+/// errors (" on bench1" for a remote one, else empty).
+fn mint_ticket(target: &str, where_: &str, video: &daemons::Endpoint) -> Result<Ticket> {
+    match video
+        .post("/ticket")
+        .timeout(std::time::Duration::from_secs(5))
+        .call()
+    {
+        Ok(resp) => resp
+            .into_json()
+            .map_err(|e| anyhow!("reading the video daemon's dashboard ticket: {e}")),
+        // A daemon from before #293 has no such route.
+        Err(ureq::Error::Status(404, _)) => Err(error::PanioError::new(
+            error::Kind::HelperFailed,
+            format!(
+                "the video daemon for '{target}'{where_} predates single-use dashboard \
+                 links; restart it with `panio video stop {target}` (after upgrading \
+                 panio{where_}, if it is older) and run `panio console {target}` again"
+            ),
+        )
+        .channel("video")
+        .target(target)
+        .into()),
+        Err(e) => Err(
+            error::daemon_request_failed(video::DAEMON, "hdmicap /ticket", e)
+                .target(target)
+                .into(),
+        ),
     }
-    if let Some(ws) = links.serial_ws {
-        params.push(format!("serialws={}", daemons::query_escape(ws)));
+}
+
+/// The links the page gets: what the target has, narrowed to what the video
+/// daemon can actually proxy. A daemon started before a channel existed (or
+/// before the CLI told it where that daemon lives) cannot reach it; say so
+/// rather than hand the page a pane that only ever reports failure.
+fn console_links<'a>(
+    target: &str,
+    ticket: &Ticket,
+    has_serial: bool,
+    interface: Option<&'a str>,
+    has_hid: bool,
+) -> (DashboardLinks<'a>, Vec<String>) {
+    let mut warnings = Vec::new();
+    let restart = format!("restart it with `panio video stop {target}` and run console again");
+    if has_serial && !ticket.serial {
+        warnings.push(format!(
+            "serial terminal disabled: the video daemon was started without the \
+             serial link; {restart}"
+        ));
     }
+    if has_hid && !ticket.hid {
+        warnings.push(format!(
+            "hid (KVM) disabled: the video daemon was started without the hid \
+             link; {restart}"
+        ));
+    }
+    let links = DashboardLinks {
+        serial: has_serial && ticket.serial,
+        interface,
+        hid: has_hid && ticket.hid,
+    };
+    (links, warnings)
+}
+
+/// The dashboard URL: the video daemon's `GET /` with the single-use ticket,
+/// which the daemon trades for a session cookie, plus the page's links. Once
+/// the ticket is used or expired the URL grants nothing, so it can be printed.
+fn dashboard_url(video: &daemons::Endpoint, ticket: &str, links: &DashboardLinks) -> String {
+    let mut params = vec![format!("ticket={}", daemons::query_escape(ticket))];
+    params.push(
+        if links.serial {
+            "serial=proxy"
+        } else {
+            "serial=none"
+        }
+        .to_string(),
+    );
     if let Some(i) = links.interface {
         params.push(format!("interface={}", daemons::query_escape(i)));
     }
-    if let Some(ws) = links.hid_ws {
-        params.push(format!("hidws={}", daemons::query_escape(ws)));
+    if links.hid {
+        params.push("hid=proxy".to_string());
     }
-    if links.video_only {
-        params.push("serial=none".to_string());
-    }
-    let base = video.base_url();
-    if params.is_empty() {
-        base
-    } else {
-        format!("{base}/?{}", params.join("&"))
-    }
-}
-
-/// What `console` prints once the dashboard URL is in the browser's hands.
-///
-/// The URL itself carries every running daemon's token and this line lands in
-/// transcripts, CI logs and pasted terminal output (#196), so only the
-/// token-free address is printed. `withheld` says whether there was anything
-/// to withhold: against a daemon old enough to have no token, and with no
-/// serial or hid links, `dashboard_url` returns exactly this address, and
-/// claiming a credential was held back would be false and would steer the
-/// reader away from the one address that works.
-fn console_banner(video: &daemons::Endpoint, withheld: bool) -> String {
-    let base = video.base_url();
-    if withheld {
-        format!(
-            "Opened the dashboard in the browser. Its URL carries the daemons' tokens, \
-             so it is not printed here; the page is at {base}."
-        )
-    } else {
-        format!("Opened {base} in the browser.")
-    }
+    format!("{}/?{}", video.base_url(), params.join("&"))
 }
 
 /// `video show`'s daemon line: the token-free address, plus whatever
@@ -4092,55 +4144,10 @@ fn video_show_daemon_line(url: &str, stale: &str) -> String {
     format!("daemon\trunning at {url}{stale}")
 }
 
-/// What to print when the OS opener could not be launched.
-///
-/// An address the reader cannot open would strand them — on a headless control
-/// host, and worse over SSH, where the tunnels die with the command and the
-/// ephemeral ports the URL names never come back. So the URL has to be
-/// reachable. It goes to a 0600 file rather than to stdout: the same
-/// protection the discovery file gets, and the reader can open it without a
-/// credential passing through a transcript on the way.
-///
-/// If even that fails there is nothing left to protect the token *with*, so
-/// the URL is printed — being locked out of your own dashboard is the worse
-/// outcome, and the caller is told what it is handing them.
-fn console_fallback(target: &str, url: &str) -> String {
-    match write_private_url(target, url) {
-        Ok(path) => format!(
-            "Could not launch a browser. The URL carries the daemons' tokens, so it is \
-             in {} (mode 0600) rather than printed — open it with \
-             `open \"$(cat {})\"` (macOS) or `xdg-open \"$(cat {})\"`.",
-            path.display(),
-            path.display(),
-            path.display()
-        ),
-        Err(e) => format!(
-            "Could not launch a browser, and could not write the URL to a private file \
-             ({e}). Open this yourself — it carries the daemons' tokens, so treat it as \
-             a credential:\n{url}"
-        ),
-    }
-}
-
-/// Write `url` to a 0600 file in the target's runtime dir and return its path.
-fn write_private_url(target: &str, url: &str) -> Result<std::path::PathBuf> {
-    let dir = daemons::ensure_runtime_dir(video::DAEMON, Some(target))?;
-    let path = dir.join("dashboard-url.txt");
-    let mut o = std::fs::OpenOptions::new();
-    o.create(true).write(true).truncate(true);
-    #[cfg(unix)]
-    std::os::unix::fs::OpenOptionsExt::mode(&mut o, 0o600);
-    let mut f = o.open(&path)?;
-    use std::io::Write;
-    writeln!(f, "{url}")?;
-    Ok(path)
-}
-
-/// `console`'s two output switches (`--open`, `--print-url`).
+/// `console`'s output switch (`--open`).
 #[derive(Debug, Clone, Copy, Default)]
 struct ConsoleView {
     open: bool,
-    print_url: bool,
 }
 
 /// Whether this process runs inside an SSH session, judged from the variables
@@ -4163,10 +4170,10 @@ fn local_hostname() -> Option<String> {
 }
 
 /// The command that makes the dashboard reachable from the SSH client's own
-/// machine: one `-L` per port the dashboard URL names, each forwarded to the
-/// same port number so the URL works unchanged. The daemons accept only a
-/// loopback `Host` and `Origin`, which `127.0.0.1:<port>` on the far end of a
-/// tunnel satisfies.
+/// machine: one `-L` per port the dashboard URL names (one, now that the video
+/// daemon proxies the others), forwarded to the same port number so the URL
+/// works unchanged. The daemon accepts only a loopback `Host` and `Origin`,
+/// which `127.0.0.1:<port>` on the far end of a tunnel satisfies.
 fn ssh_forward_hint(host: &str, ports: &[u16]) -> String {
     let forwards: Vec<String> = ports
         .iter()
@@ -4180,67 +4187,53 @@ fn ssh_forward_hint(host: &str, ports: &[u16]) -> String {
     )
 }
 
-/// Where to find the URL when it was neither opened nor printed: the 0600 file,
-/// fetched across the SSH connection.
-fn console_url_over_ssh(target: &str, host: &str, url: &str) -> String {
-    match write_private_url(target, url) {
-        Ok(path) => format!(
-            "The dashboard URL carries the daemons' tokens, so it is in {} (mode 0600) \
-             rather than printed. Fetch it from your machine with:\n  \
-             ssh {host} cat {}\nor rerun with --print-url.",
-            path.display(),
-            path.display()
-        ),
-        Err(e) => format!(
-            "Could not write the dashboard URL to a private file ({e}). Open this \
-             yourself — it carries the daemons' tokens, so treat it as a credential:\n{url}"
+/// How long the printed link stays good, for the reader.
+fn ticket_lifetime(expires_in: u64) -> String {
+    match expires_in {
+        0 => "a short time".to_string(),
+        s if s % 60 == 0 => format!("{} minute{}", s / 60, if s == 60 { "" } else { "s" }),
+        s => format!("{s} seconds"),
+    }
+}
+
+/// What `console` prints. The URL carries only a single-use ticket, so it is
+/// printed in every case (#293): once the browser has used it, or once it has
+/// expired, it opens nothing.
+fn console_message(opened: bool, over_ssh: Option<&str>, url: &str, expires_in: u64) -> String {
+    let life = ticket_lifetime(expires_in);
+    match (opened, over_ssh) {
+        (true, _) => format!("Opened the dashboard in the browser: {url}"),
+        (false, Some(hint)) => {
+            format!("{hint}\nThen open this link (single use; it expires in {life}):\n{url}")
+        }
+        (false, None) => format!(
+            "Could not launch a browser. Open this link yourself (single use; it \
+             expires in {life}):\n{url}"
         ),
     }
 }
 
 /// Hand the dashboard to the reader: a browser here, unless this is an SSH
-/// session (or the launch fails), in which case the `ssh -L` hint and the URL
-/// (printed with `--print-url`, otherwise in a 0600 file).
-fn show_console(
-    target: &str,
-    video: &daemons::Endpoint,
-    url: &str,
-    ports: &[u16],
-    view: ConsoleView,
-) {
+/// session (or the launch fails), in which case the `ssh -L` hint and the
+/// link. Rerunning `console` mints a fresh link.
+fn show_console(url: &str, expires_in: u64, ports: &[u16], view: ConsoleView) {
     let over_ssh = !view.open && in_ssh_session(|k| std::env::var(k).ok());
-    if !over_ssh && open_in_browser(url) {
-        println!("{}", console_banner(video, url != video.base_url()));
-        if view.print_url {
-            println!("{url}");
-        }
-        return;
-    }
     if !over_ssh {
-        // The launch itself failed on a machine with no SSH session.
-        if view.print_url {
-            println!("Could not launch a browser. Dashboard URL:\n{url}");
-        } else {
-            println!("{}", console_fallback(target, url));
-        }
+        let opened = open_in_browser(url);
+        println!("{}", console_message(opened, None, url, expires_in));
         return;
     }
     let host = local_hostname().unwrap_or_else(|| "<control-host>".to_string());
-    println!("{}", ssh_forward_hint(&host, ports));
-    if view.print_url {
-        println!("Then open:\n{url}");
-    } else {
-        println!("{}", console_url_over_ssh(target, &host, url));
-    }
+    let hint = ssh_forward_hint(&host, ports);
+    println!("{}", console_message(false, Some(&hint), url, expires_in));
 }
 
 /// Hand `url` to the OS opener. Returns whether the opener could be launched
 /// at all — false on a headless host, in a container, or anywhere `xdg-open`
 /// is not installed.
 ///
-/// The caller has to know: since #196 the token-bearing URL is no longer
-/// printed alongside, so a silently failed launch would leave the dashboard
-/// unreachable with nothing to paste. A successful spawn is not proof a window
+/// The caller has to know, to say whether the printed link was already
+/// handed to a browser or is waiting for the reader. A successful spawn is not proof a window
 /// appeared (the opener may still fail asynchronously), but it distinguishes
 /// "no opener here" from "handed off", which is the case that strands people.
 fn open_in_browser(url: &str) -> bool {
@@ -4371,16 +4364,16 @@ fn cmd_console(
         })?;
     }
     // Optional KVM leg: if the target has a local hid channel, ensure its
-    // daemon and hand the dashboard its WebSocket URL (?hidws=). Absent/remote
-    // hid channels just leave the console without input injection.
+    // daemon; the page reaches it through the video daemon (?hid=proxy).
+    // Absent/remote hid channels just leave the console without input
+    // injection.
     let hid = ensure_hid_daemon_local(&lab, &target).unwrap_or_else(|e| {
         eprintln!("hid (KVM) disabled: {e}");
         None
     });
 
-    // The dashboard's panes can't discover the daemons' OS-assigned ports or
-    // tokens themselves — hand each over as a complete WebSocket URL, token
-    // inside (?serialws= / ?hidws=), and the page's own token as ?token=.
+    // The page reaches serialcap and the hid daemon through the video
+    // daemon's proxy, so it needs only a ticket for the video daemon.
     let video = video::daemon(&target).ok_or_else(|| {
         error::daemon_down(
             video::DAEMON,
@@ -4388,28 +4381,13 @@ fn cmd_console(
         )
         .target(&target)
     })?;
-    let serial = if has_serial {
-        serial::daemon(&target)
-    } else {
-        None
-    };
-    let serial_ws = serial.as_ref().map(|d| d.ws_url("/stream"));
-    let hid_ws = hid.as_ref().map(|d| d.ws_url("/hid"));
-    let ports: Vec<u16> = [Some(&video), serial.as_ref(), hid.as_ref()]
-        .into_iter()
-        .flatten()
-        .map(|d| d.port)
-        .collect();
-    let url = dashboard_url(
-        &video,
-        &DashboardLinks {
-            serial_ws: serial_ws.as_deref(),
-            interface,
-            hid_ws: hid_ws.as_deref(),
-            video_only: !has_serial,
-        },
-    );
-    show_console(&target, &video, &url, &ports, view);
+    let ticket = mint_ticket(&target, "", &video)?;
+    let (links, warnings) = console_links(&target, &ticket, has_serial, interface, hid.is_some());
+    for w in warnings {
+        eprintln!("{w}");
+    }
+    let url = dashboard_url(&video, &ticket.ticket, &links);
+    show_console(&url, ticket.expires_in, &[video.port], view);
     // The page's use never runs a panio command, so a lease holder stays in
     // the foreground and keeps the lease alive in-process, like the remote
     // console. Without a token nothing changes: the command returns now.
@@ -4704,38 +4682,16 @@ fn remote_console(
     let video =
         dispatch::remote_daemon_endpoint(&host, &daemons::runtime_rel("hdmicap", Some(target)))
             .ok_or_else(|| anyhow!("could not read the hdmicap daemon port on {host_name}"))?;
+    // One tunnel, to the video daemon: the page reaches serialcap and the
+    // hid daemon through its proxy (#293), over loopback on the host.
     let fwd_video = ssh::forward(&host, video.port)?;
-    // The local ends of every tunnel, for the `ssh -L` hint when this command
-    // itself runs inside an SSH session.
-    let mut ports = vec![fwd_video.local_port];
-    // Through the tunnels the daemons answer on local ports; their tokens
-    // travel unchanged.
     let video = daemons::Endpoint {
         port: fwd_video.local_port,
         ..video
     };
-    // The tunnel must live as long as the page does; the binding keeps it.
-    let mut _fwd_serial = None;
-    let serial_ws: Option<String> = if has_serial {
-        let serial = dispatch::remote_daemon_endpoint(
-            &host,
-            &daemons::runtime_rel("serialcap", Some(target)),
-        )
-        .ok_or_else(|| anyhow!("could not read the serialcap daemon port on {host_name}"))?;
-        let fwd = ssh::forward(&host, serial.port)?;
-        ports.push(fwd.local_port);
-        let serial = daemons::Endpoint {
-            port: fwd.local_port,
-            ..serial
-        };
-        _fwd_serial = Some(fwd);
-        Some(serial.ws_url("/stream"))
-    } else {
-        None
-    };
 
     // Optional KVM leg: start the hid daemon on the host if its channel lives
-    // there too, then tunnel its port. A KVM-less console still works.
+    // there too. A KVM-less console still works.
     let hid_on_host = lab
         .resolved_target(target)
         .map(|rt| model::channel_host(&rt, model::ChannelKind::Hid, None).ok())
@@ -4747,8 +4703,7 @@ fn remote_console(
             .get(target)
             .and_then(|t| t.hid.as_ref())
             .is_some();
-    let mut _fwd_hid = None;
-    let hid_ws: Option<String> = if hid_on_host {
+    let has_hid = if hid_on_host {
         match dispatch::run_subcommand(lab, target, host_name, &["hid", "serve", target]) {
             Ok(out) if out.status == error::Kind::TargetLeased.exit_code() => {
                 return Err(remote_failure(
@@ -4757,40 +4712,23 @@ fn remote_console(
                     out.stderr.trim().to_string(),
                 ));
             }
-            Ok(out) if out.status == 0 => dispatch::remote_daemon_endpoint(
-                &host,
-                &daemons::runtime_rel(HID_DAEMON, Some(target)),
-            )
-            .and_then(|ep| ssh::forward(&host, ep.port).ok().map(|fwd| (ep, fwd)))
-            .map(|(ep, fwd)| {
-                let url = daemons::Endpoint {
-                    port: fwd.local_port,
-                    ..ep
-                }
-                .ws_url("/hid");
-                ports.push(fwd.local_port);
-                _fwd_hid = Some(fwd);
-                url
-            }),
+            Ok(out) if out.status == 0 => true,
             _ => {
                 eprintln!("hid (KVM) disabled: could not start the hid daemon on {host_name}");
-                None
+                false
             }
         }
     } else {
-        None
+        false
     };
 
-    let url = dashboard_url(
-        &video,
-        &DashboardLinks {
-            serial_ws: serial_ws.as_deref(),
-            interface,
-            hid_ws: hid_ws.as_deref(),
-            video_only: !has_serial,
-        },
-    );
-    show_console(target, &video, &url, &ports, view);
+    let ticket = mint_ticket(target, &format!(" on {host_name}"), &video)?;
+    let (links, warnings) = console_links(target, &ticket, has_serial, interface, has_hid);
+    for w in warnings {
+        eprintln!("{w}");
+    }
+    let url = dashboard_url(&video, &ticket.ticket, &links);
+    show_console(&url, ticket.expires_in, &[fwd_video.local_port], view);
     // Dashboard input goes straight to the daemons and never touches panio on
     // the host, so without this the lease would idle out under an active user.
     let keepalive = lease_keepalive(lab, target, host_name);
@@ -5906,17 +5844,19 @@ fn video_cmd(lab_flag: Option<&str>, cmd: VideoCmd) -> Result<()> {
                 .target(&target)
                 .into());
             };
-            let url = daemon.http_url("/");
             if open {
-                // The token goes to the browser, not the terminal (#196) —
-                // unless there is no browser, in which case printing it is the
-                // only way the caller reaches the page at all.
-                if open_in_browser(&url) {
-                    println!("Opened {} in the browser.", daemon.base_url());
-                } else {
-                    println!("{}", console_fallback(&target, &url));
-                }
+                // A single-use ticket, not the token, so the link can be
+                // printed whether or not a browser opened (#196, #293).
+                let ticket = mint_ticket(&target, "", &daemon)?;
+                let url = format!(
+                    "{}/?ticket={}",
+                    daemon.base_url(),
+                    daemons::query_escape(&ticket.ticket)
+                );
+                let opened = open_in_browser(&url);
+                println!("{}", console_message(opened, None, &url, ticket.expires_in));
             } else {
+                let url = daemon.http_url("/");
                 // A browser can only present the token as ?token=, and the
                 // caller asked for the URL to open, so this one carries it.
                 println!("{url}");
@@ -8092,55 +8032,92 @@ device = "/dev/video-nuc"
         }
     }
 
-    /// What `console` prints names the port and never a token, while the URL
-    /// it hands the browser for the same endpoint still carries one (#196).
+    fn ticket(serial: bool, hid: bool) -> Ticket {
+        Ticket {
+            ticket: "T1".into(),
+            expires_in: 120,
+            serial,
+            hid,
+        }
+    }
+
+    /// The URL carries the ticket and the page's switches, and no daemon
+    /// token, even though the endpoint has one (#293).
     #[test]
-    fn console_banner_names_the_port_and_never_the_token() {
+    fn dashboard_url_carries_a_ticket_never_a_token() {
         let video = endpoint(1000, Some("s3cr3t"));
-        let banner = console_banner(&video, true);
-        assert!(banner.contains("http://127.0.0.1:1000"), "{banner}");
-        assert!(!banner.contains("token="), "{banner}");
-        assert!(!banner.contains("s3cr3t"), "{banner}");
-        let url = dashboard_url(
-            &video,
-            &DashboardLinks {
-                serial_ws: None,
-                interface: None,
-                hid_ws: None,
-                video_only: false,
-            },
+        let (links, warnings) =
+            console_links("dut", &ticket(true, true), true, Some("con sole"), true);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let url = dashboard_url(&video, "T1", &links);
+        assert_eq!(
+            url,
+            "http://127.0.0.1:1000/?ticket=T1&serial=proxy&interface=con%20sole&hid=proxy"
         );
-        assert_eq!(url, "http://127.0.0.1:1000/?token=s3cr3t");
+        assert!(!url.contains("s3cr3t") && !url.contains("token="), "{url}");
+        // Printed, since a used or expired ticket grants nothing.
+        let msg = console_message(true, None, &url, 120);
+        assert!(msg.contains(&url), "{msg}");
     }
 
-    /// Against a daemon too old to have a token, and with no links, the
-    /// dashboard URL *is* the base address — so the banner must not claim a
-    /// credential was withheld and send the reader looking for another URL.
+    /// A video daemon that cannot reach a leg the target has drops that leg
+    /// from the page and says why, instead of a pane that only ever fails.
     #[test]
-    fn console_banner_claims_nothing_withheld_when_there_is_no_token() {
-        let video = endpoint(1000, None);
-        let url = dashboard_url(
-            &video,
-            &DashboardLinks {
-                serial_ws: None,
-                interface: None,
-                hid_ws: None,
-                video_only: false,
-            },
-        );
-        assert_eq!(url, "http://127.0.0.1:1000", "nothing to withhold");
-        let banner = console_banner(&video, url != video.base_url());
-        assert!(banner.contains("http://127.0.0.1:1000"), "{banner}");
+    fn console_links_warn_about_legs_the_daemon_cannot_proxy() {
+        let (links, warnings) = console_links("dut", &ticket(false, false), true, None, true);
+        assert!(!links.serial && !links.hid);
+        assert_eq!(warnings.len(), 2, "{warnings:?}");
         assert!(
-            !banner.contains("not printed"),
-            "must not claim a withheld URL that does not exist: {banner}"
+            warnings[0].contains("serial terminal disabled"),
+            "{warnings:?}"
+        );
+        assert!(warnings[1].contains("panio video stop dut"), "{warnings:?}");
+        // Nothing the target lacks is warned about, or turned on.
+        let (links, warnings) = console_links("dut", &ticket(true, true), false, None, false);
+        assert!(!links.serial && !links.hid && warnings.is_empty());
+        assert_eq!(
+            dashboard_url(&endpoint(1, None), "T", &links),
+            "http://127.0.0.1:1/?ticket=T&serial=none"
         );
     }
 
-    /// When no browser could be launched the URL still has to be reachable —
-    /// an address the reader cannot open would strand them, and over SSH the
-    /// tunnels die with the command. It goes to a 0600 file rather than to
-    /// stdout, so `console` prints no token under any circumstance.
+    /// Over SSH, and when no browser could be launched, the link itself is
+    /// printed with how long it lasts.
+    #[test]
+    fn console_message_prints_the_link_with_its_lifetime() {
+        let url = "http://127.0.0.1:1000/?ticket=T1&serial=none";
+        let hint = ssh_forward_hint("bench1", &[1000]);
+        let msg = console_message(false, Some(&hint), url, 120);
+        assert!(
+            msg.contains("ssh -N -L 1000:127.0.0.1:1000 bench1"),
+            "{msg}"
+        );
+        assert!(msg.ends_with(url), "{msg}");
+        assert!(msg.contains("expires in 2 minutes"), "{msg}");
+        let msg = console_message(false, None, url, 90);
+        assert!(msg.contains("Could not launch a browser"), "{msg}");
+        assert!(msg.contains("expires in 90 seconds"), "{msg}");
+    }
+
+    /// Against a daemon from before #293, minting fails with what to do,
+    /// rather than an opaque 404.
+    #[test]
+    fn mint_ticket_explains_an_old_daemon() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = crate::stubhttp::serve_one(
+            listener,
+            b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n",
+        );
+        let e = mint_ticket("dut", " on bench1", &endpoint(port, Some("t"))).unwrap_err();
+        let request = server.join().unwrap();
+        assert!(request.starts_with("POST /ticket "), "{request}");
+        assert!(request.contains("Bearer t"), "{request}");
+        let msg = e.to_string();
+        assert!(msg.contains("predates single-use dashboard links"), "{msg}");
+        assert!(msg.contains("panio video stop dut"), "{msg}");
+    }
+
     /// Any one of the variables sshd sets marks an SSH session; an empty value
     /// (a shell that cleared it with `SSH_TTY=`) does not.
     #[test]
@@ -8174,81 +8151,6 @@ device = "/dev/video-nuc"
             "{hint}"
         );
         assert!(!hint.contains("token"), "{hint}");
-    }
-
-    /// Over SSH without --print-url the URL goes to the 0600 file, and the
-    /// message says how to fetch it across the connection — never the token.
-    #[test]
-    fn console_over_ssh_points_at_the_file_not_the_token() {
-        let dir = tempfile::tempdir().unwrap();
-        let _guard = crate::daemons::RUNTIME_BASE_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let prev = std::env::var_os("PANIO_RUNTIME_BASE");
-        // Safe: serialized by the lock above; restored below.
-        unsafe { std::env::set_var("PANIO_RUNTIME_BASE", dir.path()) };
-        let url = "http://127.0.0.1:1000/?token=s3cr3t";
-        let msg = console_url_over_ssh("dut", "bench1", url);
-        match prev {
-            Some(v) => unsafe { std::env::set_var("PANIO_RUNTIME_BASE", v) },
-            None => unsafe { std::env::remove_var("PANIO_RUNTIME_BASE") },
-        }
-        assert!(!msg.contains("s3cr3t"), "{msg}");
-        assert!(msg.contains("ssh bench1 cat "), "{msg}");
-        assert!(msg.contains("--print-url"), "{msg}");
-    }
-
-    #[test]
-    fn console_falls_back_to_a_private_file_not_the_terminal() {
-        let dir = tempfile::tempdir().unwrap();
-        // PANIO_RUNTIME_BASE is process-global, not test-local: restoring it
-        // before this test returns does nothing for the daemons tests running
-        // in parallel threads, which read it between planting a discovery file
-        // and listing it. Hold the crate-wide lock they hold.
-        let _guard = crate::daemons::RUNTIME_BASE_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let prev = std::env::var_os("PANIO_RUNTIME_BASE");
-        // Safe: serialized by the lock above; restored below.
-        unsafe { std::env::set_var("PANIO_RUNTIME_BASE", dir.path()) };
-
-        let video = endpoint(1000, Some("s3cr3t"));
-        let url = dashboard_url(
-            &video,
-            &DashboardLinks {
-                serial_ws: Some("ws://127.0.0.1:2000/stream?token=ser"),
-                interface: None,
-                hid_ws: None,
-                video_only: false,
-            },
-        );
-        let msg = console_fallback("dut", &url);
-
-        match prev {
-            Some(v) => unsafe { std::env::set_var("PANIO_RUNTIME_BASE", v) },
-            None => unsafe { std::env::remove_var("PANIO_RUNTIME_BASE") },
-        }
-
-        assert!(
-            !msg.contains("s3cr3t") && !msg.contains("token="),
-            "the token must not reach the terminal: {msg}"
-        );
-        assert!(
-            msg.contains("dashboard-url.txt"),
-            "and the reader must be told where it is: {msg}"
-        );
-        let path = msg
-            .split_whitespace()
-            .find(|w| w.ends_with("dashboard-url.txt"))
-            .expect("the message names the file");
-        let body = std::fs::read_to_string(path).expect("the file was written");
-        assert_eq!(body.trim(), url);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mode = std::fs::metadata(path).unwrap().permissions().mode();
-            assert_eq!(mode & 0o777, 0o600, "the URL file must be private");
-        }
     }
 
     /// The `video show` daemon line — the command the issue names, and the one
@@ -8469,21 +8371,6 @@ device = "/dev/video-nuc"
             e.contains("no serial interface 'console' (have: none)"),
             "{e}"
         );
-        let video = daemons::Endpoint {
-            pid: 1,
-            port: 1000,
-            token: Some("vt".into()),
-        };
-        let url = dashboard_url(
-            &video,
-            &DashboardLinks {
-                serial_ws: None,
-                interface: None,
-                hid_ws: None,
-                video_only: true,
-            },
-        );
-        assert_eq!(url, "http://127.0.0.1:1000/?token=vt&serial=none");
     }
 
     /// With a serial channel the rule is unchanged: serial and video must
@@ -8512,53 +8399,6 @@ device = "/dev/video-nuc"
         assert_eq!(
             console_host(&rt, None).unwrap(),
             ("bench".to_string(), true)
-        );
-    }
-
-    /// three without any of them sharing a secret.
-    #[test]
-    fn dashboard_url_carries_every_daemons_token() {
-        let video = daemons::Endpoint {
-            pid: 1,
-            port: 1000,
-            token: Some("vt".into()),
-        };
-        let serial = daemons::Endpoint {
-            pid: 2,
-            port: 2000,
-            token: Some("st".into()),
-        };
-        let hid = daemons::Endpoint {
-            pid: 3,
-            port: 3000,
-            token: None,
-        };
-        let serial_ws = serial.ws_url("/stream");
-        let hid_ws = hid.ws_url("/hid");
-        let url = dashboard_url(
-            &video,
-            &DashboardLinks {
-                serial_ws: Some(&serial_ws),
-                interface: Some("console"),
-                hid_ws: Some(&hid_ws),
-                video_only: false,
-            },
-        );
-        assert_eq!(
-            url,
-            "http://127.0.0.1:1000/?token=vt\
-             &serialws=ws%3A%2F%2F127.0.0.1%3A2000%2Fstream%3Ftoken%3Dst\
-             &interface=console\
-             &hidws=ws%3A%2F%2F127.0.0.1%3A3000%2Fhid"
-        );
-        // A tokenless (older) video daemon and no links: the bare base URL.
-        let old = daemons::Endpoint {
-            token: None,
-            ..video
-        };
-        assert_eq!(
-            dashboard_url(&old, &DashboardLinks::default()),
-            "http://127.0.0.1:1000"
         );
     }
 

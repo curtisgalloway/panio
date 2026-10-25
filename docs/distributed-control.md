@@ -276,26 +276,28 @@ decide.
   probes still find plugin helpers there: they read the host's own
   `PANIO_PLUGIN_PATH` from the SSH session.
 
-### The dashboard, and why multi-host rules out a reverse-proxy
+### The dashboard: one tunnel, and a loopback-only proxy
 
-hdmicap serves the dashboard page, and the page reaches serialcap by an
-**absolute URL** (`ws://<host>:8724/stream`), with a `?serialws=` override (see
-[architecture §7](dev/architecture.md)). panio forwards each daemon's port to
-the dev machine and opens
-`http://127.0.0.1:<local-hdmi>/?token=<hdmi-token>&serialws=ws://127.0.0.1:<local-serial>/stream?token=<serial-token>`
-(nested URL percent-encoded; tokens from each daemon's `daemon.json`, read over
-the same SSH session). This works with the daemons on different hosts and needs
-no changes to hdmicap or serialcap.
+hdmicap serves the dashboard page and, since #293, **proxies** the serial
+terminal and KVM input to serialcap and the hid daemon (`/proxy/serial/*`,
+`/proxy/hid`; see [architecture §7](dev/architecture.md)). `panio console`
+starts the daemons on the control host over SSH, forwards **only hdmicap's
+port** to the dev machine, mints a single-use ticket through that tunnel
+(`POST /ticket`, bearer token from hdmicap's `daemon.json` read over the same
+SSH session) and opens
+`http://127.0.0.1:<local-hdmi>/?ticket=<ticket>&serial=proxy&hid=proxy`.
+hdmicap trades the ticket for a session cookie; no daemon token is ever in a
+URL, so `console` prints the link. Run inside an SSH session, `console` opens
+no browser and prints an `ssh -N -L …` command that forwards the tunnel's local
+port onward, then the link
+([dashboard.md](dashboard.md#viewing-from-another-machine-over-ssh)).
 
-That URL carries bearer tokens, so `panio console` hands it to the browser and
-prints only `http://127.0.0.1:<local-hdmi>`. `panio video preview` prints the
-openable video URL; `--open` skips printing it. Run inside an SSH session,
-`console` opens no browser and prints an `ssh -N -L …` command that forwards
-the tunnels' local ports onward ([dashboard.md](dashboard.md#viewing-from-another-machine-over-ssh));
-`--print-url` prints the URL itself.
-
-Having hdmicap reverse-proxy serialcap was rejected: it needs a cross-host
-connection, which principle 1 rules out.
+An earlier design rejected having hdmicap reverse-proxy serialcap because it
+would need a cross-host connection, which principle 1 rules out. That objection
+does not apply here: `console` already requires the serial and video channels
+on one host, and the proxy connects only over loopback on that host. A target
+whose channels span hosts still uses each channel's own commands; only the
+combined dashboard needs them together.
 
 ### Why not a long-running agent daemon (labgrid's exporter)
 

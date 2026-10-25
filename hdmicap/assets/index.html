@@ -318,8 +318,11 @@
   </script>
   <script>
     // ── auth ──
-    // The daemon issues a per-start token (auth.rs); panio puts it in this
-    // page's URL, and every request back to the daemon carries it as ?token=
+    // `panio console` opens this page with a single-use ticket, which the
+    // daemon trades for an HttpOnly session cookie (session.rs) before
+    // redirecting here without it; the cookie then rides on every same-origin
+    // request, WebSockets included. `panio video preview` instead puts the
+    // daemon token in the URL, and every request back carries it as ?token=
     // (a page load, an <img> or a WebSocket cannot set a header).
     const params = new URLSearchParams(location.search);
     const TOKEN = params.get('token') || '';
@@ -365,7 +368,7 @@
     function pollVideo() {
       fetch(withToken('/status')).then(r => {
         if (r.status === 401) {
-          vst.textContent = 'unauthorized — this page needs the token in its URL; run `panio video preview` and open that URL';
+          vst.textContent = 'unauthorized — the session is gone (daemon restarted?); run `panio console <target>` again for a fresh link';
           vst.style.color = '#f44';
           return;
         }
@@ -468,8 +471,10 @@
     pwrCycleBtn.onclick = () => askPower('Power cycle the target?', 'Power cycle', () => doPower('/power-cycle'));
 
     // ── serial: xterm.js panes fed by serialcap WebSocket (cross-port) ──
-    // ?serialws=URL is what `panio console` passes: serialcap's /stream with
-    // that daemon's own ?token= inside. ?serial=PORT is the hand-opened form;
+    // ?serial=proxy is what `panio console` passes: the terminal goes through
+    // this daemon's /proxy/serial/* routes (proxy.rs), on the session cookie,
+    // and never sees serialcap's token. ?serialws=URL names serialcap's
+    // /stream directly, its own ?token= inside. ?serial=PORT is the hand-opened form;
     // it carries no token, so only a daemon without one accepts it. Either
     // way the URL must be loopback, or the terminal is refused.
     // ?interface=NAME locks to a single interface (single-pane mode).
@@ -477,12 +482,16 @@
     // ?serial=none is what `panio console` passes for a target with no
     // serial channel (video + hid only): a KVM-only page, no terminal (#223).
     const serialAbsent = params.get('serial') === 'none';
-    const serialPort = (!serialAbsent && params.get('serial')) || '8724';
-    const baseWsUrl = params.get('serialws') ||
-                      ('ws://' + location.hostname + ':' + serialPort + '/stream');
+    const serialProxied = params.get('serial') === 'proxy';
+    const sameOriginWs = (location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + location.host;
+    const serialPort = (!serialAbsent && !serialProxied && params.get('serial')) || '8724';
+    const baseWsUrl = serialProxied
+      ? sameOriginWs + withToken('/proxy/serial/stream')
+      : params.get('serialws') ||
+        ('ws://' + location.hostname + ':' + serialPort + '/stream');
     const serialWs = loopbackWs(baseWsUrl); // null: refused, no connection is made
     const httpBase = serialWs ? serialWs.protocol.replace(/^ws/, 'http') + '//' + serialWs.host : null;
-    const serialToken = serialWs ? serialWs.searchParams.get('token') : null;
+    const serialToken = serialWs && !serialProxied ? serialWs.searchParams.get('token') : null;
     const singleInterface = params.get('interface') || null;
 
     const sst = document.getElementById('sstatus');
@@ -578,15 +587,19 @@
       // A GET with no custom headers: the token rides in the query, so this
       // cross-port fetch needs no CORS preflight.
       const q = serialToken ? '?token=' + encodeURIComponent(serialToken) : '';
-      fetch(httpBase + '/interfaces' + q)
+      const interfacesUrl = serialProxied
+        ? withToken('/proxy/serial/interfaces')
+        : httpBase + '/interfaces' + q;
+      fetch(interfacesUrl)
         .then(r => r.json())
         .then(list => buildPanes(Array.isArray(list) ? list.map(i => i.name) : [null]))
         .catch(() => buildPanes([null]));
     }
 
     // ── KVM: keyboard + absolute mouse to the target via the hid daemon ──
-    // ?hidws=URL (what `panio console` passes: the daemon's /hid with its
-    // own ?token= inside) or ?hid=PORT (hand-opened, no token) enable the HID
+    // ?hid=proxy (what `panio console` passes: this daemon's /proxy/hid, on
+    // the session cookie), ?hidws=URL (the hid daemon's /hid with its own
+    // ?token= inside) or ?hid=PORT (hand-opened, no token) enable the HID
     // leg; a non-loopback URL is refused. The
     // "Capture input" header button toggles capture; while engaged, all
     // keyboard + mouse events are sent to the target and suppressed locally
@@ -594,10 +607,12 @@
     // cursor stays visible (no pointer lock) — you point with it and the
     // target's cursor follows where you point inside the video, a frame behind.
     (function () {
-      const hidWsUrl = params.get('hidws') ||
-        (params.get('hid')
-          ? 'ws://' + location.hostname + ':' + params.get('hid') + '/hid'
-          : null);
+      const hidWsUrl = params.get('hid') === 'proxy'
+        ? (location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + location.host + withToken('/proxy/hid')
+        : params.get('hidws') ||
+          (params.get('hid')
+            ? 'ws://' + location.hostname + ':' + params.get('hid') + '/hid'
+            : null);
       if (!hidWsUrl) return; // no HID channel on this console
 
       const kst = document.getElementById('kvmstatus');

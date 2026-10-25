@@ -215,6 +215,10 @@ pub fn start_daemon(
     );
     cmd.envs(daemons::helper_env(DAEMON, Some(target)));
     cmd.env("PANIO_TARGET", target);
+    // Where the dashboard's terminal is proxied to (#293). Always set: the
+    // path is fixed per target, and the proxy re-reads the file per request,
+    // so a serialcap started after this daemon is found.
+    cmd.env("HDMICAP_SERIAL_DISCOVERY", serial_discovery_file(target)?);
     // Capture stderr (tracing output) so a startup failure is diagnosable;
     // daemons::start_failure() reads the tail on timeout.
     let log = daemons::create_log(DAEMON, Some(target))?;
@@ -230,6 +234,11 @@ pub fn start_daemon(
 /// `hid`, is the directory, whatever helper serves it).
 pub fn hid_discovery_file(target: &str) -> Result<std::path::PathBuf> {
     Ok(daemons::ensure_runtime_dir(crate::HID_DAEMON, Some(target))?.join("daemon.json"))
+}
+
+/// The discovery file the target's serialcap daemon publishes.
+pub fn serial_discovery_file(target: &str) -> Result<std::path::PathBuf> {
+    Ok(daemons::ensure_runtime_dir(crate::serial::DAEMON, Some(target))?.join("daemon.json"))
 }
 
 /// The `hdmicap daemon` command line for `device`, without the per-target
@@ -389,6 +398,31 @@ mod tests {
             assert_eq!(env_of(&cmd, "HDMICAP_RFB_DISCOVERY"), None);
             assert_eq!(env_of(&cmd, "HDMICAP_HID_DISCOVERY"), None);
         }
+    }
+
+    /// hdmicap finds serialcap's discovery file where the serial commands
+    /// publish it, so the dashboard's terminal proxy reaches the right daemon.
+    #[test]
+    fn serial_discovery_file_is_where_serialcap_publishes() {
+        let dir = tempfile::tempdir().unwrap();
+        let _guard = crate::daemons::RUNTIME_BASE_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let prev = std::env::var_os("PANIO_RUNTIME_BASE");
+        // Safe: serialized by the lock above; restored below.
+        unsafe { std::env::set_var("PANIO_RUNTIME_BASE", dir.path()) };
+        let file = serial_discovery_file("dut");
+        // Beside the log the serial commands write for the same daemon.
+        let expected =
+            daemons::log_path(crate::serial::DAEMON, Some("dut")).with_file_name("daemon.json");
+        match prev {
+            Some(v) => unsafe { std::env::set_var("PANIO_RUNTIME_BASE", v) },
+            None => unsafe { std::env::remove_var("PANIO_RUNTIME_BASE") },
+        }
+        let file = file.unwrap();
+        assert_eq!(file, expected);
+        assert!(file.starts_with(dir.path()), "{file:?}");
+        assert!(file.ends_with("serialcap/dut/daemon.json"), "{file:?}");
     }
 
     /// A target with a local hid channel hands hdmicap the hid daemon's

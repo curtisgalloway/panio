@@ -137,20 +137,14 @@ also requires a loopback `Host` and `Origin`. A daemon from a panio older
 than the token has none; `panio daemons restart hdmicap` replaces it.
 
 **`video preview` is the only command that prints the URL with the token.**
-`show`, `console` and `watch` print `http://127.0.0.1:<port>` only, to keep
-the credential out of logs and transcripts.
-
-**If `console` cannot launch a browser** (headless host, no `xdg-open`), it
-writes the full URL to a `0600` `dashboard-url.txt` in the target's runtime
-dir and prints the **path**:
-
-```bash
-xdg-open "$(cat /tmp/panio-1000/hdmicap/target-machine/dashboard-url.txt)"
-```
+`show` and `watch` print `http://127.0.0.1:<port>` only, to keep the
+credential out of logs and transcripts. `console` and `preview --open` print a
+link with a **single-use ticket** instead (it expires after 2 minutes; the
+daemon trades it for a session cookie), which grants nothing once used.
 
 Inside an SSH session `console` opens no browser and prints an `ssh -N -L …`
-forwarding command instead; `--print-url` prints the URL, `--open` forces a
-launch. See [dashboard.md](dashboard.md#viewing-from-another-machine-over-ssh).
+forwarding command and the link instead; `--open` forces a launch. See
+[dashboard.md](dashboard.md#viewing-from-another-machine-over-ssh).
 
 ### Stopping safely
 
@@ -281,8 +275,9 @@ channel is on a remote control host. A failed capture removes the stub file.
 ### `preview`
 
 `preview` prints the URL **with** the token. Treat it as a credential.
-`--open` opens the default browser and prints only the token-free address. If
-no browser launches, it writes the URL to the same `0600` file `console` uses.
+`--open` instead opens the default browser on a single-use ticket link (as
+`console` does) and prints that link, which is worthless once used or after 2
+minutes.
 
 `--open` is refused when the video channel is on another host. Use
 `panio console <target>`, which forwards ports and opens a local browser.

@@ -291,7 +291,8 @@ automatically.
 (`/tmp/panio-<uid>/hid/<target>/daemon.json`, owner-only). Send it as
 `Authorization: Bearer <token>` or `?token=<token>`; only loopback
 `Host`/`Origin` values are accepted. Routed one-shots send it automatically,
-and `panio console` passes it in the `?hidws=` URL. A daemon from an older
+and the dashboard reaches the daemon through hdmicap's `/proxy/hid`, which
+sends it as a bearer header (the page never sees it). A daemon from an older
 panio has no token; `panio daemons restart --stale` replaces it.
 
 **Stopping.** `hid stop` (and `ch9329 stop` / `hidrig stop` / `jetkvm stop`) uses the
