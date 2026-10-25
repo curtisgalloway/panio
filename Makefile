@@ -13,7 +13,7 @@
 # limitations under the License.
 
 # Build and install panio: the Rust CLI (cli/) plus the daemons and helpers
-# (hdmicap, serialcap, netbootd, cambrionix, dsdrelay, dsdble, hidrig, ch9329, shellyplug,
+# (hdmicap, serialcap, netbootd, cambrionix, dsdrelay, dsdble, phidget, hidrig, ch9329, shellyplug,
 # switchport, amt), the OCR helper, and the zigplug Zigbee helper (Python, installed by
 # `panio setup` as a uv tool).
 # Only the `panio` CLI lands on PATH (~/.cargo/bin); the helpers install
@@ -22,7 +22,7 @@
 # `make install` from a fresh clone is the only command you need; re-run it
 # after editing anything to rebuild and reinstall.
 
-CRATES = cli hdmicap serialcap netbootd cambrionix dsdrelay dsdble hidrig ch9329 shellyplug switchport amt secret
+CRATES = cli hdmicap serialcap netbootd cambrionix dsdrelay dsdble phidget hidrig ch9329 shellyplug switchport amt secret
 
 # The installed CLI, by absolute path: immune to a different `panio` shadowing
 # ~/.cargo/bin earlier in PATH (e.g. a Homebrew keg from the tap).

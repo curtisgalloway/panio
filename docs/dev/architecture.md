@@ -64,6 +64,7 @@ invocations. State lives in plain files.
 | `netbootd` | Rust (tokio) | Single-binary DHCP+TFTP+HTTP netboot engine. Privilege-separated `/dev/bpf` send path on macOS via a setuid `netbootd-bpf-helper`. |
 | `cambrionix` | Rust | Standalone power helper: Cambrionix USB-hub port control, wired in via the generic power hooks. |
 | `dsdble` | Rust | Standalone power helper: DSD TECH SH-BT01E Bluetooth LE relay boards (btleplug; GATT `FFE1` 4-byte frames), NC wiring, per-channel on/off/cycle. Write-only: the board has no read-back, so `state` always fails. One-shot, stateless. Linux first (BlueZ/libdbus), macOS best effort. |
+| `phidget` | Rust | Standalone power helper: Phidgets VINT relay modules (REL1100) through a HUB0002 hub over raw USB (`nusb`), normally-open wiring, per-channel on/off/cycle. Write-only: the protocol has no read-back, so `state` always fails. One-shot, stateless; module table in `src/devices.rs`. Linux needs a udev rule; Windows unverified. |
 | `dsdrelay` | Rust | Standalone power helper: DSD TECH USB serial AT relay boards (CP2102N, 9600 8N1), NC wiring, per-channel on/off/cycle with read-back, wired in via the generic power hooks. One-shot, stateless. |
 | `zigplug` | Python (uv tool, zigpy-znp) | Standalone power helper: Zigbee smart-plug control through a CC2652 coordinator; one-shots proxy through an auto-spawned daemon that owns the ZNP session. |
 | `shellyplug` | Rust (ureq) | Standalone power helper: Shelly Gen2+ smart plugs/relays over the device's local HTTP RPC — one-shot, stateless. |
@@ -307,7 +308,7 @@ Two mechanisms:
   `power-state`).
 
 Device-specific logic lives in helpers behind those hooks, never in the core: `cambrionix`,
-`dsdrelay`, `dsdble`, `zigplug`, `shellyplug`, and `amt` ship with panio, and `hidrig` can switch a DUT relay
+`dsdrelay`, `dsdble`, `phidget`, `zigplug`, `shellyplug`, and `amt` ship with panio, and `hidrig` can switch a DUT relay
 (`hidrig power`). Without a `state_cmd`, `panio power-state` falls back to an optional
 **power-sense** input on the target rail via serialcap's `/status`.
 
