@@ -16,6 +16,7 @@ Shipped examples:
 | [`cambrionix/`](https://github.com/curtisgalloway/panio/tree/main/cambrionix) | Rust | Cambrionix USB hubs, over the hub's control UART (serial port) |
 | [`dsdrelay/`](https://github.com/curtisgalloway/panio/tree/main/dsdrelay) | Rust | DSD TECH USB serial AT relay boards (CP2102N, 9600 8N1), NC wiring |
 | [`dsdble/`](https://github.com/curtisgalloway/panio/tree/main/dsdble) | Rust | DSD TECH Bluetooth LE relay boards (btleplug), NC wiring, write-only: `state` always fails |
+| [`phidget/`](https://github.com/curtisgalloway/panio/tree/main/phidget) | Rust | Phidgets VINT relay modules (REL1100) through a HUB0002, over raw USB (nusb), normally-open wiring, write-only: `state` always fails |
 | [`shellyplug/`](https://github.com/curtisgalloway/panio/tree/main/shellyplug) | Rust | Shelly Gen2+ plugs, over their local HTTP RPC |
 | [`switchport/`](https://github.com/curtisgalloway/panio/tree/main/switchport) | Rust | Managed-switch port link/PoE (TP-Link Easy Smart, SNMP): a *link* helper, see below |
 | [`zigplug/`](https://github.com/curtisgalloway/panio/tree/main/zigplug) | Python | Zigbee smart plugs, via a CC2652 coordinator dongle |

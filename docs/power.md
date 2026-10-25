@@ -825,6 +825,110 @@ Bluetooth range of the board.
 
 ---
 
+## Phidgets VINT relay control (phidget)
+
+The `phidget` helper switches a channel of a Phidgets **REL1100** 4-channel
+solid-state relay module through a **HUB0002** VINT hub, over raw USB. It does
+not need the Phidgets library or service. It is usable but blind: the VINT
+protocol cannot read an output back, so panio cannot confirm the relay moved.
+
+Terms used here: *VINT* is Phidgets' port-and-module system, and a *hub* is
+the USB device the modules plug into; see the [glossary](glossary.md).
+
+The module table in `phidget/src/devices.rs` is built so more VINT modules can
+be added later; only the REL1100 is enabled today.
+
+### Wiring and addresses
+
+The REL1100 is wired **normally open**: `on` closes the contact (conducting)
+and `off` opens it. There is no NC inversion, so an unpowered or rebooted
+module leaves the output **off**; do not use it where the target must stay
+powered if the hub loses power.
+
+An output is addressed `<PORT>/<CHANNEL>`, both 0-based, matching the labels
+printed on the hardware: hub port 0 to 5, module channel 0 to 3.
+
+### No read-back: what that means for hooks
+
+`on`, `off` and `cycle` succeed when the **hub** ACKs the packet. That proves
+a module is attached to that port; it does not prove the relay moved.
+`phidget state <addr>` **always fails** with `state unknown` (exit 1, nothing
+on stdout) instead of guessing, and `phidget` never remembers what it last
+wrote. **Do not wire a `state_cmd`**; `panio power-state` then falls back to a
+power-sense input if the target has one, or reports no state. Confirm power
+changes another way (a serial console, a power-sense line, the target's
+network presence).
+
+Before every write the helper reads the hub's VINT ports descriptor and
+refuses an empty port, a module it does not know, or a channel the module
+lacks, so it never writes blind. It sends one `SETDUTYCYCLE` packet per call
+and none of the library's reset, enable or port-power commands: switching one
+channel leaves the others alone.
+
+### Platforms
+
+- **Linux:** the helper needs USB access to the hub. Without a udev rule,
+  opening it fails with a permission error. Install a rule for Phidgets'
+  vendor id (`06c2`) that grants your control-host user access, for example in
+  `/etc/udev/rules.d/99-phidgets.rules`:
+
+  ```
+  SUBSYSTEM=="usb", ATTRS{idVendor}=="06c2", MODE="0660", GROUP="plugdev"
+  ```
+
+  then `sudo udevadm control --reload && sudo udevadm trigger` and replug the
+  hub. The package does not install this rule.
+- **macOS:** works without extra setup; the hub has no kernel driver.
+- **Windows:** builds and passes tests, but running it is unverified (it
+  needs the WinUSB driver bound to the hub).
+
+### Installation
+
+`make install` / `panio setup` installs it into the private libexec dir. Run
+it by hand via `panio helper phidget …`.
+
+### Commands
+
+```bash
+phidget list                                   # hubs (serial, SKU, firmware) and each port's module or `empty`
+phidget [-s <serial>] on <port>/<channel>      # close the relay (one packet; hub ACK only)
+phidget [-s <serial>] off <port>/<channel>     # open the relay
+phidget [-s <serial>] cycle <port>/<channel> [--delay-ms 3000]   # off → hold → on
+phidget [-s <serial>] state <port>/<channel>   # always fails: "state unknown"
+phidget [-s <serial>] doctor [<port>/<channel>] [--json]         # read-only health check (panio doctor)
+```
+
+- **Hub:** `-s/--serial <serial>`, before the verb, is the hub's USB serial
+  number (`phidget list` prints it). It is optional when exactly one supported
+  hub is attached; with several attached it is an error that lists them.
+- **Exclusive access:** the helper claims the hub's USB interface. If another
+  process holds it (a concurrent hook, Phidget Control Panel, or
+  `phidget22networkserver`), it retries for 3 s, then fails naming those
+  likely holders.
+- `doctor` checks that a hub is found and readable (`hub`) and, with an
+  address, that a supported module sits on that port with that channel
+  (`module`). It reads descriptors only and never writes a packet.
+- A module reboot (hub port power loss) turns every relay on it off, and the
+  state held before is not restored.
+
+### Wiring into panio power hooks
+
+Example: a Raspberry Pi 5 on hub port 0, relay channel 0, with a placeholder
+hub serial (use the value `phidget list` prints). No `--state-cmd`, for the
+reason above:
+
+```bash
+panio power set -t pi5 \
+    --cycle-cmd "phidget -s AA00BB11 cycle 0/0" \
+    --on-cmd    "phidget -s AA00BB11 on 0/0" \
+    --off-cmd   "phidget -s AA00BB11 off 0/0" \
+    --doctor
+```
+
+Install the helper on the control host (`--host`) the hub is plugged into.
+
+---
+
 ## Zigbee smart plug control (zigplug)
 
 The `zigplug` helper switches Zigbee smart plugs through a CC2652-based

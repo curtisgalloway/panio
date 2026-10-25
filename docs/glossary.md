@@ -98,6 +98,8 @@ each term briefly on first use; this page is the longer reference.
 | **VID/PID** | USB vendor and product identifiers. Shared identifiers do not uniquely identify a board or firmware build. |
 | **BLE** | Bluetooth Low Energy, the low-power Bluetooth mode small devices such as the `dsdble` relay board use. |
 | **GATT / characteristic** | How a BLE device exposes itself: a list of services, each holding values called characteristics that a client reads, writes or subscribes to. `dsdble` writes one characteristic (`FFE1`). |
+| **VINT / hub** | The Phidgets system of small modules (such as the REL1100 relay) that plug into the numbered ports of a USB hub (such as the HUB0002). The `phidget` helper talks to the hub and addresses an output as `<port>/<channel>`. |
+| **NO (normally open)** | A relay contact that conducts only while the relay is on. The Phidgets REL1100 is used this way, so `on` conducts and a powered-down module leaves the target unpowered. |
 | **NC (normally closed)** | A relay contact that conducts while the relay coil is off. `dsdrelay` and `dsdble` wire the target through it, so an unpowered board leaves the target powered. |
 | **HID** | Human Interface Device: the USB class for keyboards and mice. |
 | **fastboot / RAM staging** | Fastboot is a bootloader communication protocol. Its download operation places bytes in a temporary RAM buffer; flashing writes persistent storage, and booting executes an image. These are separate operations. |

@@ -92,7 +92,7 @@ rejects `--json-errors`.
 cd ~/src/panio
 make install               # cargo-installs the `panio` CLI, then `panio setup`
                            # builds/installs the helper binaries (hdmicap, serialcap,
-                           # netbootd, cambrionix, dsdrelay, dsdble, hidrig, ch9329, shellyplug,
+                           # netbootd, cambrionix, dsdrelay, dsdble, phidget, hidrig, ch9329, shellyplug,
                            # amt), the OCR helper, zigplug, and the bundled skills;
                            # on macOS also installs netbootd-bpf-helper
                            # setuid-root (one sudo)
@@ -100,7 +100,7 @@ make install               # cargo-installs the `panio` CLI, then `panio setup`
 
 Run once per machine; re-run after pulling or editing (it's a full rebuild).
 Only the `panio` CLI lands in `~/.cargo/bin` — make sure that's on `PATH`.
-The helpers (hdmicap, serialcap, netbootd, cambrionix, dsdrelay, dsdble, hidrig, ch9329,
+The helpers (hdmicap, serialcap, netbootd, cambrionix, dsdrelay, dsdble, phidget, hidrig, ch9329,
 shellyplug, amt, jetkvm (needs Go), zigplug, the
 OCR tool) live in the private libexec dir `~/.local/libexec/panio/bin`,
 off PATH; panio resolves them itself, and `panio helper [NAME] [ARGS…]`
@@ -834,6 +834,29 @@ Gotchas: use it from a Linux control host. On macOS the binary only works
 from a terminal app that has Bluetooth permission and is killed over SSH or
 from a hook. A board still connected to a phone app does not advertise and is
 not found. See `docs/power.md` for the full `dsdble` command surface.
+
+### Phidgets VINT relays (phidget)
+
+The `phidget` helper switches a channel of a Phidgets REL1100 relay module
+through a HUB0002 hub over raw USB. Like `dsdble` it is blind: the protocol
+has no read-back, so `on`/`off`/`cycle` succeed on the hub's ACK (a module is
+attached), not on proof the relay moved, and `phidget state` always fails with
+`state unknown`. Do not wire a `--state-cmd`. The REL1100 is wired normally
+open (`on` conducts), so a rebooted module leaves the output off. Address an
+output as `<PORT>/<CHANNEL>`, both 0-based; select a hub with `-s <serial>`
+before the verb (optional with one hub; `phidget list` shows serials).
+
+```
+panio power set -t pi5 \
+    --cycle-cmd "phidget -s AA00BB11 cycle 0/0" \
+    --on-cmd    "phidget -s AA00BB11 on 0/0" \
+    --off-cmd   "phidget -s AA00BB11 off 0/0" \
+    --doctor
+```
+
+Gotchas: on Linux it needs a udev rule for USB vendor 06c2; another process
+holding the hub (Phidget Control Panel, `phidget22networkserver`) makes it
+fail busy after 3 s. See `docs/power.md` for the full `phidget` command surface.
 
 ### Intel AMT / vPro (example)
 

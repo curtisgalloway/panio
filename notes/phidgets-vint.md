@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0
 
 # HUB0002 + REL1100 wire protocol (from libphidget22 1.26)
 
-Status: investigation notes, nothing built. libphidget22 is BSD-3 licensed
+Status: the wire-format spec for the `phidget` helper (see `phidget/AGENTS.md`). libphidget22 is BSD-3 licensed
 (`COPYING`), so reimplementing its wire format is permitted.
 
 ## Measured on hardware (2026-10-25, macOS, read-only)
