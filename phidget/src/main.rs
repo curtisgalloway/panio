@@ -50,7 +50,7 @@ relay; more VINT modules can be added to the table in src/devices.rs.
 
 ADDRESS
   Every verb takes <PORT>/<CHANNEL>, both 0-based, matching the labels printed
-  on the hardware: hub port 0 to 5, module channel 0 to 3.
+  on the hardware: hub port 0 to 5, and a module channel (0 to 3 on a REL1100).
     phidget cycle 0/0
 
 HUB
@@ -100,21 +100,21 @@ enum Cmd {
     /// Close the relay (conducting). Succeeds when the hub ACKs the packet;
     /// the relay's movement is not confirmed (hook: on_cmd).
     On {
-        /// `<PORT>/<CHANNEL>`, 0-based (port 0 to 5, channel 0 to 3).
+        /// `<PORT>/<CHANNEL>`, 0-based (port 0 to 5; channel 0 to the module's count minus 1, 0 to 3 on a REL1100).
         #[arg(value_parser = parse_address)]
         address: Address,
     },
     /// Open the relay (not conducting). Succeeds when the hub ACKs the
     /// packet; the relay's movement is not confirmed (hook: off_cmd).
     Off {
-        /// `<PORT>/<CHANNEL>`, 0-based (port 0 to 5, channel 0 to 3).
+        /// `<PORT>/<CHANNEL>`, 0-based (port 0 to 5; channel 0 to the module's count minus 1, 0 to 3 on a REL1100).
         #[arg(value_parser = parse_address)]
         address: Address,
     },
     /// Power-cycle on one connection: off -> hold -> on (hook: cycle_cmd).
     /// Neither phase is confirmed beyond the hub's ACK.
     Cycle {
-        /// `<PORT>/<CHANNEL>`, 0-based (port 0 to 5, channel 0 to 3).
+        /// `<PORT>/<CHANNEL>`, 0-based (port 0 to 5; channel 0 to the module's count minus 1, 0 to 3 on a REL1100).
         #[arg(value_parser = parse_address)]
         address: Address,
         /// Milliseconds to hold the output off before restoring it.
@@ -125,7 +125,7 @@ enum Cmd {
     /// phidget never guesses or caches. Prints nothing on stdout, so a
     /// state_cmd hook is an error, never a wrong answer.
     State {
-        /// `<PORT>/<CHANNEL>`, 0-based (port 0 to 5, channel 0 to 3).
+        /// `<PORT>/<CHANNEL>`, 0-based (port 0 to 5; channel 0 to the module's count minus 1, 0 to 3 on a REL1100).
         #[arg(value_parser = parse_address)]
         address: Address,
     },
@@ -476,7 +476,9 @@ mod tests {
             .to_string();
         assert!(unsupported.contains("does not support"), "{unsupported}");
         l.desc = descriptor(&[(0, 0x1A, 130)]);
-        // the channel parser admits 0 to 3; a 2-channel module would refuse 3
+        // the parser admits any channel; the module table refuses the REL1100's
+        // fifth channel and an empty port, before anything is written
+        assert!(set_output(&mut l, addr(0, 4), true).is_err());
         assert!(set_output(&mut l, addr(5, 3), true).is_err());
         assert!(l.sent.is_empty());
     }

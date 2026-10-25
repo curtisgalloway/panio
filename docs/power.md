@@ -846,7 +846,7 @@ module leaves the output **off**; do not use it where the target must stay
 powered if the hub loses power.
 
 An output is addressed `<PORT>/<CHANNEL>`, both 0-based, matching the labels
-printed on the hardware: hub port 0 to 5, module channel 0 to 3.
+printed on the hardware: hub port 0 to 5, and a module channel (0 to 3 on a REL1100).
 
 ### No read-back: what that means for hooks
 

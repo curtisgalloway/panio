@@ -34,6 +34,8 @@ const MAX_PACKET: usize = 64;
 /// How long to wait for the hub's ACK, and for each transfer.
 const ACK_TIMEOUT: Duration = Duration::from_secs(2);
 const CONTROL_TIMEOUT: Duration = Duration::from_millis(500);
+/// A read this short that times out means nothing stale is queued.
+const DRAIN_TIMEOUT: Duration = Duration::from_millis(20);
 /// How long to keep retrying a claim that fails with "busy".
 const CLAIM_RETRY: Duration = Duration::from_secs(3);
 
@@ -191,6 +193,17 @@ impl Link for UsbLink {
         }
         let out = self.out.as_mut().expect("set above");
         let inp = self.inp.as_mut().expect("set above");
+
+        // Every one-shot run uses the same packet id, so an ACK left unread
+        // by an earlier run that timed out would pass for this packet's ACK.
+        // An idle hub sends nothing, so read until a short read times out.
+        let drain_until = Instant::now() + ACK_TIMEOUT;
+        while Instant::now() < drain_until {
+            let c = inp.transfer_blocking(Buffer::new(MAX_PACKET), DRAIN_TIMEOUT);
+            if c.status.is_err() {
+                break;
+            }
+        }
 
         let mut buf = Buffer::new(packet.len());
         buf.extend_from_slice(packet);

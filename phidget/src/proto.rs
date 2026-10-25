@@ -48,11 +48,9 @@ impl fmt::Display for Address {
     }
 }
 
-/// Highest channel index any supported module can have (the module's own
-/// channel count is checked later against the descriptor).
-const MAX_CHANNEL: u8 = 3;
-
-/// Parse `<port>/<channel>`: port 0-5, channel 0-3.
+/// Parse `<port>/<channel>`: port 0-5, channel any number. The channel's
+/// upper bound depends on the module, so `devices::check_target` checks it
+/// against the module found on the port.
 pub fn parse_address(s: &str) -> Result<Address, String> {
     let (p, c) = s
         .split_once('/')
@@ -64,16 +62,11 @@ pub fn parse_address(s: &str) -> Result<Address, String> {
     let channel: u8 = c
         .trim()
         .parse()
-        .map_err(|_| format!("channel `{c}` is not a number (0 to {MAX_CHANNEL})"))?;
+        .map_err(|_| format!("channel `{c}` is not a number"))?;
     if port >= PORT_COUNT {
         return Err(format!(
             "port {port} is out of range (0 to {})",
             PORT_COUNT - 1
-        ));
-    }
-    if channel > MAX_CHANNEL {
-        return Err(format!(
-            "channel {channel} is out of range (0 to {MAX_CHANNEL})"
         ));
     }
     Ok(Address { port, channel })
@@ -420,7 +413,9 @@ mod tests {
                 channel: 1
             })
         );
-        for bad in ["", "0", "6/0", "0/4", "a/0", "0/b", "0/0/0", "-1/0", "0/-1"] {
+        for bad in [
+            "", "0", "6/0", "0/256", "a/0", "0/b", "0/0/0", "-1/0", "0/-1",
+        ] {
             assert!(parse_address(bad).is_err(), "{bad} should be rejected");
         }
         assert_eq!(
