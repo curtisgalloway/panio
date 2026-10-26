@@ -61,5 +61,27 @@ usbtoggle/       Rust crate: a `usb` channel helper (panio runs `<cmd> usb host|
 
 `cargo test` runs the fakes-driven unit tests, a test that really spawns the
 platform shell (`exit 0` / `exit 3`, valid in sh and cmd), and, on Unix, the
-end-to-end tests. Nothing needs hardware; hardware verification used a
-KL-SW301-board switch with a DSD TECH relay on its remote jack.
+end-to-end tests. Nothing needs hardware.
+
+## Hardware notes
+
+Verified on hardware (2026-10-25), directly and through `panio usb`, with
+[this USB 3.0 sharing switch](https://www.amazon.com/dp/B0HCHDC8X4) and a
+DSD TECH SH-UR04A relay on its remote jack, probing a USB mouse.
+
+- **The board** (marked `KL-SW301-V1.2`; look-alikes are sold under many
+  names): one peripheral port and no hub; a "7227" USB 2 DPDT switch (U4); a
+  20-pin SuperSpeed 2:1 mux marked `A34` (U6, part not identified);
+  P-channel MOSFETs marked `A19T` (Q2/Q3) on VBUS; an unmarked SOIC-8 MCU (U3)
+  reading the button and the jack. The jack is in parallel with the button.
+- **Measured:** VBUS on the peripheral port drops to 0 V when switched away;
+  a USB 3 device comes back at 5 Gb/s; a USB 2 device disconnects and comes
+  back, about 0.65 s after the relay releases. The LEDs follow every press.
+- **Not measured:** the shortest press it accepts, press vs. release, any
+  long-press function, and its side after power loss.
+- **Relays:** a dry contact works either way round. A Phidgets REL1100
+  wired across the jack did not press it: its outputs are low-side switches
+  to a shared ground, not contacts.
+- **A hub carrying both the switch and the relay board went dead** (both its
+  halves empty, the relay unreachable) after a `dsdrelay cycle` hung, until
+  the hub was power-cycled. Cause unknown; keep the relay on another hub.

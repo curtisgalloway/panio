@@ -933,11 +933,11 @@ Guide: `docs/actions.md`.
 ## Switchable USB media — hand a card between host and target
 
 Some KVM devices route one physical USB device to either side, never both.
-The `usb` channel drives that mux; today only the **Openterface KVM-Go**'s
-onboard microSD is supported, through the same `ch9329` helper and the same
+The `usb` channel drives that mux. Two kinds are supported: the **Openterface
+KVM-Go**'s onboard microSD, through the same `ch9329` helper and the same
 serial port as its `hid` channel (setting both channels to the same `--cmd`
-is normal). A cheap toggle-only **USB sharing switch** also works through the
-`usbtoggle` helper (below).
+is normal), and a cheap toggle-only **USB sharing switch** pressed by a relay,
+through the `usbtoggle` helper (below).
 
 ```
 panio usb state         -t <name>   # -> host | target
@@ -945,9 +945,10 @@ panio usb attach-host   -t <name>   # route the card to the control host
 panio usb attach-target -t <name>   # hand it to the target
 ```
 
-The use case is hands-free *physical* boot media: image the card host-side,
-attach it to the target, and firmware sees a real mass-storage device — which
-it generally will not for streamed virtual media.
+The use cases are hands-free *physical* boot media (image the card host-side,
+attach it to the target, and firmware sees a real mass-storage device, which
+it generally will not for streamed virtual media) and, with a sharing switch,
+a repeatable USB plug/unplug of any device for the target.
 
 Four rules, all of which will bite you otherwise:
 
@@ -991,6 +992,11 @@ Gotchas:
 - `dsdrelay` assumes NC wiring; a button is on the NO contact, so closing the
   button is `dsdrelay off <ch>` and opening is `on <ch>`.
 - A hand on the switch's own button moves it too; re-read with `panio usb state`.
+- **Not every sharing switch is a real unplug.** Some leave VBUS or the
+  SuperSpeed pairs connected, or hide a hub. Check a new model first
+  (`docs/usb.md`, "Check a switch before you rely on it").
+- Keep the relay's USB connection off the hub the switch is on: a wedged hub
+  takes the relay with it, and then nothing can press the button.
 
 Full guide: `docs/usb.md`. Protocol: `notes/openterface-usb-mux-spec.md`.
 
