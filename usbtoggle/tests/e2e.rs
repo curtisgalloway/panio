@@ -157,3 +157,52 @@ fn doctor_json_exits_zero_and_has_checks() {
     assert!(out.starts_with("{\"checks\": ["), "{out}");
     assert!(out.contains("\"status\": \"fail\""), "{out}");
 }
+
+#[test]
+fn relay_failures_never_print_a_success_side() {
+    for (label, close_status, open_status) in [("close", 3, 0), ("open", 0, 4), ("both", 3, 4)] {
+        let dir = std::env::temp_dir().join(format!(
+            "usbtoggle-e2e-errors-{label}-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("log");
+        let o = Command::new(env!("CARGO_BIN_EXE_usbtoggle"))
+            .args(["--state-cmd", "echo host"])
+            .args([
+                "--close-cmd",
+                &format!("echo close >> '{}'; exit {close_status}", log.display()),
+            ])
+            .args([
+                "--open-cmd",
+                &format!("echo open >> '{}'; exit {open_status}", log.display()),
+            ])
+            .args(["--hold-ms", "0", "usb", "target"])
+            .output()
+            .unwrap();
+        assert!(!o.status.success(), "{label}");
+        assert!(o.stdout.is_empty(), "{label}");
+        assert_eq!(log_lines(&dir), ["close", "open"]);
+        let err = String::from_utf8_lossy(&o.stderr);
+        if close_status != 0 {
+            assert!(err.contains("--close-cmd failed"), "{err}");
+        }
+        if open_status != 0 {
+            assert!(err.contains("open-cmd failed"), "{err}");
+        }
+        fs::remove_dir_all(&dir).unwrap();
+    }
+}
+
+#[test]
+fn state_command_target_bypasses_a_failing_target_check() {
+    let o = Command::new(env!("CARGO_BIN_EXE_usbtoggle"))
+        .args(["--state-cmd", "echo target", "--target-check-cmd", "exit 1"])
+        .args(["--close-cmd", "exit 3", "--open-cmd", "exit 4"])
+        .args(["usb", "target"])
+        .output()
+        .unwrap();
+    assert!(o.status.success());
+    assert_eq!(o.stdout, b"target\n");
+    assert!(o.stderr.is_empty());
+}

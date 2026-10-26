@@ -581,4 +581,211 @@ mod tests {
         assert!(e.to_string().contains("--close-cmd"), "{e}");
         assert!(r.log.is_empty());
     }
+
+    // Characterization tests: these pin documented limits, not evidence of
+    // physical connectivity. In particular, false means only host absence.
+    #[test]
+    fn disconnected_target_noop_is_inferred_and_does_not_wait() {
+        let (mut r, mut c) = (FakeRunner::default(), FakeClock::default());
+        let mut p = FakeProbe::new(&[false, true]);
+        let o = switch_to(Side::Target, &cfg(), &mut r, &mut p, &mut c).unwrap();
+        assert!(o.inferred);
+        assert_eq!(p.reads, 1, "later enumeration is never observed");
+        assert!(r.log.is_empty());
+        assert!(c.slept.is_empty());
+    }
+
+    #[test]
+    fn host_disappearance_after_press_is_only_inferred_success() {
+        let (mut r, mut c) = (FakeRunner::default(), FakeClock::default());
+        let mut p = FakeProbe::new(&[true, false, true]);
+        let o = switch_to(Side::Target, &cfg(), &mut r, &mut p, &mut c).unwrap();
+        assert!(o.inferred);
+        assert_eq!(p.reads, 2, "transient absence is sufficient");
+        assert_eq!(r.log, ["button:close", "button:open"]);
+    }
+
+    #[test]
+    fn misleading_initial_host_read_is_not_rechecked() {
+        let (mut r, mut c) = (FakeRunner::default(), FakeClock::default());
+        let mut p = FakeProbe::new(&[true, false]);
+        let o = switch_to(Side::Host, &cfg(), &mut r, &mut p, &mut c).unwrap();
+        assert!(!o.inferred);
+        assert_eq!(p.reads, 1);
+        assert!(r.log.is_empty());
+    }
+
+    #[test]
+    fn misleading_state_command_is_trusted_without_target_check() {
+        let mut cfg = cfg();
+        cfg.source = Source::StateCmd("st".into());
+        cfg.target_check = Some("check".into());
+        let mut r = FakeRunner::default();
+        r.captures.push((
+            "st".into(),
+            Captured {
+                code: Some(0),
+                stdout: "target".into(),
+            },
+        ));
+        r.captures.push((
+            "check".into(),
+            Captured {
+                code: Some(1),
+                stdout: String::new(),
+            },
+        ));
+        let mut p = FakeProbe::new(&[false]);
+        let o = switch_to(
+            Side::Target,
+            &cfg,
+            &mut r,
+            &mut p,
+            &mut FakeClock::default(),
+        )
+        .unwrap();
+        assert!(!o.inferred);
+        assert_eq!(r.log, ["capture:st"]);
+        assert_eq!(p.reads, 0);
+    }
+
+    struct CheckSequence {
+        buttons: Vec<String>,
+        codes: std::collections::VecDeque<i32>,
+        last: i32,
+        reads: usize,
+    }
+
+    impl CheckSequence {
+        fn new(codes: &[i32]) -> Self {
+            Self {
+                buttons: Vec::new(),
+                codes: codes.iter().copied().collect(),
+                last: 1,
+                reads: 0,
+            }
+        }
+    }
+
+    impl Runner for CheckSequence {
+        fn button(&mut self, cmd: &str) -> Result<()> {
+            self.buttons.push(cmd.into());
+            Ok(())
+        }
+        fn capture(&mut self, _: &str) -> Result<Captured> {
+            self.reads += 1;
+            if let Some(code) = self.codes.pop_front() {
+                self.last = code;
+            }
+            Ok(Captured {
+                code: Some(self.last),
+                stdout: String::new(),
+            })
+        }
+    }
+
+    #[test]
+    fn target_check_waits_through_delayed_enumeration_after_press() {
+        let mut cfg = cfg();
+        cfg.target_check = Some("check".into());
+        let mut r = CheckSequence::new(&[1, 1, 0]);
+        let mut c = FakeClock::default();
+        let mut p = FakeProbe::new(&[true, false]);
+        let o = switch_to(Side::Target, &cfg, &mut r, &mut p, &mut c).unwrap();
+        assert!(!o.inferred);
+        assert_eq!(r.buttons, ["close", "open"]);
+        assert_eq!(r.reads, 3);
+        assert_eq!(c.t, cfg.hold + cfg.poll * 2);
+    }
+
+    #[test]
+    fn disconnected_after_press_with_target_check_times_out() {
+        let mut cfg = cfg();
+        cfg.target_check = Some("check".into());
+        let mut r = CheckSequence::new(&[1]);
+        let mut p = FakeProbe::new(&[true, false]);
+        let e = switch_to(
+            Side::Target,
+            &cfg,
+            &mut r,
+            &mut p,
+            &mut FakeClock::default(),
+        )
+        .unwrap_err();
+        assert!(e.to_string().contains("neither side"));
+        assert!(e.to_string().contains("timed out"));
+        assert_eq!(r.buttons, ["close", "open"]);
+    }
+
+    #[test]
+    fn initial_neither_refuses_both_directions_without_waiting() {
+        for want in [Side::Host, Side::Target] {
+            let mut cfg = cfg();
+            cfg.target_check = Some("check".into());
+            let mut r = CheckSequence::new(&[1, 0]);
+            let mut c = FakeClock::default();
+            let mut p = FakeProbe::new(&[false]);
+            let e = switch_to(want, &cfg, &mut r, &mut p, &mut c).unwrap_err();
+            assert!(e.to_string().contains("neither side"));
+            assert!(r.buttons.is_empty());
+            assert_eq!(r.reads, 1, "does not wait for delayed initial enumeration");
+            assert!(c.slept.is_empty());
+        }
+    }
+
+    #[test]
+    fn relay_errors_abort_switch_even_if_next_read_would_match() {
+        for failures in [vec!["close"], vec!["open"], vec!["close", "open"]] {
+            let mut r = FakeRunner {
+                fail_button: failures.into_iter().map(str::to_string).collect(),
+                ..Default::default()
+            };
+            let mut p = FakeProbe::new(&[false, true]);
+            assert!(switch_to(
+                Side::Host,
+                &cfg(),
+                &mut r,
+                &mut p,
+                &mut FakeClock::default()
+            )
+            .is_err());
+            assert_eq!(r.log, ["button:close", "button:open"]);
+            assert_eq!(
+                p.reads, 1,
+                "never converts a failed relay command to success"
+            );
+        }
+    }
+
+    #[test]
+    fn falsely_successful_target_check_can_produce_unwarned_noop() {
+        let mut cfg = cfg();
+        cfg.target_check = Some("check".into());
+        let mut r = CheckSequence::new(&[0]);
+        let mut p = FakeProbe::new(&[false]);
+        let o = switch_to(
+            Side::Target,
+            &cfg,
+            &mut r,
+            &mut p,
+            &mut FakeClock::default(),
+        )
+        .unwrap();
+        assert!(
+            !o.inferred,
+            "exit zero is trusted, regardless of physical state"
+        );
+        assert!(r.buttons.is_empty());
+    }
+
+    #[test]
+    fn late_matching_observation_is_accepted_before_deadline_check() {
+        let mut cfg = cfg();
+        cfg.settle = Duration::from_millis(25);
+        let (mut r, mut c) = (FakeRunner::default(), FakeClock::default());
+        let mut p = FakeProbe::new(&[false, false, true]);
+        switch_to(Side::Host, &cfg, &mut r, &mut p, &mut c).unwrap();
+        assert_eq!(c.t - cfg.hold, Duration::from_millis(50));
+        assert_eq!(presses(&r), 1);
+    }
 }
