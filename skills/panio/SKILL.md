@@ -92,7 +92,7 @@ rejects `--json-errors`.
 cd ~/src/panio
 make install               # cargo-installs the `panio` CLI, then `panio setup`
                            # builds/installs the helper binaries (hdmicap, serialcap,
-                           # netbootd, cambrionix, dsdrelay, dsdble, phidget, hidrig, ch9329, shellyplug,
+                           # netbootd, cambrionix, dsdrelay, dsdble, phidget, usbtoggle, hidrig, ch9329, shellyplug,
                            # amt), the OCR helper, zigplug, and the bundled skills;
                            # on macOS also installs netbootd-bpf-helper
                            # setuid-root (one sudo)
@@ -100,7 +100,7 @@ make install               # cargo-installs the `panio` CLI, then `panio setup`
 
 Run once per machine; re-run after pulling or editing (it's a full rebuild).
 Only the `panio` CLI lands in `~/.cargo/bin` — make sure that's on `PATH`.
-The helpers (hdmicap, serialcap, netbootd, cambrionix, dsdrelay, dsdble, phidget, hidrig, ch9329,
+The helpers (hdmicap, serialcap, netbootd, cambrionix, dsdrelay, dsdble, phidget, usbtoggle, hidrig, ch9329,
 shellyplug, amt, jetkvm (needs Go), zigplug, the
 OCR tool) live in the private libexec dir `~/.local/libexec/panio/bin`,
 off PATH; panio resolves them itself, and `panio helper [NAME] [ARGS…]`
@@ -936,7 +936,8 @@ Some KVM devices route one physical USB device to either side, never both.
 The `usb` channel drives that mux; today only the **Openterface KVM-Go**'s
 onboard microSD is supported, through the same `ch9329` helper and the same
 serial port as its `hid` channel (setting both channels to the same `--cmd`
-is normal).
+is normal). A cheap toggle-only **USB sharing switch** also works through the
+`usbtoggle` helper (below).
 
 ```
 panio usb state         -t <name>   # -> host | target
@@ -962,6 +963,34 @@ Four rules, all of which will bite you otherwise:
 - **A device with no mux does not answer at all** — there is no "unsupported"
   reply in the protocol — so it surfaces as a timeout, which the helper
   reports as unsupported rather than broken.
+
+### USB sharing switch (usbtoggle)
+
+A 2-computer USB sharing switch only toggles; it has no readable position, so
+`usbtoggle` presses its button through any relay (`--close-cmd`/`--open-cmd`)
+and reads the position by probing for the peripheral on the control host
+(`--device VID:PID[:SERIAL]`, present = `host`) or from `--state-cmd`. The
+`--cmd` is run by a shell, so nest the quotes:
+
+```
+panio usb set -t <name> --doctor --cmd "usbtoggle --device 046d:c08b \
+  --close-cmd 'dsdrelay -s AA00BB11CC22DD33 off 1' \
+  --open-cmd 'dsdrelay -s AA00BB11CC22DD33 on 1'"
+```
+
+Gotchas:
+
+- **`target` is inferred** (device absent from the host) unless
+  `--target-check-cmd` confirms it; without it `usbtoggle` prints a loud
+  warning on stderr every time. Treat `target` without a check as "probably".
+- **It presses at most once and never retries.** A timeout (`--settle-ms`,
+  default 5000) is an error that says what was last observed; look before
+  running it again, because a second press toggles back.
+- **"Seen on neither side"** (absent and the check failed) is an error, and it
+  refuses to press blind.
+- `dsdrelay` assumes NC wiring; a button is on the NO contact, so closing the
+  button is `dsdrelay off <ch>` and opening is `on <ch>`.
+- A hand on the switch's own button moves it too; re-read with `panio usb state`.
 
 Full guide: `docs/usb.md`. Protocol: `notes/openterface-usb-mux-spec.md`.
 

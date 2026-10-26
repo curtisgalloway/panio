@@ -168,7 +168,8 @@ enum Command {
     },
     /// Switch a shared USB device between the control host and the target —
     /// an Openterface KVM-Go's onboard microSD card, or a Mini-KVM's
-    /// switchable USB-A port. Only one side sees it at a time.
+    /// switchable USB-A port, or a toggle-only USB sharing switch pressed by
+    /// a relay (`usbtoggle`). Only one side sees it at a time.
     Usb {
         #[command(subcommand)]
         cmd: UsbCmd,
@@ -1358,7 +1359,9 @@ enum UsbCmd {
         #[arg(long, short)]
         target: String,
         /// Mux helper command. panio appends a fixed verb — `usb host`,
-        /// `usb target`, or `usb state` (e.g. "ch9329 -d /dev/cu.usbmodemXXXX").
+        /// `usb target`, or `usb state` (e.g. "ch9329 -d /dev/cu.usbmodemXXXX",
+        /// or a `usbtoggle` command for a USB sharing switch; the command is
+        /// run by a shell, so quote nested commands: see docs/usb.md).
         #[arg(long)]
         cmd: String,
         #[arg(long)]

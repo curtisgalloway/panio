@@ -46,7 +46,7 @@ More on the [demos page](https://panio.dev/demos/).
 | [Power control](https://panio.dev/power/) | `panio power on/off`, `panio power-cycle`, `panio power-state`, `panio serial dtr/reset` | DTR power button (J2 header) and shell-command hooks, with optional named levels (`--level hard`) for targets with several power layers; helpers `cambrionix` (hub ports), `dsdrelay` (USB serial relay boards), `zigplug` (Zigbee plugs), `shellyplug` (Shelly Gen2+), `amt` (Intel AMT/vPro, verified HTTPS by default), `dsdble` (Bluetooth LE relay boards; wireless fallback, no state read-back), `phidget` (Phidgets VINT relay modules over USB, no state read-back) |
 | [Named actions](https://panio.dev/actions/) | `panio action` | Per-target named controls that are not power (reset, recovery, boot straps), each a hook command, discoverable by agents |
 | [HID injection](https://panio.dev/hid/) | `panio hid` | USB keyboard/mouse injection via a helper (`hidrig` KB2040 injector, `ch9329` for Openterface Mini-KVM / KVM-Go and Sipeed NanoKVM-USB, or `jetkvm` for the JetKVM network KVM) |
-| [Switchable USB media](https://panio.dev/usb/) | `panio usb` | Switch a KVM-Go's microSD card between control host and target, as boot media |
+| [Switchable USB media](https://panio.dev/usb/) | `panio usb` | Switch a KVM-Go's microSD card, or any device behind a toggle-only USB sharing switch (`usbtoggle` + a relay), between control host and target |
 | [adb (Android targets)](https://panio.dev/adb/) | `panio adb` | Drive an Android DUT over one USB cable: console (`shell`/`run`), screen (`screencap`), input |
 | [Dashboard](https://panio.dev/dashboard/) | `panio console` | Video (noVNC, type and click in the page) + serial web UI; auto-starts daemons; `-i <name>` preselects a serial interface |
 | [MCP server](https://panio.dev/mcp/) (experimental) | `panio mcp` | Runtime commands as MCP tools over stdio for agent harnesses; screenshots come back as images |
@@ -148,7 +148,7 @@ make install           # panio CLI + daemons + OCR helper, in one step
 
 - **The `panio` CLI** is the only thing on PATH (`~/.cargo/bin`).
 - **Daemons and helpers** (`hdmicap`, `serialcap`, `netbootd`, `cambrionix`,
-  `dsdrelay`, `dsdble`, `phidget`, `hidrig`, `ch9329`, `shellyplug`, `amt`) and **the OCR helper** (`visionocr`
+  `dsdrelay`, `dsdble`, `phidget`, `usbtoggle`, `hidrig`, `ch9329`, `shellyplug`, `amt`) and **the OCR helper** (`visionocr`
   on macOS via `swiftc`, `linuxocr` on Linux) go in
   `~/.local/libexec/panio/bin`, off PATH. Run one with
   `panio helper <name> [args…]` (no name lists them; `-t <target>
@@ -188,6 +188,7 @@ cargo install --path ~/src/panio/cambrionix --root ~/.local/libexec/panio # if c
 cargo install --path ~/src/panio/dsdrelay  --root ~/.local/libexec/panio  # if dsdrelay changed
 cargo install --path ~/src/panio/dsdble    --root ~/.local/libexec/panio  # if dsdble changed (Linux build needs libdbus-1-dev)
 cargo install --path ~/src/panio/phidget   --root ~/.local/libexec/panio  # if phidget changed
+cargo install --path ~/src/panio/usbtoggle --root ~/.local/libexec/panio  # if usbtoggle changed
 cargo install --path ~/src/panio/hidrig    --root ~/.local/libexec/panio  # if hidrig changed
 cargo install --path ~/src/panio/ch9329    --root ~/.local/libexec/panio  # if ch9329 changed
 cargo install --path ~/src/panio/shellyplug --root ~/.local/libexec/panio # if shellyplug changed

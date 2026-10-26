@@ -35,7 +35,7 @@ use anyhow::{anyhow, bail, Result};
 
 /// The helper crates `setup` builds and installs into libexec, in order. The
 /// `cli` crate (the `panio` binary itself) installs separately onto PATH.
-const HELPER_CRATES: [&str; 12] = [
+const HELPER_CRATES: [&str; 13] = [
     "hdmicap",
     "serialcap",
     "netbootd",
@@ -43,6 +43,7 @@ const HELPER_CRATES: [&str; 12] = [
     "dsdrelay",
     "dsdble",
     "phidget",
+    "usbtoggle",
     "hidrig",
     "ch9329",
     "shellyplug",
@@ -354,6 +355,7 @@ fn check_windows_layout() {
         "dsdrelay",
         "dsdble",
         "phidget",
+        "usbtoggle",
         "hidrig",
         "ch9329",
         "shellyplug",
