@@ -23,7 +23,7 @@ bench-host run and by CI's new smoke step.
 - profile pins: `scripts/ci-profile-pins.sh` checks the Sources table below. `ci.yml` only warns when a row is stale; `release.yml`'s `profile-pins` job blocks every package build on it, so a stale row fails the tag push's workflow before anything is built. Run it in pre-flight and re-pin before tagging
 - bump rules: conventional prefixes where present; this repo mostly writes `<crate>: <summary>`, so apply AGENTS.md: minor for a new command, channel, helper, verb, wire-protocol or daemon-lifecycle change, or a fix that changes what a target sees; patch for small fixes and docs; on the line, take the minor
 - releaser identity: tag with the author's GitHub noreply form already in the history (`git log --format=%ae | sort -u`), passed as `-c user.email` on the tag command, never edited into config
-- helpers: `hdmicap serialcap netbootd cambrionix dsdrelay dsdble phidget hidrig ch9329 shellyplug switchport amt` (the `HELPERS` line in the release workflow, and `CRATES` in `Makefile` minus the library crates, must agree; `scripts/ci-coverage-check.sh` enforces it). The Go helper `jetkvm` is deliberately NOT in that list yet: release packaging for it is milestone 1b, and the coverage script carries the written exemption. Until then it reaches users only through the source channel (`panio setup` with Go installed). Its video path needs `ffmpeg` at runtime (JetKVM video only; HID does not), and `hdmicap` gained the `tokio-tungstenite` and `futures-util` dependencies for its RFB client, so a channel smoke that builds `hdmicap` offline needs them vendored or fetchable
+- helpers: `hdmicap serialcap netbootd cambrionix dsdrelay dsdble phidget usbtoggle hidrig ch9329 shellyplug switchport amt` (the `HELPERS` line in the release workflow, and `CRATES` in `Makefile` minus the library crates, must agree; `scripts/ci-coverage-check.sh` enforces it). The Go helper `jetkvm` is deliberately NOT in that list yet: release packaging for it is milestone 1b, and the coverage script carries the written exemption. Until then it reaches users only through the source channel (`panio setup` with Go installed). Its video path needs `ffmpeg` at runtime (JetKVM video only; HID does not), and `hdmicap` gained the `tokio-tungstenite` and `futures-util` dependencies for its RFB client, so a channel smoke that builds `hdmicap` offline needs them vendored or fetchable
 - library crates: `secret` (no binary; in `Makefile` `CRATES` and CI, never in `HELPERS`; it ships compiled into `amt`, so no channel stages it and the smoke contract has nothing to check for it)
 - bundled skills: `skills/panio`, `skills/kvm-puppeting`, `skills/control-host`, `skills/managed-switch` (shipped to `share/panio/skills` in every channel)
 - log dir: `logs/release-train/<run>/` (gitignored, persistent)
@@ -170,15 +170,15 @@ feeds needs re-reading before `--update` re-pins it.
 
 | path | blob | feeds |
 |---|---|---|
-| `.github/workflows/release.yml` | 3b5d24b21a9e | Channels (every arm's build and staging), Publish |
+| `.github/workflows/release.yml` | 38cd58a503b8 | Channels (every arm's build and staging), Publish |
 | `.github/workflows/docs.yml` | 206e9ae532f2 | Publish: re-verify apt |
-| `packaging/nfpm.yaml` | af89cca3a43c | Channels: deb |
+| `packaging/nfpm.yaml` | e3496d9710c6 | Channels: deb |
 | `packaging/scripts/build-apt-repo.sh` | 391037a4ea4c | Channels: deb, install like a user |
-| `Makefile` | f4d57c0deb69 | Project: helpers; Channels: source |
-| `cli/src/setup.rs` | 5e2c12b8eb2c | Channels: source |
+| `Makefile` | f147f0ade7b0 | Project: helpers; Channels: source |
+| `cli/src/setup.rs` | e6ed6816d4c8 | Channels: source |
 | `cli/src/skills.rs` | 0cf3c3778373 | Smoke contract S2; Channels: homebrew, windows |
 | `cli/src/daemons.rs` | 863b5e59da06 | Smoke contract S3 |
 | `scripts/ci-coverage-check.sh` | 14c39a57f1c7 | Project: helpers |
 | `scripts/sync-brik.sh` | 1920fb8f6241 | Channels: windows |
-| `README.md` | bd8226e38f95 | Channels: source; Publish: re-verify apt |
-| `AGENTS.md` | bcfd5afb2e09 | Project: bump rules, tag format; Publish |
+| `README.md` | ba8cbccb6a24 | Channels: source; Publish: re-verify apt |
+| `AGENTS.md` | 2be04c13e4f2 | Project: bump rules, tag format; Publish |

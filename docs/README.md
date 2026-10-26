@@ -53,7 +53,7 @@ running, 101 hook failed, …); `--json-errors` adds a one-line JSON object. See
 | [Named actions](actions.md) | `panio action` | Reset lines, boot straps, recovery modes: named hook commands per target, with an optional power-state precondition. |
 | [Video](video.md) | `panio video` | `hdmicap` HDMI capture, or a network RFB source (JetKVM); on-device OCR. |
 | [Dashboard](dashboard.md) | `panio console` | Combined video + serial web UI. |
-| [Switchable USB media](usb.md) | `panio usb` | Switch a KVM-Go's microSD card between control host and target, as boot media. |
+| [Switchable USB media](usb.md) | `panio usb` | Switch a KVM-Go's microSD card, or any device behind a toggle-only USB sharing switch (`usbtoggle` + a relay), between control host and target. |
 | [RAM-only USB fastboot staging](fastboot.md) | External guarded runner + `panio serial` | Integration contract for fresh per-artifact service entry, bounded USB readiness, one transfer and retained verification evidence; no bundled fastboot channel. |
 | [HID injection](hid.md) | `panio hid` | USB keyboard/mouse injection via `hidrig` (KB2040) or `ch9329` (Openterface Mini-KVM / KVM-Go, Sipeed NanoKVM-USB). |
 | [adb (Android targets)](adb.md) | `panio adb` | Console (`adb shell`/`run`), screen (`screencap`), and input (`adb input`) over one USB cable. |

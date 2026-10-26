@@ -128,7 +128,7 @@ reflect the change.** Stale docs/help make the PR incomplete; fix them in the
    just your diff; `cargo fmt` fixes it.
 
    `scripts/ci-local.sh` mirrors every GitHub Linux CI job (`cli`, `serialcap`,
-   `netbootd`, `hdmicap`, `cambrionix`, `dsdrelay`, `dsdble`, `phidget`, `ch9329`, `hidrig`, `shellyplug`, `switchport`, `amt`,
+   `netbootd`, `hdmicap`, `cambrionix`, `dsdrelay`, `dsdble`, `phidget`, `usbtoggle`, `ch9329`, `hidrig`, `shellyplug`, `switchport`, `amt`,
    `secret`) and needs a Linux box or VM (it copies the tree to the VM's own
    disk, since builds on a shared virtiofs/9p mount fail), e.g. `limactl shell
    <instance> -- bash -l scripts/ci-local.sh`. It is the fuller check; the three
@@ -365,7 +365,9 @@ dashboard), `serialcap/` (serial daemon), `netbootd/` (DHCP + TFTP + HTTP
 netboot), `hidrig/` (dual-board KB2040 HID injector), `ch9329/` (CH9329 HID
 helper), and `secret/` (shared secret-resolution library) are Rust; `jetkvm/`
 (JetKVM HID + H.264-to-RFB helper) is Go; `zigplug/` (Zigbee power helper) is
-Python; `cambrionix/`, `dsdrelay/`, `dsdble/`, `phidget/` (Phidgets VINT relay modules over raw USB), `shellyplug/`, and `amt/` are Rust power helpers; `switchport/`
+Python; `cambrionix/`, `dsdrelay/`, `dsdble/`, `phidget/` (Phidgets VINT relay modules over raw USB), `shellyplug/`, and `amt/` are Rust power helpers; `usbtoggle/`
+(a toggle-only USB sharing switch pressed by any relay; a `usb` channel helper, not a
+power helper) is a Rust helper; `switchport/`
 (managed-switch port link/PoE control, TP-Link Easy Smart + SNMP; a link helper wired via
 the netboot link hooks, not a power helper) is a Rust helper; `ocr/`
 holds the OCR helpers (Apple Vision on macOS, Tesseract on Linux).

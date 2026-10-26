@@ -2,11 +2,13 @@
 
 `panio usb` gives a target hands-free *physical* boot media: write an image
 to a card on the control host, then hand the card to the target, which sees an
-ordinary USB mass-storage device that firmware can boot.
+ordinary USB mass-storage device that firmware can boot. The same channel
+also gives the target a repeatable **USB plug/unplug**: each switch to the
+host side unplugs the device from the target, each switch back plugs it in.
 
-It drives a USB mux (switch) inside some KVMs through a per-target
-**usb channel**. The mux routes one device to the control host or the
-target, **never both at once**.
+It drives a USB mux (switch) through a per-target **usb channel**: the one
+inside some KVMs, or a cheap USB sharing switch pressed by a relay. The mux
+routes one device to the control host or the target, **never both at once**.
 
 For downloading bytes into a target's RAM over USB, see
 [Guarded RAM-only USB fastboot staging](fastboot.md). That workflow uses an
@@ -20,6 +22,7 @@ external fastboot client; the media-switching commands below do not stage RAM.
 |---|---|---|
 | **Openterface KVM-Go** | onboard microSD reader | ✅ works, hardware-verified |
 | **Openterface Mini-KVM** | switchable USB-A port | ⚠️ mechanism known, no helper support yet |
+| **USB sharing switch + any relay** ([`usbtoggle`](#usb-sharing-switch-usbtoggle)) | one peripheral (keyboard, drive, hub) shared by two computers | ✅ works, hardware-verified through `panio usb` on [this USB 3.0 sharing switch](https://www.amazon.com/dp/B0HCHDC8X4) with a DSD TECH relay on its remote jack; [check yours first](#check-a-switch-before-you-rely-on-it) |
 
 **KVM-Go:** the mux uses the same serial port as the `ch9329` helper, so a
 device already set up as a `hid` channel needs only a second channel.
@@ -63,6 +66,99 @@ panio usb attach-target -t pi5
 panio power-cycle -t pi5
 ```
 
+## USB sharing switch (usbtoggle)
+
+A cheap 2-computer USB sharing switch has one peripheral port, two computer
+ports, and a momentary button; many also have a jack for a remote button.
+Pressing the button **toggles** which computer the peripheral is connected to.
+On the verified unit VBUS, USB 2 and SuperSpeed all switch; that is not a
+given for every model ([check yours](#check-a-switch-before-you-rely-on-it)).
+The `usbtoggle` helper turns one into
+a `usb` channel: computer port A goes to the control host, port B to the
+target, and a relay of your choice presses the button.
+
+**Why it needs a probe.** The switch has no readable position; it only
+toggles. So `usbtoggle` reads the position from the peripheral itself: it
+looks for the peripheral on the control host's USB bus (`--device`). Present
+means `host`. Absent means `target`, but that is an *inference*: the
+peripheral could be unplugged or a hub dead, so `usbtoggle` says so on
+stderr every time unless you add `--target-check-cmd` (exit 0 when the target
+sees the device) or use `--state-cmd` (a command that prints `host` or
+`target`). With a check configured, "absent and the check fails" is an error
+("seen on neither side"), never a guess. After a press it polls for up to
+`--settle-ms` (5000 by default) for the expected position and fails on
+timeout; it **never presses again on its own**.
+
+### Check a switch before you rely on it
+
+Many near-identical switches are sold under different names, and they differ
+in what they actually switch. One that leaves a signal connected is not a
+real unplug. Before using one as a plug/unplug tester, connect computer port
+A to the control host, leave port B empty, and check:
+
+1. **VBUS.** Put a meter on the peripheral port and press the button: it
+   should read 0 V. If it stays at 5 V, the device never loses power and only
+   the host sees a disconnect.
+2. **SuperSpeed.** A USB 3 device should come back at 5 Gb/s (System
+   Information on macOS, `lsusb -t` on Linux). 480 Mb/s means the SuperSpeed
+   pairs are not switched.
+3. **USB 2.** A USB 2-only device (a mouse) should disappear and come back.
+4. **No hub inside.** With a hub between the mux and the peripheral port, the
+   target sees the hub unplug, not your device, and the device may stay
+   powered. A switch with one peripheral port usually has none; one with
+   several usually does.
+
+The verified unit ([Amazon B0HCHDC8X4](https://www.amazon.com/dp/B0HCHDC8X4),
+board marked `KL-SW301-V1.2`) passed all four: it has one peripheral port, a
+USB 2 DPDT switch, a separate SuperSpeed 2:1 mux, P-channel MOSFETs on VBUS,
+and no hub. A device came back about 0.65 s after the relay released.
+
+**Wiring.** Put the relay's contacts across the button, at the remote jack or
+the button's own pads.
+
+- A dry-contact relay (a DSD TECH board, most relay modules) is polarity-free:
+  wire its two contacts to the jack's two conductors.
+- A low-side output such as the Phidgets REL1100 is not a contact: it pulls
+  its terminal to the module's shared ground. Wired across the jack like a
+  relay, it did not press the button. It should work with the jack's
+  pulled-up contact on the output and the jack's ground on the module ground;
+  that wiring is untested.
+- **Keep the relay's USB connection off the hub the switch is on.** During
+  testing, a hub carrying both the switch and the relay board stopped
+  responding (both its halves went empty) until it was power-cycled. The
+  cause was not pinned down, but a relay on a wedged hub cannot press the
+  button to recover.
+- The relay can be any type; `usbtoggle` only runs the shell commands you give
+  it. Test the wiring alone with `usbtoggle --close-cmd ... --open-cmd ...
+  press` before configuring the channel.
+
+**Configure the channel.** `--cmd` is run by a shell, so quote the nested
+commands with single quotes inside the double quotes (the example uses
+placeholders; take the real VID:PID from `lsusb` or System Information):
+
+```bash
+panio usb set -t pi5 --doctor --cmd "usbtoggle --device 046d:c08b \
+  --close-cmd 'dsdrelay -s AA00BB11CC22DD33 off 1' \
+  --open-cmd 'dsdrelay -s AA00BB11CC22DD33 on 1'"
+```
+
+`--device` also takes an optional serial (`046d:c08b:AA00BB11CC22DD33`) to tell
+two identical peripherals apart. Options are written before the verb, as with
+every panio helper.
+
+**dsdrelay users.** `dsdrelay`'s verbs assume the target is wired through the
+relay's NC contact. A button is wired to the NO contact, so the sense flips:
+`off` energizes the coil (the contact closes: a press) and `on` releases it.
+That is why the example above closes with `off 1` and opens with `on 1`.
+
+**What happens when.** `usb host` / `usb target` read the position first; if
+the peripheral is already on the requested side they print it and exit 0
+without pressing. Otherwise they press once (close, hold `--hold-ms`, default
+200, then open) and verify. The open command always runs after the close was
+attempted, even when the close fails. The relay commands' stdout goes to
+`usbtoggle`'s stderr; stdout carries only `host` or `target`. `usbtoggle
+doctor` is read-only and never presses.
+
 ---
 
 ## Four things that will bite you
@@ -76,7 +172,9 @@ Spotlight holds the volume open.
 seconds for the block device to appear on the receiving side.
 
 **Never assume the position persisted.** The mux resets to host when the KVM
-loses power, and a physical button can move it. Check `panio usb state`.
+loses power, and a physical button can move it. Check `panio usb state`. (On
+a sharing switch a hand on its button moves it too, and which side it picks
+after losing power has not been measured.)
 
 **Not every device has a mux.** A device without one does not answer, which
 the helper reports as a timeout.
