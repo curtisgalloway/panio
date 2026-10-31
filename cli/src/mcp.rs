@@ -867,6 +867,8 @@ fn tool_list() -> Value {
             "name": "video_shot",
             "description": "Capture the target's current screen from its HDMI-capture \
                 (video) channel. Returns the PNG and a text line `signal=<s>  hash=<h>`. \
+                An expired wait still returns the current PNG with isError false and \
+                appends (timeout) to the text line; inspect it before assuming a change. \
                 The video daemon must already be running (`panio video watch <target>`).",
             "inputSchema": {
                 "type": "object",
@@ -1758,6 +1760,29 @@ echo 'signal=ok  hash=00ff' >&2"#,
         assert!(
             args.starts_with("--lab /some/lab.toml --json-errors video shot -t pi5"),
             "{args}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn video_shot_timeout_preserves_the_image_and_status_marker() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = fake_panio(
+            dir.path(),
+            r#"while [ $# -gt 0 ]; do [ "$1" = --out ] && printf 'PNGDATA' > "$2"; shift; done
+echo 'signal=stable  hash=00ff  (timeout)' >&2"#,
+        );
+        let result = call(
+            &server(exe, None),
+            "video_shot",
+            json!({ "target": "pi5", "changed_since": "00ff", "timeout_ms": 0 }),
+        );
+        assert_eq!(result["isError"], false, "{result}");
+        assert_eq!(result["content"][0]["type"], "image");
+        assert_eq!(result["content"][0]["data"], base64(b"PNGDATA"));
+        assert_eq!(
+            result["content"][1]["text"],
+            "signal=stable  hash=00ff  (timeout)"
         );
     }
 

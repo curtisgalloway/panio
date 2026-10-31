@@ -225,6 +225,14 @@ panio video preview --open                     # open it in a browser instead of
 `shot` prints `signal=… hash=…` to stderr. Pass the hash to a later
 `--changed-since` to wait for the screen to change.
 
+If a `--changed-since` and/or `--stable` wait expires, `shot` still writes the
+current PNG and exits **0**, with `  (timeout)` appended to the stderr status
+line. Check that marker and view the image before deciding the expected
+change happened; exit status alone (including shell `&&`) is not evidence
+that the wait condition was met. Capture/transport errors can still fail
+the command. The daemon represents an expired wait as HTTP 200 plus
+`x-timeout: 1`; the image remains available for inspection.
+
 - `--stable` waits for the video signal to settle: several consecutive
   same-resolution, non-black frames. This is useful after a mode switch or
   reboot; it does **not** wait for the picture to stop changing or for a UI

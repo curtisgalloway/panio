@@ -1519,7 +1519,8 @@ enum VideoCmd {
         /// Wait until the signal is stable before capturing.
         #[arg(long)]
         stable: bool,
-        /// Only return once the frame differs from this hex hash.
+        /// Wait for the frame to differ from this hex hash. On timeout, still
+        /// return the current PNG with exit 0 and `(timeout)` on stderr.
         #[arg(long)]
         changed_since: Option<String>,
         /// Timeout in ms.

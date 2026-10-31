@@ -130,8 +130,13 @@ Rules that keep the loop honest:
 - **Never assume an action landed.** Act, settle, look, and only then decide the
   next step. If the screen did not change, your action probably missed — re-read
   the screen rather than repeating harder.
-- `--changed-since` exits non-zero on timeout. A timeout after an action that
-  *should* have a visible effect is a signal, not an inconvenience.
+- A `shot` wait that times out still saves the current frame and exits **0**;
+  its stderr status line ends in `(timeout)`. Check that marker (or the text
+  beside an MCP `video_shot` image), then view the image. Exit 0 / `isError:
+  false` proves capture succeeded, **not** that the wait condition was met;
+  do not use `&&` or exit status alone to decide an action landed. A timeout
+  after an action that *should* have a visible effect is a signal, not an
+  inconvenience. Inspect state before retrying the action.
 - For slow targets (loading dialogs, device scans, installs) poll with repeated
   `--changed-since … --timeout 30000` rather than fixed sleeps.
 

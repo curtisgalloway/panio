@@ -495,6 +495,11 @@ panio video stop [target]           # stop the daemon (on the target's host)
   for the picture to stop changing or a UI action to finish. `video shot`
   prints `signal=… hash=…` on stderr — feed that hash to `--changed-since`
   to wait efficiently for the screen to change.
+- A `shot` wait that expires still returns the current PNG and exits 0;
+  stderr ends in `(timeout)` (also the text beside an MCP `video_shot` image,
+  whose `isError` remains false). Check the marker and image: a successful
+  capture does not mean the wait condition or intended UI change happened.
+  Inspect state before repeating an action.
 - `shot --out <path>` always writes on the **invoking machine**, even when the
   video channel lives on a remote control host (the PNG streams back over SSH;
   no copy step). `video devices` hides SoC-internal video nodes (Pi pipeline

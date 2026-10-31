@@ -1728,6 +1728,14 @@ mod tests {
             "stable+changed_since with the caller's own hash must wait, not return at once"
         );
 
+        // A timeout is still a successful capture: preserve the current PNG
+        // for callers to inspect, rather than interpreting HTTP 200 as a match.
+        let body = axum::body::to_bytes(waited.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let png = image::load_from_memory(&body).unwrap();
+        assert_eq!((png.width(), png.height()), (16, 8));
+
         // The mirror: `wait=stable` alone is satisfied immediately.
         let prompt = app
             .oneshot(snapshot_request("/snapshot?wait=stable&timeout=200"))
