@@ -67,8 +67,11 @@ READING THE POSITION
 
 SAFETY
   `usb host|target` presses at most once, then waits up to --settle-ms for the
-  expected position and fails on timeout; it never retries. The open command
-  always runs after the close command was attempted. stdout carries only the
+  expected position and fails on timeout; it never retries. A result must arrive
+  before the deadline. Zero settling time cannot verify a press. Commands and
+  USB probes are not interrupted, so --settle-ms is not a whole-command timeout.
+  The open command is attempted once close returns or unwinds (even on error).
+  stdout carries only the
   resulting side; the relay commands' output goes to stderr."
 )]
 struct Cli {
@@ -78,7 +81,8 @@ struct Cli {
     close_cmd: Option<String>,
 
     /// Shell command that opens the relay again. Required for `usb host`,
-    /// `usb target` and `press`; always run once a close was attempted.
+    /// `usb target` and `press`; attempted after close returns or unwinds, even
+    /// on error (not while close is stuck).
     #[arg(long, value_name = "CMD")]
     open_cmd: Option<String>,
 
@@ -102,8 +106,9 @@ struct Cli {
     #[arg(long, value_name = "CMD")]
     target_check_cmd: Option<String>,
 
-    /// Milliseconds to wait after a press for the expected position (polled
-    /// about every 50 ms).
+    /// Milliseconds after a press within which the expected position must be
+    /// observed (polled about every 50 ms). Zero cannot verify a press. Does
+    /// not interrupt commands/probes or bound the initial read or relay commands.
     #[arg(long, value_name = "MS", default_value_t = 5000)]
     settle_ms: u64,
 
