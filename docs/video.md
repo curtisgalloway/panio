@@ -246,6 +246,14 @@ the command. The daemon represents an expired wait as HTTP 200 plus
   can satisfy this too: view the frame and, if the expected change has not
   happened, wait again using the new hash.
 
+`shot --timeout` accepts 0–60000 ms (default 2000); larger values are rejected,
+not silently shortened. The same limit applies to `read --timeout`, the MCP
+`video_shot` / `video_read` tools, and the helper
+`hdmicap shot` / `watch` commands. Direct `/snapshot?timeout=` requests above
+60000 receive HTTP 400. This bounds how long a wait holds full-rate capture;
+use repeated waits when observing a slower operation. A zero timeout checks
+the current frame without waiting for the condition.
+
 ### Change threshold
 
 The hash changes only when some pixel's brightness moves by **more than the

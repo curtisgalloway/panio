@@ -1523,8 +1523,8 @@ enum VideoCmd {
         /// return the current PNG with exit 0 and `(timeout)` on stderr.
         #[arg(long)]
         changed_since: Option<String>,
-        /// Timeout in ms.
-        #[arg(long, default_value_t = 2000)]
+        /// Wait timeout in ms (0–60000; larger values are rejected).
+        #[arg(long, default_value_t = 2000, value_parser = clap::value_parser!(u64).range(0..=video::MAX_WAIT_MS))]
         timeout: u64,
         /// Output path; "-" for stdout.
         #[arg(long, short, default_value = "-")]
@@ -1537,8 +1537,8 @@ enum VideoCmd {
         /// Wait until the signal is stable before reading.
         #[arg(long)]
         stable: bool,
-        /// Timeout in ms for the stable wait.
-        #[arg(long, default_value_t = 2000)]
+        /// Timeout in ms for the stable wait (0–60000; larger values are rejected).
+        #[arg(long, default_value_t = 2000, value_parser = clap::value_parser!(u64).range(0..=video::MAX_WAIT_MS))]
         timeout: u64,
         /// Emit the full OCR envelope (per-line text, confidence, bbox, and
         /// which engine produced it) instead of just the text. See docs/dev/ocr.md.
@@ -7299,6 +7299,23 @@ fn print_resolved_target(rt: &ResolvedTarget) {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn video_wait_timeout_range_is_validated_before_dispatch() {
+        for command in ["shot", "read"] {
+            for value in ["0", "60000"] {
+                assert!(
+                    Cli::try_parse_from(["panio", "video", command, "--timeout", value]).is_ok()
+                );
+            }
+            for value in ["60001", "120000", "18446744073709551615"] {
+                let error = Cli::try_parse_from(["panio", "video", command, "--timeout", value])
+                    .err()
+                    .expect("timeout must be rejected");
+                assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
+            }
+        }
+    }
 
     fn held_by(owner: &str) -> lease::Block {
         lease::Block {
