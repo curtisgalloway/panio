@@ -19,6 +19,7 @@ Shipped examples:
 | [`phidget/`](https://github.com/curtisgalloway/panio/tree/main/phidget) | Rust | Phidgets VINT relay modules (REL1100) through a HUB0002, over raw USB (nusb), normally-open wiring, write-only: `state` always fails |
 | [`usbtoggle/`](https://github.com/curtisgalloway/panio/tree/main/usbtoggle) | Rust | Not a power helper: a `usb` channel helper (`usb host|target|state`) that presses a USB sharing switch's button through any relay and verifies by probing the peripheral with nusb |
 | [`shellyplug/`](https://github.com/curtisgalloway/panio/tree/main/shellyplug) | Rust | Shelly Gen2+ plugs, over their local HTTP RPC |
+| [`kasaplug/`](https://github.com/curtisgalloway/panio/tree/main/kasaplug) | Rust | TP-Link Kasa plugs and power strips, over their legacy local protocol (TCP 9999) |
 | [`switchport/`](https://github.com/curtisgalloway/panio/tree/main/switchport) | Rust | Managed-switch port link/PoE (TP-Link Easy Smart, SNMP): a *link* helper, see below |
 | [`zigplug/`](https://github.com/curtisgalloway/panio/tree/main/zigplug) | Python | Zigbee smart plugs, via a CC2652 coordinator dongle |
 

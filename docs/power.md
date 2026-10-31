@@ -184,6 +184,7 @@ helpers:
 | `dsdrelay` | A channel of a DSD TECH USB serial relay board (NC wiring) | [USB serial relay board control](#usb-serial-relay-board-control-dsdrelay) |
 | `zigplug` | A Zigbee smart plug | [Zigbee smart plug control](#zigbee-smart-plug-control-zigplug) |
 | `shellyplug` | A Shelly Wi-Fi plug or relay | [Shelly smart plug control](#shelly-smart-plug-control-shellyplug) |
+| `kasaplug` | An outlet of a TP-Link Kasa Wi-Fi plug or power strip | [Kasa smart plug control](#kasa-smart-plug-control-kasaplug) |
 | `amt` | An Intel AMT (vPro) machine's own power | [Intel AMT power control](#intel-amt-power-control-amt) |
 | `dsdble` | A channel of a DSD TECH Bluetooth LE relay board (NC wiring; wireless fallback, no state read-back) | [Bluetooth LE relay board control](#bluetooth-le-relay-board-control-dsdble) |
 
@@ -1109,11 +1110,83 @@ panio power set -t target-machine \
 ### Gotcha: macOS Local Network privacy
 
 On macOS Sequoia and later, LAN access is granted per binary, attributed to
-the launching app. `shellyplug` is the only helper that reaches a LAN device
-(loopback is exempt), so it can fail with **`No route to host` (EHOSTUNREACH)**
+the launching app. `shellyplug` and `kasaplug` reach a LAN device
+(loopback is exempt), so either can fail with **`No route to host` (EHOSTUNREACH)**
 while `curl` and a browser reach the device fine. Fix: System Settings →
 Privacy & Security → Local Network, and enable the app that launches the hook
 (e.g. iTerm2/Terminal).
+
+---
+
+## Kasa smart plug control (kasaplug)
+
+The `kasaplug` helper switches **TP-Link Kasa smart plugs and power strips**
+over the device's **legacy local protocol** on TCP 9999 — no cloud, TP-Link
+account, or Home Assistant. Pure Rust (standard-library networking), no
+daemon: each request is one JSON exchange on its own TCP connection.
+
+- **Supported:** the legacy protocol (`system.get_sysinfo`,
+  `system.set_relay_state`, `emeter.get_realtime`): a 4-byte length, then the
+  JSON through an XOR autokey cipher, with no login. Tested with an HS300
+  six-outlet strip. **KLAP**, the authenticated protocol newer firmware
+  switches to, is **not** supported.
+- **Local API off:** newer firmware on some models closes TCP 9999; the device
+  then refuses the connection, and the helper says so. On an HS300 (hardware
+  2.0, firmware 1.1.2), turning on **Third-Party Integration** in the Kasa app
+  turned it back on.
+
+### Installation
+
+`make install` / `panio setup` installs it into the private libexec dir. Run
+it by hand via `panio helper kasaplug …`.
+
+### Addressing
+
+- **`-d <host>`**: a bare IP or hostname (`192.0.2.10`), optionally with a
+  port (`192.0.2.10:9999`). Use a **DHCP reservation** so a lease change does
+  not break the hook.
+- **`[id]`**: outlet index, default `0`. Single-outlet plugs only have `0`; a
+  strip uses `0..N-1` in the order `get_sysinfo` lists its outlets, so the
+  Kasa app's "Plug 5" is `4`. `doctor` with no id lists them.
+
+### Commands
+
+```bash
+kasaplug -d <host> status [id]          # device info + outlet state and power metering
+kasaplug -d <host> state  [id]          # print exactly "on" or "off" (state_cmd contract)
+kasaplug -d <host> on     [id]          # switch on, confirm by read-back
+kasaplug -d <host> off    [id]          # switch off, confirm by read-back
+kasaplug -d <host> cycle  [id] [--delay-ms 3000]
+                                        # off → confirm → delay → on → confirm
+kasaplug -d <host> doctor [id] [--json] # read-only health check (panio doctor)
+```
+
+`state` reads `system.get_sysinfo` live on every call and fails if the device
+is unreachable.
+
+`doctor` never switches an outlet. It reports three checks: `reachable` (the
+host answers; model and firmware once the protocol works), `auth` (fails when
+TCP 9999 refuses the connection or does not answer in the legacy protocol: not
+a Kasa device, or its local API is off), and `switch` (the outlets
+`get_sysinfo` lists, or the one `[id]` names). A failed check ends the list.
+`--json` prints the report `panio doctor` reads and exits 0; without it, one
+line per check and exit 1 if any failed.
+
+### Wiring into panio power hooks
+
+```bash
+panio power set -t target-machine \
+    --cycle-cmd "kasaplug -d 192.0.2.10 cycle 4" \
+    --on-cmd    "kasaplug -d 192.0.2.10 on 4" \
+    --off-cmd   "kasaplug -d 192.0.2.10 off 4" \
+    --state-cmd "kasaplug -d 192.0.2.10 state 4" \
+    --doctor
+```
+
+`--doctor` makes `panio doctor` run `kasaplug -d 192.0.2.10 doctor --json`
+(see [Helper health checks](#helper-health-checks-doctor)). On macOS the
+[Local Network privacy gotcha](#gotcha-macos-local-network-privacy) applies
+as it does to `shellyplug`.
 
 ---
 

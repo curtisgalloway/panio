@@ -1,0 +1,464 @@
+// Copyright 2026 Bayanasar Khurd
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+//! TP-Link Kasa legacy local protocol client.
+//!
+//! Kasa plugs and power strips answer JSON commands on TCP port 9999. Each
+//! message, in both directions, is a 4-byte big-endian length followed by the
+//! JSON text run through an XOR autokey cipher: the key starts at 171, and
+//! each cipher byte becomes the key for the next. It is obfuscation, not
+//! security; there is no login. One connection carries one request, which
+//! keeps every call a single stateless exchange, exactly what the one-shot
+//! power-hook contract wants.
+//!
+//! Auth: newer firmware on some models closes this API and speaks only KLAP,
+//! an authenticated HTTP protocol this helper does not implement. Such a
+//! device refuses TCP 9999; [`Client::call`] is where it surfaces.
+
+use std::io::{Read, Write};
+use std::net::{IpAddr, SocketAddr, TcpStream, ToSocketAddrs};
+use std::time::Duration;
+
+use anyhow::{anyhow, bail, Context, Result};
+use serde_json::{json, Value};
+
+/// The legacy protocol's TCP port.
+pub const PORT: u16 = 9999;
+
+/// Connect and per-read/write timeout. Generous enough for a sleepy Wi-Fi
+/// device to answer, short enough that a wrong/dead address fails a hook
+/// promptly and a doctor check stays inside panio's 10 s.
+const TIMEOUT: Duration = Duration::from_secs(3);
+
+/// Upper bound on a reply's length prefix. A six-outlet strip's sysinfo is
+/// about 1.3 KB; anything near this is a corrupt prefix, not a reply.
+const MAX_REPLY: usize = 1 << 20;
+
+/// Apply the XOR autokey cipher (key 171, each output byte keys the next).
+pub fn encrypt(plain: &[u8]) -> Vec<u8> {
+    let mut key = 171u8;
+    plain
+        .iter()
+        .map(|&b| {
+            key ^= b;
+            key
+        })
+        .collect()
+}
+
+/// Undo [`encrypt`]: each cipher byte keys the next.
+pub fn decrypt(cipher: &[u8]) -> Vec<u8> {
+    let mut key = 171u8;
+    cipher
+        .iter()
+        .map(|&c| {
+            let p = key ^ c;
+            key = c;
+            p
+        })
+        .collect()
+}
+
+/// Frame a request: 4-byte big-endian length, then the ciphered JSON.
+pub fn frame(req: &Value) -> Vec<u8> {
+    let body = encrypt(req.to_string().as_bytes());
+    let mut msg = (body.len() as u32).to_be_bytes().to_vec();
+    msg.extend(body);
+    msg
+}
+
+/// Split a `-d` value into host and port. Accepts `192.0.2.10`,
+/// `plug.local`, `192.0.2.10:9999`, `2001:db8::1` and `[2001:db8::1]:9999`;
+/// the port defaults to 9999.
+pub fn split_device(device: &str) -> (String, u16) {
+    let d = device.trim();
+    if let Ok(sa) = d.parse::<SocketAddr>() {
+        return (sa.ip().to_string(), sa.port());
+    }
+    let bare = d.trim_start_matches('[').trim_end_matches(']');
+    if let Ok(ip) = bare.parse::<IpAddr>() {
+        return (ip.to_string(), PORT);
+    }
+    if let Some((host, port)) = d.rsplit_once(':') {
+        if let Ok(port) = port.parse() {
+            return (host.to_string(), port);
+        }
+    }
+    (d.to_string(), PORT)
+}
+
+/// A relay state as the device reports it: 1 is on, 0 is off. Anything else
+/// is an error carrying the raw value, never a guessed `off`.
+pub fn relay_on(raw: &Value) -> Result<bool> {
+    match raw.as_i64() {
+        Some(1) => Ok(true),
+        Some(0) => Ok(false),
+        _ => bail!("unrecognized relay state {raw} (expected 0 or 1)"),
+    }
+}
+
+/// One switchable outlet: a strip's child, or a plug's own relay.
+#[derive(Debug, Clone)]
+pub struct Outlet {
+    /// The child id to name in a request's `context`; `None` for a plug's
+    /// own relay.
+    pub child_id: Option<String>,
+    pub alias: String,
+    /// The relay state exactly as reported; interpret with [`relay_on`].
+    pub state: Value,
+}
+
+/// Subset of `system.get_sysinfo` we surface.
+#[derive(Debug, Clone)]
+pub struct SysInfo {
+    pub device_id: String,
+    pub model: String,
+    pub hw_ver: String,
+    pub sw_ver: String,
+    pub alias: String,
+    /// In the device's own order: a strip's `children`, or a plug's single
+    /// relay. Index `i` is outlet id `i`.
+    pub outlets: Vec<Outlet>,
+}
+
+impl SysInfo {
+    fn parse(v: &Value) -> Result<SysInfo> {
+        let s = |k: &str| v.get(k).and_then(Value::as_str).unwrap_or("?").to_string();
+        let outlets = if let Some(children) = v.get("children").and_then(Value::as_array) {
+            children
+                .iter()
+                .map(|c| {
+                    let id = c
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| anyhow!("a child in get_sysinfo has no id: {c}"))?;
+                    Ok(Outlet {
+                        child_id: Some(id.to_string()),
+                        alias: c
+                            .get("alias")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_string(),
+                        state: c.get("state").cloned().unwrap_or(Value::Null),
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?
+        } else if let Some(state) = v.get("relay_state") {
+            vec![Outlet {
+                child_id: None,
+                alias: s("alias"),
+                state: state.clone(),
+            }]
+        } else {
+            Vec::new()
+        };
+        Ok(SysInfo {
+            device_id: s("deviceId"),
+            model: s("model"),
+            hw_ver: s("hw_ver"),
+            sw_ver: s("sw_ver"),
+            alias: s("alias"),
+            outlets,
+        })
+    }
+
+    /// The outlet `id` names, or an error listing the ids that exist.
+    pub fn outlet(&self, id: u32) -> Result<&Outlet> {
+        let n = self.outlets.len();
+        match self.outlets.get(id as usize) {
+            Some(o) => Ok(o),
+            None if n == 0 => bail!("outlet {id}: the device has no switchable outlet"),
+            None => bail!(
+                "outlet {id} not found: the device has {n} outlet(s), ids 0..{}",
+                n - 1
+            ),
+        }
+    }
+}
+
+/// Subset of `emeter.get_realtime` we surface, in SI units. Firmware reports
+/// either milli-units (`power_mw`, `total_wh`, ...) or plain units (`power`,
+/// `total` in kWh, ...).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Realtime {
+    pub watts: Option<f64>,
+    pub volts: Option<f64>,
+    pub amps: Option<f64>,
+    pub watt_hours: Option<f64>,
+}
+
+impl Realtime {
+    fn parse(v: &Value) -> Realtime {
+        let plain = |k: &str| v.get(k).and_then(Value::as_f64);
+        let milli = |k: &str| plain(k).map(|x| x / 1000.0);
+        Realtime {
+            watts: milli("power_mw").or_else(|| plain("power")),
+            volts: milli("voltage_mv").or_else(|| plain("voltage")),
+            amps: milli("current_ma").or_else(|| plain("current")),
+            watt_hours: plain("total_wh").or_else(|| plain("total").map(|kwh| kwh * 1000.0)),
+        }
+    }
+}
+
+/// A Kasa device addressed over its legacy local protocol.
+pub struct Client {
+    host: String,
+    port: u16,
+}
+
+impl Client {
+    /// Build a client from a user-supplied address (see [`split_device`]).
+    pub fn new(device: &str) -> Self {
+        let (host, port) = split_device(device);
+        Client { host, port }
+    }
+
+    /// `host:port`, for messages.
+    pub fn addr(&self) -> String {
+        if self.host.contains(':') {
+            format!("[{}]:{}", self.host, self.port)
+        } else {
+            format!("{}:{}", self.host, self.port)
+        }
+    }
+
+    /// Open the TCP connection one request travels on. The `io::Error` stays
+    /// in the chain, so `doctor` can tell a refused port (the host is there,
+    /// the API is not) from a host that does not answer.
+    pub fn connect(&self) -> Result<TcpStream> {
+        let addrs: Vec<SocketAddr> = (self.host.as_str(), self.port)
+            .to_socket_addrs()
+            .with_context(|| format!("cannot resolve {}", self.host))?
+            .collect();
+        let mut last = None;
+        for a in &addrs {
+            match TcpStream::connect_timeout(a, TIMEOUT) {
+                Ok(s) => {
+                    s.set_read_timeout(Some(TIMEOUT))?;
+                    s.set_write_timeout(Some(TIMEOUT))?;
+                    return Ok(s);
+                }
+                Err(e) => last = Some(e),
+            }
+        }
+        match last {
+            Some(e) => Err(anyhow::Error::new(e)
+                .context(format!("cannot reach Kasa device at {}", self.addr()))),
+            None => Err(anyhow!("{} resolved to no address", self.host)),
+        }
+    }
+
+    /// The one place every request is issued. Returns the decoded reply,
+    /// mapping transport failures to clear messages.
+    fn call(&self, req: &Value) -> Result<Value> {
+        let mut s = self.connect()?;
+        s.write_all(&frame(req))
+            .with_context(|| format!("sending to {}", self.addr()))?;
+        let mut len = [0u8; 4];
+        s.read_exact(&mut len)
+            .with_context(|| format!("no legacy reply from {}", self.addr()))?;
+        let n = u32::from_be_bytes(len) as usize;
+        if n > MAX_REPLY {
+            bail!(
+                "{} sent a reply length of {n} bytes; not a Kasa reply",
+                self.addr()
+            );
+        }
+        let mut body = vec![0u8; n];
+        s.read_exact(&mut body)
+            .with_context(|| format!("reading a {n}-byte reply from {}", self.addr()))?;
+        serde_json::from_slice(&decrypt(&body))
+            .with_context(|| format!("decoding the reply from {}", self.addr()))
+    }
+
+    /// `system.get_sysinfo` — identity, firmware, every outlet's state.
+    pub fn sysinfo(&self) -> Result<SysInfo> {
+        let v = self.call(&json!({"system": {"get_sysinfo": {}}}))?;
+        SysInfo::parse(&result(&v, "system", "get_sysinfo")?).context("parsing get_sysinfo")
+    }
+
+    /// `system.set_relay_state` — command one outlet on or off. The caller
+    /// confirms by re-reading [`Client::sysinfo`] (the contract wants
+    /// read-back).
+    pub fn set_relay(&self, outlet: &Outlet, on: bool) -> Result<()> {
+        let req = with_context(
+            json!({"system": {"set_relay_state": {"state": u8::from(on)}}}),
+            outlet,
+        );
+        result(&self.call(&req)?, "system", "set_relay_state").map(|_| ())
+    }
+
+    /// `emeter.get_realtime` for one outlet; `Ok(None)` when the device has
+    /// no meter.
+    pub fn realtime(&self, outlet: &Outlet) -> Result<Option<Realtime>> {
+        let req = with_context(json!({"emeter": {"get_realtime": {}}}), outlet);
+        let v = self.call(&req)?;
+        if module_error(&v, "emeter").is_some() {
+            return Ok(None);
+        }
+        Ok(Some(Realtime::parse(&result(
+            &v,
+            "emeter",
+            "get_realtime",
+        )?)))
+    }
+}
+
+/// Address a request at one outlet of a strip; a plug's own relay needs no
+/// context.
+fn with_context(mut req: Value, outlet: &Outlet) -> Value {
+    if let Some(id) = &outlet.child_id {
+        req["context"] = json!({ "child_ids": [id] });
+    }
+    req
+}
+
+/// A module-level error (`{"emeter": {"err_code": -1, "err_msg": "module not
+/// support"}}`), which a device returns when it lacks the module.
+fn module_error(v: &Value, module: &str) -> Option<String> {
+    let m = v.get(module)?;
+    let code = m.get("err_code")?.as_i64()?;
+    (code != 0).then(|| {
+        let msg = m.get("err_msg").and_then(Value::as_str).unwrap_or("");
+        format!("{module}: device error {code} {msg}")
+            .trim_end()
+            .to_string()
+    })
+}
+
+/// The `module.method` object of a reply, failing on a non-zero `err_code`.
+fn result(v: &Value, module: &str, method: &str) -> Result<Value> {
+    if let Some(e) = module_error(v, module) {
+        bail!("{e}");
+    }
+    let r = v
+        .get(module)
+        .and_then(|m| m.get(method))
+        .ok_or_else(|| anyhow!("{module}.{method}: unexpected reply {v}"))?;
+    match r.get("err_code").and_then(Value::as_i64) {
+        None | Some(0) => Ok(r.clone()),
+        Some(code) => {
+            let msg = r.get("err_msg").and_then(Value::as_str).unwrap_or("");
+            bail!("{module}.{method}: device error {code} {msg}")
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cipher_matches_a_known_good_request() {
+        // `{"system":{"get_sysinfo":{}}}` as a known-good client framed it
+        // when talking to a real strip.
+        let req = json!({"system": {"get_sysinfo": {}}});
+        assert_eq!(
+            frame(&req),
+            [
+                0x00, 0x00, 0x00, 0x1d, 0xd0, 0xf2, 0x81, 0xf8, 0x8b, 0xff, 0x9a, 0xf7, 0xd5, 0xef,
+                0x94, 0xb6, 0xd1, 0xb4, 0xc0, 0x9f, 0xec, 0x95, 0xe6, 0x8f, 0xe1, 0x87, 0xe8, 0xca,
+                0xf0, 0x8b, 0xf6, 0x8b, 0xf6,
+            ]
+        );
+        let text = br#"{"system":{"set_relay_state":{"state":1}}}"#;
+        assert_eq!(decrypt(&encrypt(text)), text);
+    }
+
+    #[test]
+    fn device_address_normalization() {
+        assert_eq!(split_device("192.0.2.10"), ("192.0.2.10".into(), 9999));
+        assert_eq!(
+            split_device(" 192.0.2.10:9998 "),
+            ("192.0.2.10".into(), 9998)
+        );
+        assert_eq!(split_device("plug.local"), ("plug.local".into(), 9999));
+        assert_eq!(split_device("plug.local:80"), ("plug.local".into(), 80));
+        assert_eq!(split_device("2001:db8::1"), ("2001:db8::1".into(), 9999));
+        assert_eq!(split_device("[2001:db8::1]"), ("2001:db8::1".into(), 9999));
+        assert_eq!(
+            split_device("[2001:db8::1]:9998"),
+            ("2001:db8::1".into(), 9998)
+        );
+    }
+
+    #[test]
+    fn relay_states() {
+        assert!(relay_on(&json!(1)).unwrap());
+        assert!(!relay_on(&json!(0)).unwrap());
+        let err = relay_on(&json!(2)).unwrap_err().to_string();
+        assert!(err.contains("unrecognized relay state 2"), "{err}");
+        assert!(relay_on(&json!("on")).is_err());
+        assert!(relay_on(&Value::Null).is_err());
+    }
+
+    #[test]
+    fn sysinfo_of_a_strip_and_a_plug() {
+        let strip = SysInfo::parse(&json!({
+            "model": "HS300(US)", "hw_ver": "2.0", "sw_ver": "1.1.2", "alias": "strip",
+            "deviceId": "AA00BB11CC22DD33",
+            "children": [
+                {"id": "AA00BB11CC22DD3300", "state": 1, "alias": "Plug 1"},
+                {"id": "AA00BB11CC22DD3301", "state": 0, "alias": "Plug 2"}
+            ]
+        }))
+        .unwrap();
+        assert_eq!(strip.outlets.len(), 2);
+        assert_eq!(
+            strip.outlet(1).unwrap().child_id.as_deref(),
+            Some("AA00BB11CC22DD3301")
+        );
+        let err = strip.outlet(2).unwrap_err().to_string();
+        assert!(err.contains("has 2 outlet(s), ids 0..1"), "{err}");
+
+        let plug = SysInfo::parse(&json!({
+            "model": "HS103(US)", "alias": "lamp", "relay_state": 0
+        }))
+        .unwrap();
+        assert!(plug.outlet(0).unwrap().child_id.is_none());
+        assert_eq!(plug.outlet(0).unwrap().alias, "lamp");
+        assert_eq!(plug.hw_ver, "?");
+
+        let bulb = SysInfo::parse(&json!({"model": "KL110(US)"})).unwrap();
+        assert!(bulb.outlets.is_empty());
+        assert!(bulb.outlet(0).is_err());
+    }
+
+    #[test]
+    fn realtime_in_either_unit() {
+        let milli = Realtime::parse(&json!({
+            "power_mw": 3095, "voltage_mv": 120716, "current_ma": 50, "total_wh": 12
+        }));
+        assert_eq!(milli.watts, Some(3.095));
+        assert_eq!(milli.volts, Some(120.716));
+        assert_eq!(milli.amps, Some(0.05));
+        assert_eq!(milli.watt_hours, Some(12.0));
+        let plain = Realtime::parse(&json!({"power": 3.1, "voltage": 120.7, "total": 0.5}));
+        assert_eq!(plain.watts, Some(3.1));
+        assert_eq!(plain.amps, None);
+        assert_eq!(plain.watt_hours, Some(500.0));
+    }
+
+    #[test]
+    fn device_errors_surface() {
+        let v = json!({"system": {"set_relay_state": {"err_code": -2, "err_msg": "member not support"}}});
+        let err = result(&v, "system", "set_relay_state")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("device error -2 member not support"), "{err}");
+        let v = json!({"emeter": {"err_code": -1, "err_msg": "module not support"}});
+        assert!(module_error(&v, "emeter").is_some());
+        assert!(result(&v, "emeter", "get_realtime").is_err());
+    }
+}

@@ -92,7 +92,7 @@ rejects `--json-errors`.
 cd ~/src/panio
 make install               # cargo-installs the `panio` CLI, then `panio setup`
                            # builds/installs the helper binaries (hdmicap, serialcap,
-                           # netbootd, cambrionix, dsdrelay, dsdble, phidget, usbtoggle, hidrig, ch9329, shellyplug,
+                           # netbootd, cambrionix, dsdrelay, dsdble, phidget, usbtoggle, hidrig, ch9329, shellyplug, kasaplug,
                            # amt), the OCR helper, zigplug, and the bundled skills;
                            # on macOS also installs netbootd-bpf-helper
                            # setuid-root (one sudo)
@@ -101,7 +101,7 @@ make install               # cargo-installs the `panio` CLI, then `panio setup`
 Run once per machine; re-run after pulling or editing (it's a full rebuild).
 Only the `panio` CLI lands in `~/.cargo/bin` — make sure that's on `PATH`.
 The helpers (hdmicap, serialcap, netbootd, cambrionix, dsdrelay, dsdble, phidget, usbtoggle, hidrig, ch9329,
-shellyplug, amt, jetkvm (needs Go), zigplug, the
+shellyplug, kasaplug, amt, jetkvm (needs Go), zigplug, the
 OCR tool) live in the private libexec dir `~/.local/libexec/panio/bin`,
 off PATH; panio resolves them itself, and `panio helper [NAME] [ARGS…]`
 lists or runs one directly. If a different `panio` shadows the CLI on PATH
