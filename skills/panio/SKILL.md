@@ -1053,6 +1053,11 @@ panio hid send -t <name> click left | scroll -3 | releaseall
 panio hid send -t <name> ping               # injector liveness check
 ```
 
+**Typing uses the US layout.** A character outside that layout refuses the
+whole string before typing anything. Transport failures or cancellation can
+still interrupt valid text after a prefix has reached the target; inspect the
+screen before retrying.
+
 The same dual-board control board can also back this target's **serial** and
 **power** channels: when `hidrig serve` runs it bridges the DUT's serial console
 and re-exports it as a PTY (the hid daemon is per-target, so point a `serial`
@@ -1334,6 +1339,10 @@ daemons**; `panio video watch` / `video stop` and `panio serial watch` /
 the device is free just because a daemon is gone from the tracked list.
 
 ## Quick reference — gotchas
+
+- **Typing refusal versus interruption.** Unsupported US-layout characters
+  are rejected before typing; transport failures or cancellation can leave a
+  prefix on screen. Inspect the screen before retrying interrupted text.
 
 - **Synced lab.** `set`/`add`/`rm` exiting 2 with "is synced … and read-only"
   means the lab is a copy from git or a URL (`panio config sync`). Don't `--detach` or

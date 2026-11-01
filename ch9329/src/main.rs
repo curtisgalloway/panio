@@ -76,6 +76,9 @@ struct Cli {
 enum Cmd {
     /// Type a string of text (US layout), at most 4096 characters.
     ///
+    /// A character outside the US layout refuses the whole string before
+    /// anything is typed.
+    ///
     /// Through a running daemon the wait grows with the text (10 s plus
     /// 100 ms per character). If the send times out or this process is
     /// killed, the daemon cancels the typing and releases the keys. After a
