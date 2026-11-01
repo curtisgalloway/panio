@@ -116,7 +116,10 @@ panio video shot <target> --changed-since H \
 The hash ignores brightness wobble up to the video channel's change threshold
 (default 16 levels), so H.264 noise on a JetKVM (`--device rfb+hid:`) does not
 move it. A blinking text cursor does, on every source, so `--changed-since` can
-return on a blink alone. Use `--stable`, and still view the frame to verify.
+return on a blink alone. View the frame; if the expected change has not
+happened, wait again using the new hash. `--stable` only waits for the video
+signal to settle after a mode switch or reboot, not for the picture to stop
+changing, so it does not filter cursor blinks.
 
 Rules that keep the loop honest:
 

@@ -1477,7 +1477,7 @@ enum VideoCmd {
         ocr_mode: Option<String>,
         /// Frame-change sensitivity, 0-255: how far any single pixel's luma
         /// must move from the last accepted frame before the frame hash
-        /// changes (`video shot --changed-since`, `--stable`). Smaller moves
+        /// changes (`video shot --changed-since`). Smaller moves
         /// are capture noise. Default 16 when unset; 0 = exact (any differing
         /// pixel counts). A lossy H.264 source (network KVM) was measured at
         /// noise of at most 8 levels on an unchanged screen. Takes effect when

@@ -490,9 +490,11 @@ panio video stop [target]           # stop the daemon (on the target's host)
   replugging into a different port changes the id. A name substring matching
   more than one device is an error (listing the candidates' ids), not a silent
   first-match guess.
-- `--stable` waits for a steady frame before capturing (useful right after a mode
-  switch or reboot). `video shot` prints `signal=… hash=…` on stderr — feed that
-  hash to `--changed-since` to wait efficiently for the screen to change.
+- `--stable` waits for the video signal to settle (consecutive same-resolution,
+  non-black frames, useful after a mode switch or reboot). It does not wait
+  for the picture to stop changing or a UI action to finish. `video shot`
+  prints `signal=… hash=…` on stderr — feed that hash to `--changed-since`
+  to wait efficiently for the screen to change.
 - `shot --out <path>` always writes on the **invoking machine**, even when the
   video channel lives on a remote control host (the PNG streams back over SSH;
   no copy step). `video devices` hides SoC-internal video nodes (Pi pipeline
@@ -1385,7 +1387,9 @@ the device is free just because a daemon is gone from the tracked list.
   channel's change threshold (`video set --change-threshold`, default 16), so
   the hash stays put on an unchanged screen; a blinking cursor still moves it,
   on any source, so `--changed-since` alone does not mean the content you care
-  about changed. Use `--stable` or look at the image.
+  about changed. View the image and, if the expected change has not happened,
+  wait again with the new hash. `--stable` checks the video signal, not
+  content stillness, so it does not filter a cursor blink.
 - JetKVM allows one session at a time: if a `jetkvm` hid command or daemon
   suddenly fails or reports "session taken over", someone opened the
   device's web UI. Don't open the UI to "check" while automating — it kicks
