@@ -860,7 +860,8 @@ impl Session {
     }
 
     /// Type literal text (US layout) on top of any held modifiers. Text
-    /// longer than [`MAX_TYPE_CHARS`] is refused rather than truncated.
+    /// longer than [`MAX_TYPE_CHARS`] or containing a character outside the US
+    /// layout is refused before any report is written.
     ///
     /// A character whose usage is already held (via `down`) is released
     /// first: pressing it "again" would compose the exact report already in
@@ -876,12 +877,17 @@ impl Session {
     /// command, keys held earlier with `down` included.
     pub fn type_text(&mut self, text: &str, cancel: Cancel<'_>) -> Result<()> {
         check_type_len(text)?;
+        // Validate the entire command before touching the target. Otherwise a
+        // bad character after a valid prefix would leave a half-typed command.
+        let usages = text
+            .chars()
+            .map(crate::keys::char_to_usage)
+            .collect::<Result<Vec<_>>>()?;
         let mut prev: u8 = 0;
-        for c in text.chars() {
+        for (usage, shift) in usages {
             if cancel() {
                 return Err(cancelled_error());
             }
-            let (usage, shift) = crate::keys::char_to_usage(c)?;
             let already_held = self.keys.contains(&usage);
             if already_held {
                 self.keys.retain(|&k| k != usage);
@@ -1530,6 +1536,49 @@ mod tests {
         let err = s.combo(&seven, &never_cancelled).unwrap_err().to_string();
         assert!(err.contains('6'), "{err}");
         assert!(log.snapshot().is_empty(), "refused before any write");
+    }
+
+    #[test]
+    fn type_refuses_unsupported_characters_before_any_write() {
+        for text in ["€ab", "a€b", "ab€"] {
+            let log = WriteLog::default();
+            let mut s = session_on(FakePort::acking(log.clone()));
+            // Refusal must not release or otherwise change pre-existing holds.
+            s.mods = crate::keys::MOD_LEFT_CONTROL;
+            s.keys.push(0x04);
+            let err = s.type_text(text, &never_cancelled).unwrap_err().to_string();
+            assert!(err.contains("US layout only"), "{err}");
+            assert!(
+                log.snapshot().is_empty(),
+                "{text:?}: refused before any write"
+            );
+            assert_eq!(s.mods, crate::keys::MOD_LEFT_CONTROL);
+            assert_eq!(s.keys, vec![0x04]);
+        }
+    }
+
+    #[test]
+    fn type_valid_text_preserves_case_repetition_and_trailing_spaces() {
+        let log = WriteLog::default();
+        let mut s = session_on(FakePort::acking(log.clone()));
+        s.type_text("aA  ", &never_cancelled).unwrap();
+        let writes = log.snapshot();
+        assert_eq!(writes.len(), 8, "one press and release per character");
+        for (i, (usage, mods)) in [
+            (0x04, 0),
+            (0x04, crate::keys::MOD_LEFT_SHIFT),
+            (0x2c, 0),
+            (0x2c, 0),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            assert_eq!(
+                writes[2 * i],
+                Session::frame(CMD_KB_GENERAL, &[mods, 0, usage, 0, 0, 0, 0, 0])
+            );
+            assert_eq!(writes[2 * i + 1], Session::frame(CMD_KB_GENERAL, &[0; 8]));
+        }
     }
 
     #[test]

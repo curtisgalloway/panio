@@ -988,7 +988,13 @@ Gotchas:
   warning on stderr every time. Treat `target` without a check as "probably".
 - **It presses at most once and never retries.** A timeout (`--settle-ms`,
   default 5000) is an error that says what was last observed; look before
-  running it again, because a second press toggles back.
+  running it again, because a second press toggles back. Observations completing
+  at or after the deadline cannot succeed; zero settling time cannot verify a
+  press (an already-at-the-side no-op still succeeds).
+- **`--settle-ms` is not a process timeout.** It starts after the relay opens,
+  does not bound the initial read or relay commands, and cannot interrupt a
+  shell command or USB probe. A late result fails when it returns, but a hung
+  command can still block, including preventing release while close is stuck.
 - **"Seen on neither side"** (absent and the check failed) is an error, and it
   refuses to press blind.
 - `dsdrelay` assumes NC wiring; a button is on the NO contact, so closing the
@@ -1048,6 +1054,11 @@ panio hid send -t <name> move 300 -50       # relative mouse move (negatives OK;
 panio hid send -t <name> click left | scroll -3 | releaseall
 panio hid send -t <name> ping               # injector liveness check
 ```
+
+**Typing uses the US layout.** A character outside that layout refuses the
+whole string before typing anything. Transport failures or cancellation can
+still interrupt valid text after a prefix has reached the target; inspect the
+screen before retrying.
 
 The same dual-board control board can also back this target's **serial** and
 **power** channels: when `hidrig serve` runs it bridges the DUT's serial console
@@ -1330,6 +1341,10 @@ daemons**; `panio video watch` / `video stop` and `panio serial watch` /
 the device is free just because a daemon is gone from the tracked list.
 
 ## Quick reference — gotchas
+
+- **Typing refusal versus interruption.** Unsupported US-layout characters
+  are rejected before typing; transport failures or cancellation can leave a
+  prefix on screen. Inspect the screen before retrying interrupted text.
 
 - **Synced lab.** `set`/`add`/`rm` exiting 2 with "is synced … and read-only"
   means the lab is a copy from git or a URL (`panio config sync`). Don't `--detach` or

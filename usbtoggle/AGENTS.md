@@ -37,12 +37,17 @@ usbtoggle/       Rust crate: a `usb` channel helper (panio runs `<cmd> usb host|
   exclusive with `--device` (clap `conflicts_with`).
 - **At most one press per `usb host|target`.** Already at the side: print and
   exit 0, no press. Otherwise press once and poll (50 ms) for up to
-  `--settle-ms`; a timeout is an error naming the last observation. No retry:
+  `--settle-ms`; a timeout is an error naming the last observation. The deadline
+  is exclusive: an observation must complete before it, and sleeps are capped
+  to remaining time. Zero permits no post-press observation, so only a no-op
+  can succeed. Commands/probes are still blocking and cannot be interrupted;
+  this budget is not a process timeout (the remaining part of #384). No retry:
   a second press would toggle back, and the maintainer wants refusals or loud
   warnings, never quiet surprises.
 - **The open command always runs after the close was attempted.** `press`
   holds an `OpenGuard` whose `Drop` runs the open command, so a failed close,
-  an early return, or a panic in the hold cannot leave the button held.
+  an early return, or a panic in the hold still attempts release. This is not
+  proof of physical release: open can fail, and a stuck close blocks the guard.
   `finish()` runs it on the normal path and reports its failure. The tests
   `open_runs_even_when_close_fails` and `open_runs_when_the_hold_panics` fail
   if the `Drop` body is disabled (checked).
