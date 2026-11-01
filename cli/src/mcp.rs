@@ -34,7 +34,7 @@ const PROTOCOL_VERSIONS: &[&str] = &["2025-11-25", "2025-06-18", "2025-03-26", "
 
 /// Longest `timeout_ms` a `video_shot` call may ask for. The call blocks the
 /// server (requests are handled one at a time), so it is bounded.
-const MAX_SHOT_TIMEOUT_MS: u64 = 120_000;
+const MAX_SHOT_TIMEOUT_MS: u64 = crate::video::MAX_WAIT_MS;
 const DEFAULT_SHOT_TIMEOUT_MS: u64 = 2_000;
 
 // JSON-RPC 2.0 error codes.
@@ -1627,6 +1627,35 @@ mod tests {
             ("no_such_tool", json!({ "target": "pi5" })),
         ] {
             assert!(cli_call(tool, &args).is_err(), "{tool} {args}");
+        }
+    }
+
+    #[test]
+    fn video_wait_limits_match_the_daemon_bound() {
+        assert_eq!(MAX_SHOT_TIMEOUT_MS, 60_000);
+        for timeout in [0, 60_000] {
+            let args = json!({ "target": "pi5", "timeout_ms": timeout });
+            assert!(ShotRequest::from_args(&args).is_ok());
+            assert!(cli_call("video_read", &args).is_ok());
+        }
+        for timeout in [60_001, 120_000, u64::MAX] {
+            let args = json!({ "target": "pi5", "timeout_ms": timeout });
+            assert!(ShotRequest::from_args(&args).is_err());
+            assert!(cli_call("video_read", &args).is_err());
+        }
+        let tools = tool_list();
+        // Both public schemas must advertise the bound that validation enforces.
+        for name in ["video_shot", "video_read"] {
+            let tool = tools
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|t| t["name"] == name)
+                .unwrap();
+            assert_eq!(
+                tool["inputSchema"]["properties"]["timeout_ms"]["maximum"],
+                60_000
+            );
         }
     }
 

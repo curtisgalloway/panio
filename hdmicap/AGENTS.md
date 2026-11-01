@@ -69,7 +69,9 @@ hdmicap/         Rust crate: warm-stream HDMI capture daemon
                  the outer timeout: a dropped capture-thread Sender otherwise
                  spins at 100% CPU until the deadline instead of 503 "capture
                  thread gone". snapshot_ready(): wait=stable with changed_since
-                 requires BOTH stable AND a differing hash.
+                 requires BOTH stable AND a differing hash. Snapshot waits accept
+                 0–60000 ms; larger HTTP values return 400 instead of silently
+                 clamping. The `shot`/`watch` CLI parsers enforce the same bound.
                  PNG encode/decode and the preview fallback encode run on
                  spawn_blocking, never on a tokio worker. PNG encoding, the OCR
                  subprocess and the fallback encode share AppState.expensive

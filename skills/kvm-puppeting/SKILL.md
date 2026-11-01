@@ -138,7 +138,9 @@ Rules that keep the loop honest:
   after an action that *should* have a visible effect is a signal, not an
   inconvenience. Inspect state before retrying the action.
 - For slow targets (loading dialogs, device scans, installs) poll with repeated
-  `--changed-since … --timeout 30000` rather than fixed sleeps.
+  `--changed-since … --timeout 30000` rather than fixed sleeps. Each wait
+  accepts at most 60000 ms; larger values are rejected, so repeat waits
+  instead of requesting one oversized timeout.
 
 ## Warm the daemon for multi-step work
 

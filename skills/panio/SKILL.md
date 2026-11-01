@@ -500,6 +500,10 @@ panio video stop [target]           # stop the daemon (on the target's host)
   whose `isError` remains false). Check the marker and image: a successful
   capture does not mean the wait condition or intended UI change happened.
   Inspect state before repeating an action.
+- `video shot --timeout` and `video read --timeout` accept 0–60000 ms
+  (default 2000), as do MCP `video_shot` / `video_read`. Larger values are
+  rejected rather than silently shortened. Use repeated waits for slower
+  targets; 0 checks the current frame without waiting for the condition.
 - `shot --out <path>` always writes on the **invoking machine**, even when the
   video channel lives on a remote control host (the PNG streams back over SSH;
   no copy step). `video devices` hides SoC-internal video nodes (Pi pipeline

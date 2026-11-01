@@ -104,8 +104,8 @@ enum Cmd {
         /// return the current PNG with exit 0 and `(timeout)` on stderr.
         #[arg(long)]
         changed_since: Option<String>,
-        /// Timeout in ms.
-        #[arg(long, default_value_t = 2000)]
+        /// Wait timeout in ms (0–60000; larger values are rejected).
+        #[arg(long, default_value_t = 2000, value_parser = clap::value_parser!(u64).range(0..=server::MAX_WAIT_MS))]
         timeout: u64,
         /// Output path; "-" for stdout.
         #[arg(long, default_value = "-")]
@@ -113,7 +113,8 @@ enum Cmd {
     },
     /// Block until the screen changes vs the current frame; print the new hash.
     Watch {
-        #[arg(long, default_value_t = 30000)]
+        /// Wait timeout in ms (0–60000; larger values are rejected).
+        #[arg(long, default_value_t = 30000, value_parser = clap::value_parser!(u64).range(0..=server::MAX_WAIT_MS))]
         timeout: u64,
     },
     /// Print the preview URL (open in a browser).
@@ -325,6 +326,21 @@ fn request_stop(d: &daemon::Discovery) -> Result<()> {
 #[cfg(test)]
 mod stop_tests {
     use super::*;
+
+    #[test]
+    fn snapshot_clients_reject_timeouts_above_the_daemon_limit() {
+        for command in ["shot", "watch"] {
+            for value in ["0", "60000"] {
+                assert!(Cli::try_parse_from(["hdmicap", command, "--timeout", value]).is_ok());
+            }
+            for value in ["60001", "120000", "18446744073709551615"] {
+                let error = Cli::try_parse_from(["hdmicap", command, "--timeout", value])
+                    .err()
+                    .expect("timeout must be rejected");
+                assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
+            }
+        }
+    }
 
     /// A stale record naming a live PID (here: our own) must be answered by
     /// the daemon behind the token or fail — never by a signal to that PID.

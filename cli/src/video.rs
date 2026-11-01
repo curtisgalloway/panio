@@ -32,6 +32,9 @@ pub const DAEMON: &str = "hdmicap";
 /// fixed defaults collide with stale dashboard tunnels).
 pub const DEFAULT_PORT: u16 = 0;
 
+/// Maximum snapshot wait, matching hdmicap's bounded full-rate capture window.
+pub const MAX_WAIT_MS: u64 = 60_000;
+
 /// The target's running hdmicap daemon — port and token — or None if it
 /// isn't running.
 pub fn daemon(target: &str) -> Option<daemons::Endpoint> {

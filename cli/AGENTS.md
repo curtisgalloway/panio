@@ -195,7 +195,9 @@ cli/src/
                 has an MCP twin. `serial wait` passes the interface's lab
                 `faults` as `--fault NAME=PATTERN` (`serial fault set|rm` edit
                 them; `build_slice` carries them to remote hosts)
-  video.rs      hdmicap orchestration (daemon start/stop, client passthrough)
+  video.rs      hdmicap orchestration (daemon start/stop, client passthrough);
+                MAX_WAIT_MS = 60000 keeps shot/read CLI and MCP validation
+                aligned with the daemon snapshot wait bound
   adb.rs        adb transport (argv, shell exec, run/input passthrough, exec-out
                 screencap → PNG); generic transport in core, no helper
   netboot.rs    netbootd lifecycle (spawn with log, stop, status)
