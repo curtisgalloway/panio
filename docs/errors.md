@@ -128,6 +128,9 @@ These exit with **the program's** status, like `ssh host cmd`:
 - `panio helper <name> …`
 - `panio config edit` (your `$EDITOR`)
 - `panio video shot`, `panio video devices` (the `hdmicap` helper)
+  - A `video shot` wait expiry is a successful capture, not exit 22: it
+    saves the current PNG, exits 0, and appends `(timeout)` to its stderr
+    status line. See [Capturing frames](video.md#capturing-frames).
 - `panio adb run`, `panio adb input`, `panio adb devices`
 - `panio serial connect` (tio) and `panio adb shell`, the interactive
   consoles
