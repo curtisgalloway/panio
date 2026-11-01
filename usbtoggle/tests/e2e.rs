@@ -157,3 +157,38 @@ fn doctor_json_exits_zero_and_has_checks() {
     assert!(out.starts_with("{\"checks\": ["), "{out}");
     assert!(out.contains("\"status\": \"fail\""), "{out}");
 }
+
+#[test]
+fn slow_matching_state_command_times_out_instead_of_reporting_success() {
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!(
+        "usbtoggle-e2e-slow-{}-{unique}",
+        std::process::id()
+    ));
+    fs::create_dir_all(&dir).unwrap();
+    let pressed = dir.join("pressed");
+    let opened = dir.join("opened");
+    let state_cmd = format!(
+        "if [ -f '{}' ]; then sleep 0.1; echo target; else echo host; fi",
+        pressed.display()
+    );
+    let o = Command::new(env!("CARGO_BIN_EXE_usbtoggle"))
+        .args(["--state-cmd", &state_cmd])
+        .args([
+            "--close-cmd",
+            &format!("echo close > '{}'", pressed.display()),
+        ])
+        .args(["--open-cmd", &format!("echo open > '{}'", opened.display())])
+        .args(["--hold-ms", "0", "--settle-ms", "10", "usb", "target"])
+        .output()
+        .unwrap();
+    assert!(!o.status.success(), "a late target result must not succeed");
+    assert!(o.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&o.stderr).contains("timed out after 10 ms"));
+    assert_eq!(fs::read_to_string(pressed).unwrap(), "close\n");
+    assert_eq!(fs::read_to_string(opened).unwrap(), "open\n");
+    fs::remove_dir_all(dir).unwrap();
+}

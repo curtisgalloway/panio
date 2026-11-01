@@ -87,7 +87,18 @@ sees the device) or use `--state-cmd` (a command that prints `host` or
 `target`). With a check configured, "absent and the check fails" is an error
 ("seen on neither side"), never a guess. After a press it polls for up to
 `--settle-ms` (5000 by default) for the expected position and fails on
-timeout; it **never presses again on its own**.
+timeout; it **never presses again on its own**. An observation must complete
+**before** the deadline to count as success. A zero settling time still allows
+an already-at-the-requested-side no-op, but a press cannot be verified and
+returns a timeout without a post-press read.
+
+`--settle-ms` is **not a whole-command execution timeout**. The budget starts
+after the relay opens; the initial position read and relay commands are outside
+it. An in-flight shell command or USB probe is not interrupted, so a hung one
+can still block indefinitely. A late observation is rejected when it returns,
+not accepted as success. The open command is attempted after a returned close
+failure, but cannot run while the close command remains stuck. Bounded command
+execution and descendant cleanup remain outstanding (#384).
 
 ### Check a switch before you rely on it
 

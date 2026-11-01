@@ -986,7 +986,13 @@ Gotchas:
   warning on stderr every time. Treat `target` without a check as "probably".
 - **It presses at most once and never retries.** A timeout (`--settle-ms`,
   default 5000) is an error that says what was last observed; look before
-  running it again, because a second press toggles back.
+  running it again, because a second press toggles back. Observations completing
+  at or after the deadline cannot succeed; zero settling time cannot verify a
+  press (an already-at-the-side no-op still succeeds).
+- **`--settle-ms` is not a process timeout.** It starts after the relay opens,
+  does not bound the initial read or relay commands, and cannot interrupt a
+  shell command or USB probe. A late result fails when it returns, but a hung
+  command can still block, including preventing release while close is stuck.
 - **"Seen on neither side"** (absent and the check failed) is an error, and it
   refuses to press blind.
 - `dsdrelay` assumes NC wiring; a button is on the NO contact, so closing the
