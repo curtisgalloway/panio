@@ -295,6 +295,8 @@ struct SnapReq {
 }
 
 const DEFAULT_TIMEOUT_MS: u64 = 2000;
+/// Bound the time a snapshot wait holds full-rate capture demand.
+pub const MAX_WAIT_MS: u64 = 60_000;
 
 /// Whether a frame satisfies the /snapshot wait conditions.
 ///
@@ -316,10 +318,17 @@ fn snapshot_ready(f: &FrameState, want_stable: bool, changed_since: Option<u64>)
 }
 
 async fn snapshot(State(s): State<AppState>, Query(q): Query<SnapReq>) -> Response {
+    let timeout_ms = q.timeout.unwrap_or(DEFAULT_TIMEOUT_MS);
+    if timeout_ms > MAX_WAIT_MS {
+        return (
+            StatusCode::BAD_REQUEST,
+            format!("timeout must be from 0 to {MAX_WAIT_MS} ms"),
+        )
+            .into_response();
+    }
     let mut rx = s.frames.clone();
     fresh_frame(&mut rx, &s.demand).await;
-    let timeout_ms = q.timeout.unwrap_or(DEFAULT_TIMEOUT_MS);
-    let deadline = Instant::now() + Duration::from_millis(timeout_ms).min(Duration::from_secs(60));
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
     let want_stable = q.wait.as_deref() == Some("stable");
     let changed_since = q
         .changed_since
@@ -1224,6 +1233,42 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn snapshot_rejects_excessive_timeout_instead_of_clamping() {
+        for timeout in [60_001, 120_000, u64::MAX] {
+            let (_tx, rx) = watch::channel(Arc::new(FrameState::no_device()));
+            let response = snapshot(
+                State(AppState::new(rx)),
+                Query(SnapReq {
+                    wait: Some("stable".into()),
+                    changed_since: None,
+                    timeout: Some(timeout),
+                }),
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            let body = axum::body::to_bytes(response.into_body(), 1024)
+                .await
+                .unwrap();
+            assert_eq!(&body[..], b"timeout must be from 0 to 60000 ms");
+        }
+        // Valid bounds reach normal capture handling, not argument rejection.
+        for timeout in [0, 60_000] {
+            let (tx, rx) = watch::channel(Arc::new(FrameState::no_device()));
+            drop(tx);
+            let response = snapshot(
+                State(AppState::new(rx)),
+                Query(SnapReq {
+                    wait: None,
+                    changed_since: None,
+                    timeout: Some(timeout),
+                }),
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        }
+    }
+
     // ── Review M20: /snapshot must not spin when the capture thread is gone ──
 
     /// Before the fix, dropping the capture thread's `Sender` made
@@ -1727,6 +1772,14 @@ mod tests {
             Some("1"),
             "stable+changed_since with the caller's own hash must wait, not return at once"
         );
+
+        // A timeout is still a successful capture: preserve the current PNG
+        // for callers to inspect, rather than interpreting HTTP 200 as a match.
+        let body = axum::body::to_bytes(waited.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let png = image::load_from_memory(&body).unwrap();
+        assert_eq!((png.width(), png.height()), (16, 8));
 
         // The mirror: `wait=stable` alone is satisfied immediately.
         let prompt = app

@@ -213,7 +213,7 @@ delivers (e.g. the target is off), the best format that allocated is used.
 ```bash
 panio video shot [target-machine] -o out.png   # save a screenshot (PNG)
 panio video shot [target-machine]              # PNG to stdout (default -o -)
-panio video shot --stable -o out.png           # wait for a steady frame first
+panio video shot --stable -o out.png           # wait for the video signal to settle
 panio video shot --changed-since <hex-hash> --timeout 10000 -o out.png
                                                  # block until the frame differs
 panio video preview [target-machine]           # print the live-dashboard URL (optional target, like `show`)
@@ -225,20 +225,42 @@ panio video preview --open                     # open it in a browser instead of
 `shot` prints `signal=… hash=…` to stderr. Pass the hash to a later
 `--changed-since` to wait for the screen to change.
 
-- `--stable` waits for any steady frame.
+If a `--changed-since` and/or `--stable` wait expires, `shot` still writes the
+current PNG and exits **0**, with `  (timeout)` appended to the stderr status
+line. Check that marker and view the image before deciding the expected
+change happened; exit status alone (including shell `&&`) is not evidence
+that the wait condition was met. Capture/transport errors can still fail
+the command. The daemon represents an expired wait as HTTP 200 plus
+`x-timeout: 1`; the image remains available for inspection.
+
+- `--stable` waits for the video signal to settle: several consecutive
+  same-resolution, non-black frames. This is useful after a mode switch or
+  reboot; it does **not** wait for the picture to stop changing or for a UI
+  action to finish.
 - `--changed-since` waits for any frame that differs from the hash. The hash
   covers every pixel, so one new line of text counts, and so does a blinking
   cursor or a clock ticking over. Differences too faint to matter are ignored;
   see [Change threshold](#change-threshold).
 - **Both together** (`GET /snapshot?wait=stable&changed_since=<hash>`) wait
-  for the next steady screen that differs.
+  for a frame whose signal is stable and whose hash differs. A blinking cursor
+  can satisfy this too: view the frame and, if the expected change has not
+  happened, wait again using the new hash.
+
+`shot --timeout` accepts 0–60000 ms (default 2000); larger values are rejected,
+not silently shortened. The same limit applies to `read --timeout`, the MCP
+`video_shot` / `video_read` tools, and the helper
+`hdmicap shot` / `watch` commands. Direct `/snapshot?timeout=` requests above
+60000 receive HTTP 400. This bounds how long a wait holds full-rate capture;
+use repeated waits when observing a slower operation. A zero timeout checks
+the current frame without waiting for the condition.
 
 ### Change threshold
 
 The hash changes only when some pixel's brightness moves by **more than the
 threshold** (default 16 levels out of 255) from the last frame that changed
 it. Below that it is treated as noise: snapshots still show the newest
-pixels, but the hash, `--changed-since` and `--stable` do not move. Lossy
+pixels, but the hash and `--changed-since` do not move. `--stable` checks the
+video signal independently of the hash or threshold. Lossy
 sources need this; a JetKVM's H.264 video wobbles by up to 8 levels on a
 screen nothing is touching.
 
@@ -310,7 +332,7 @@ otherwise the view is watch-only. `GET /status` shows `rfb_clients` and
 
 ```bash
 panio video read [target-machine]            # OCR the current frame, text to stdout
-panio video read --stable [--timeout <ms>]   # wait for a steady frame first
+panio video read --stable [--timeout <ms>]   # wait for the video signal to settle
 ```
 
 OCR runs locally: Apple Vision's `VNRecognizeTextRequest` on macOS, Tesseract

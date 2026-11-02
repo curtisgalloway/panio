@@ -490,9 +490,20 @@ panio video stop [target]           # stop the daemon (on the target's host)
   replugging into a different port changes the id. A name substring matching
   more than one device is an error (listing the candidates' ids), not a silent
   first-match guess.
-- `--stable` waits for a steady frame before capturing (useful right after a mode
-  switch or reboot). `video shot` prints `signal=… hash=…` on stderr — feed that
-  hash to `--changed-since` to wait efficiently for the screen to change.
+- `--stable` waits for the video signal to settle (consecutive same-resolution,
+  non-black frames, useful after a mode switch or reboot). It does not wait
+  for the picture to stop changing or a UI action to finish. `video shot`
+  prints `signal=… hash=…` on stderr — feed that hash to `--changed-since`
+  to wait efficiently for the screen to change.
+- A `shot` wait that expires still returns the current PNG and exits 0;
+  stderr ends in `(timeout)` (also the text beside an MCP `video_shot` image,
+  whose `isError` remains false). Check the marker and image: a successful
+  capture does not mean the wait condition or intended UI change happened.
+  Inspect state before repeating an action.
+- `video shot --timeout` and `video read --timeout` accept 0–60000 ms
+  (default 2000), as do MCP `video_shot` / `video_read`. Larger values are
+  rejected rather than silently shortened. Use repeated waits for slower
+  targets; 0 checks the current frame without waiting for the condition.
 - `shot --out <path>` always writes on the **invoking machine**, even when the
   video channel lives on a remote control host (the PNG streams back over SSH;
   no copy step). `video devices` hides SoC-internal video nodes (Pi pipeline
@@ -986,7 +997,13 @@ Gotchas:
   warning on stderr every time. Treat `target` without a check as "probably".
 - **It presses at most once and never retries.** A timeout (`--settle-ms`,
   default 5000) is an error that says what was last observed; look before
-  running it again, because a second press toggles back.
+  running it again, because a second press toggles back. Observations completing
+  at or after the deadline cannot succeed; zero settling time cannot verify a
+  press (an already-at-the-side no-op still succeeds).
+- **`--settle-ms` is not a process timeout.** It starts after the relay opens,
+  does not bound the initial read or relay commands, and cannot interrupt a
+  shell command or USB probe. A late result fails when it returns, but a hung
+  command can still block, including preventing release while close is stuck.
 - **"Seen on neither side"** (absent and the check failed) is an error, and it
   refuses to press blind.
 - `dsdrelay` assumes NC wiring; a button is on the NO contact, so closing the
@@ -1046,6 +1063,11 @@ panio hid send -t <name> move 300 -50       # relative mouse move (negatives OK;
 panio hid send -t <name> click left | scroll -3 | releaseall
 panio hid send -t <name> ping               # injector liveness check
 ```
+
+**Typing uses the US layout.** A character outside that layout refuses the
+whole string before typing anything. Transport failures or cancellation can
+still interrupt valid text after a prefix has reached the target; inspect the
+screen before retrying.
 
 The same dual-board control board can also back this target's **serial** and
 **power** channels: when `hidrig serve` runs it bridges the DUT's serial console
@@ -1329,6 +1351,10 @@ the device is free just because a daemon is gone from the tracked list.
 
 ## Quick reference — gotchas
 
+- **Typing refusal versus interruption.** Unsupported US-layout characters
+  are rejected before typing; transport failures or cancellation can leave a
+  prefix on screen. Inspect the screen before retrying interrupted text.
+
 - **Synced lab.** `set`/`add`/`rm` exiting 2 with "is synced … and read-only"
   means the lab is a copy from git or a URL (`panio config sync`). Don't `--detach` or
   `--force` to get an edit in; the change belongs in the source repository, so
@@ -1370,7 +1396,9 @@ the device is free just because a daemon is gone from the tracked list.
   channel's change threshold (`video set --change-threshold`, default 16), so
   the hash stays put on an unchanged screen; a blinking cursor still moves it,
   on any source, so `--changed-since` alone does not mean the content you care
-  about changed. Use `--stable` or look at the image.
+  about changed. View the image and, if the expected change has not happened,
+  wait again with the new hash. `--stable` checks the video signal, not
+  content stillness, so it does not filter a cursor blink.
 - JetKVM allows one session at a time: if a `jetkvm` hid command or daemon
   suddenly fails or reports "session taken over", someone opened the
   device's web UI. Don't open the UI to "check" while automating — it kicks

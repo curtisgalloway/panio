@@ -209,8 +209,8 @@ fn to_outcome(obs: Observed) -> Result<Outcome> {
 }
 
 /// Runs the open command when dropped (or explicitly through `finish`), so a
-/// failed close, an error, or a panic between close and open can never leave
-/// the button held down.
+/// failed close, an error, or a panic between close and open still attempts
+/// release. A stuck close or a failing open cannot guarantee physical release.
 struct OpenGuard<'a> {
     runner: &'a mut dyn Runner,
     cmd: &'a str,
@@ -286,25 +286,33 @@ pub fn switch_to(
     let start = clock.now();
     let mut last = format!("before the press: {}", first.describe());
     loop {
+        let elapsed = clock.now().saturating_sub(start);
+        if elapsed >= cfg.settle {
+            break;
+        }
         match observe(cfg, runner, probe) {
             Ok(obs) => {
-                if obs.side() == Some(want) {
+                // The observation itself may have taken time. Never accept a
+                // result obtained at or after the settling deadline.
+                last = obs.describe().to_string();
+                if clock.now().saturating_sub(start) < cfg.settle && obs.side() == Some(want) {
                     return to_outcome(obs);
                 }
-                last = obs.describe().to_string();
             }
             Err(e) => last = format!("{e:#}"),
         }
-        if clock.now().saturating_sub(start) >= cfg.settle {
-            bail!(
-                "timed out after {} ms waiting for the device to reach the {}; last \
-                 observed: {last}. The button was pressed once and not pressed again",
-                cfg.settle.as_millis(),
-                want.as_str()
-            );
+        let remaining = cfg.settle.saturating_sub(clock.now().saturating_sub(start));
+        if remaining.is_zero() {
+            break;
         }
-        clock.sleep(cfg.poll);
+        clock.sleep(cfg.poll.min(remaining));
     }
+    bail!(
+        "timed out after {} ms waiting for the device to reach the {}; last \
+         observed: {last}. The button was pressed once and not pressed again",
+        cfg.settle.as_millis(),
+        want.as_str()
+    );
 }
 
 #[cfg(test)]
@@ -442,6 +450,91 @@ mod tests {
         assert!(msg.contains("timed out after 1000 ms"), "{msg}");
         assert!(msg.contains("last observed"), "{msg}");
         assert_eq!(presses(&r), 1, "never press again: {:?}", r.log);
+    }
+
+    #[test]
+    fn polling_stops_at_the_deadline_without_a_late_read() {
+        let mut cfg = cfg();
+        cfg.settle = Duration::from_millis(25);
+        let (mut r, mut c) = (FakeRunner::default(), FakeClock::default());
+        // The third read would match, but it must not be made at the deadline.
+        let mut p = FakeProbe::new(&[false, false, true]);
+        let e = switch_to(Side::Host, &cfg, &mut r, &mut p, &mut c).unwrap_err();
+        assert!(e.to_string().contains("timed out after 25 ms"));
+        assert_eq!(p.reads, 2);
+        assert_eq!(c.slept, [cfg.hold, cfg.settle]);
+        assert_eq!(c.t, cfg.hold + cfg.settle);
+        assert_eq!(r.log, ["button:close", "button:open"]);
+    }
+
+    #[test]
+    fn zero_settling_time_keeps_noop_but_cannot_verify_a_press() {
+        let mut cfg = cfg();
+        cfg.settle = Duration::ZERO;
+        let (mut r, mut c) = (FakeRunner::default(), FakeClock::default());
+        let mut p = FakeProbe::new(&[true]);
+        assert!(switch_to(Side::Host, &cfg, &mut r, &mut p, &mut c).is_ok());
+        assert!(r.log.is_empty());
+
+        let mut p = FakeProbe::new(&[false, true]);
+        let e = switch_to(Side::Host, &cfg, &mut r, &mut p, &mut c).unwrap_err();
+        assert!(e.to_string().contains("timed out after 0 ms"));
+        assert_eq!(p.reads, 1, "no budget for a post-press observation");
+        assert_eq!(c.slept, [cfg.hold]);
+        assert_eq!(r.log, ["button:close", "button:open"]);
+    }
+
+    #[test]
+    fn matching_observation_must_complete_before_the_deadline() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+
+        struct SharedClock(Rc<Cell<Duration>>);
+        impl Clock for SharedClock {
+            fn now(&self) -> Duration {
+                self.0.get()
+            }
+            fn sleep(&mut self, d: Duration) {
+                self.0.set(self.0.get() + d);
+            }
+        }
+        struct SlowProbe {
+            time: Rc<Cell<Duration>>,
+            delay: Duration,
+            reads: usize,
+        }
+        impl Probe for SlowProbe {
+            fn present(&mut self) -> Result<bool> {
+                self.reads += 1;
+                if self.reads == 1 {
+                    return Ok(false);
+                }
+                self.time.set(self.time.get() + self.delay);
+                Ok(true)
+            }
+        }
+
+        // The boundary is exclusive: a result at 25 ms is already too late.
+        for (delay_ms, succeeds) in [(24, true), (25, false), (150, false)] {
+            let time = Rc::new(Cell::new(Duration::ZERO));
+            let mut clock = SharedClock(Rc::clone(&time));
+            let mut p = SlowProbe {
+                time,
+                delay: Duration::from_millis(delay_ms),
+                reads: 0,
+            };
+            let mut cfg = cfg();
+            cfg.settle = Duration::from_millis(25);
+            let mut r = FakeRunner::default();
+            let result = switch_to(Side::Host, &cfg, &mut r, &mut p, &mut clock);
+            assert_eq!(result.is_ok(), succeeds, "delay: {delay_ms} ms");
+            if let Err(e) = result {
+                assert!(e.to_string().contains("timed out after 25 ms"));
+                assert!(e.to_string().contains("device is present on the host"));
+            }
+            assert_eq!(p.reads, 2);
+            assert_eq!(r.log, ["button:close", "button:open"]);
+        }
     }
 
     #[test]

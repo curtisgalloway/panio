@@ -33,8 +33,10 @@ ch9329/          WCH CH9329 UART->USB-HID bridge client. Verified on an
                    - `tap`/`combo`/`type_text` best-effort release whatever
                      they pressed if a later step fails; `combo` refuses (ERR)
                      a chord needing more than the 6 key slots rather than
-                     truncating; typing a usage already held via `down`
-                     releases it first so the press is a real edge.
+                     truncating; `type_text` validates the full string's US
+                     layout mapping before writing any report; typing a usage
+                     already held via `down` releases it first so the press is
+                     a real edge.
                    - `usb_cmd` (mux switch) turns a reply timeout into a "not
                      supported" error that is not transport loss, so a
                      mux-less `usb state` never trips uart.rs's reopen.

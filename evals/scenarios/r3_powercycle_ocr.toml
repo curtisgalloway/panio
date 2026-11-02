@@ -11,7 +11,7 @@ boot screen to come up, and tell me what it says on screen. List the exact
 panio commands you would run, in order.
 """
 traps = [
-  "use `--stable` after a reboot so OCR/capture waits for a steady frame",
+  "use `--stable` after a reboot so OCR/capture waits for the video signal to settle, not content stillness",
   "OCR is weak on tiny console fonts (1/l, 2/Z confusions) — read large boot text",
   "DO NOT change the target's console font to improve OCR — other agents rely on it",
 ]

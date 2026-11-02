@@ -34,7 +34,7 @@ const PROTOCOL_VERSIONS: &[&str] = &["2025-11-25", "2025-06-18", "2025-03-26", "
 
 /// Longest `timeout_ms` a `video_shot` call may ask for. The call blocks the
 /// server (requests are handled one at a time), so it is bounded.
-const MAX_SHOT_TIMEOUT_MS: u64 = 120_000;
+const MAX_SHOT_TIMEOUT_MS: u64 = crate::video::MAX_WAIT_MS;
 const DEFAULT_SHOT_TIMEOUT_MS: u64 = 2_000;
 
 // JSON-RPC 2.0 error codes.
@@ -867,6 +867,8 @@ fn tool_list() -> Value {
             "name": "video_shot",
             "description": "Capture the target's current screen from its HDMI-capture \
                 (video) channel. Returns the PNG and a text line `signal=<s>  hash=<h>`. \
+                An expired wait still returns the current PNG with isError false and \
+                appends (timeout) to the text line; inspect it before assuming a change. \
                 The video daemon must already be running (`panio video watch <target>`).",
             "inputSchema": {
                 "type": "object",
@@ -1629,6 +1631,35 @@ mod tests {
     }
 
     #[test]
+    fn video_wait_limits_match_the_daemon_bound() {
+        assert_eq!(MAX_SHOT_TIMEOUT_MS, 60_000);
+        for timeout in [0, 60_000] {
+            let args = json!({ "target": "pi5", "timeout_ms": timeout });
+            assert!(ShotRequest::from_args(&args).is_ok());
+            assert!(cli_call("video_read", &args).is_ok());
+        }
+        for timeout in [60_001, 120_000, u64::MAX] {
+            let args = json!({ "target": "pi5", "timeout_ms": timeout });
+            assert!(ShotRequest::from_args(&args).is_err());
+            assert!(cli_call("video_read", &args).is_err());
+        }
+        let tools = tool_list();
+        // Both public schemas must advertise the bound that validation enforces.
+        for name in ["video_shot", "video_read"] {
+            let tool = tools
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|t| t["name"] == name)
+                .unwrap();
+            assert_eq!(
+                tool["inputSchema"]["properties"]["timeout_ms"]["maximum"],
+                60_000
+            );
+        }
+    }
+
+    #[test]
     fn shot_request_validates_and_builds_argv() {
         let r = ShotRequest::from_args(&json!({
             "target": "pi5", "changed_since": "abc", "stable": true, "timeout_ms": 5000
@@ -1758,6 +1789,29 @@ echo 'signal=ok  hash=00ff' >&2"#,
         assert!(
             args.starts_with("--lab /some/lab.toml --json-errors video shot -t pi5"),
             "{args}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn video_shot_timeout_preserves_the_image_and_status_marker() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = fake_panio(
+            dir.path(),
+            r#"while [ $# -gt 0 ]; do [ "$1" = --out ] && printf 'PNGDATA' > "$2"; shift; done
+echo 'signal=stable  hash=00ff  (timeout)' >&2"#,
+        );
+        let result = call(
+            &server(exe, None),
+            "video_shot",
+            json!({ "target": "pi5", "changed_since": "00ff", "timeout_ms": 0 }),
+        );
+        assert_eq!(result["isError"], false, "{result}");
+        assert_eq!(result["content"][0]["type"], "image");
+        assert_eq!(result["content"][0]["data"], base64(b"PNGDATA"));
+        assert_eq!(
+            result["content"][1]["text"],
+            "signal=stable  hash=00ff  (timeout)"
         );
     }
 

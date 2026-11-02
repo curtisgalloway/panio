@@ -116,7 +116,10 @@ panio video shot <target> --changed-since H \
 The hash ignores brightness wobble up to the video channel's change threshold
 (default 16 levels), so H.264 noise on a JetKVM (`--device rfb+hid:`) does not
 move it. A blinking text cursor does, on every source, so `--changed-since` can
-return on a blink alone. Use `--stable`, and still view the frame to verify.
+return on a blink alone. View the frame; if the expected change has not
+happened, wait again using the new hash. `--stable` only waits for the video
+signal to settle after a mode switch or reboot, not for the picture to stop
+changing, so it does not filter cursor blinks.
 
 Rules that keep the loop honest:
 
@@ -127,10 +130,17 @@ Rules that keep the loop honest:
 - **Never assume an action landed.** Act, settle, look, and only then decide the
   next step. If the screen did not change, your action probably missed — re-read
   the screen rather than repeating harder.
-- `--changed-since` exits non-zero on timeout. A timeout after an action that
-  *should* have a visible effect is a signal, not an inconvenience.
+- A `shot` wait that times out still saves the current frame and exits **0**;
+  its stderr status line ends in `(timeout)`. Check that marker (or the text
+  beside an MCP `video_shot` image), then view the image. Exit 0 / `isError:
+  false` proves capture succeeded, **not** that the wait condition was met;
+  do not use `&&` or exit status alone to decide an action landed. A timeout
+  after an action that *should* have a visible effect is a signal, not an
+  inconvenience. Inspect state before retrying the action.
 - For slow targets (loading dialogs, device scans, installs) poll with repeated
-  `--changed-since … --timeout 30000` rather than fixed sleeps.
+  `--changed-since … --timeout 30000` rather than fixed sleeps. Each wait
+  accepts at most 60000 ms; larger values are rejected, so repeat waits
+  instead of requesting one oversized timeout.
 
 ## Warm the daemon for multi-step work
 

@@ -55,8 +55,8 @@ restarting it loses those tokens (the lease itself stays until it expires, so
 | Tool | Arguments | Returns |
 |---|---|---|
 | `target_list` | none | JSON: each target's name, description, hosts, and channels (kind, name, host). |
-| `video_shot` | `target` (required); `changed_since` (a hash); `stable` (bool); `timeout_ms` (0–120000, default 2000) | The screen as a PNG image, plus a text line `signal=<s>  hash=<h>`. |
-| `video_read` | `target`; `stable`; `timeout_ms` | The text on the screen (OCR), as `panio video read`. |
+| `video_shot` | `target` (required); `changed_since` (a hash); `stable` (bool); `timeout_ms` (0–60000, default 2000) | The screen as a PNG image, plus a text line `signal=<s>  hash=<h>`. An expired wait appends `  (timeout)` and still returns the current frame with `isError: false`; inspect the marker/image, not `isError` alone, to decide whether the expected change happened. |
+| `video_read` | `target`; `stable`; `timeout_ms` (0–60000, default 2000) | The text on the screen (OCR), as `panio video read`. |
 | `serial_status` | `target`; `interface` | Read-only JSON: configured/active identity, process and port state, capture epoch and RX/TX progress. Missing evidence is unknown; none proves target command execution. |
 | `serial_wait` | `target`; `epoch` and `since` (required); `interface`; `pattern`; `timeout_ms` (0–3600000); `max_bytes` (1–1048576); `max_output_bytes` (4096–8388608); `include_pending`; `follow` | Bounded fresh raw evidence with timing and explicit matched/timeout/cap/disconnect/fault status. The interface's lab [fault rules](serial.md#fault-rules) apply automatically and end the wait with `fault` (naming the rule) when one appears before `pattern`. Accepted bytes survive incomplete waits. Follow objects are returned together when the call finishes. |
 | `serial_evidence` | `target`; `interface`; `epoch`; `since` (requires epoch); `max_bytes` (1–1048576, default 65536) | Read-only JSON: immutable exact-byte receive records, original RX/capture times, observation time, epoch/generation, retained cursors and cap/gap/fault diagnostics. See [receive evidence](serial.md#immutable-receive-evidence). |

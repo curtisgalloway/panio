@@ -67,7 +67,7 @@ sequences.
   `LEFT_CONTROL`, `FORWARD_SLASH`, `F1`…`F12`, `PRINT_SCREEN`, `SCROLL_LOCK`,
   `PAUSE`, `NUM_LOCK`, `APPLICATION`).
 - **`type`** assumes a **US layout** and rejects a character it can't type with
-  `ERR`.
+  `ERR` before typing anything.
 - **`combo`** chords at most 6 non-modifier keys and refuses more with `ERR`.
 - **`version`** reports `1 ch9329/0.1.0 moveabs`: it has a true absolute
   pointer. It does *not* advertise `baud` (see
