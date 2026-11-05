@@ -1,0 +1,98 @@
+#cloud-config
+# SPDX-FileCopyrightText: 2026 Curtis Galloway
+# SPDX-License-Identifier: Apache-2.0
+#
+# panio control-host seed — pi-usb flavor, Raspberry Pi OS Trixie Lite arm64.
+# The Pi needs no network to provision and is reached over its USB-C port,
+# which becomes a USB Ethernet device on the attached host. Drop this on the
+# FAT `bootfs` partition as `user-data`, alongside `meta-data`,
+# `network-config`, an empty `ssh` file, and the `panio-offline/` directory of
+# .deb files. See ../README.md for the procedure and the placeholder list.
+#
+# `#cloud-config` MUST stay the first line — cloud-init sniffs it to decide
+# the payload type, and anything above it (including this header) would make
+# the file be ignored.
+#
+# Four angle-bracket placeholders below must be replaced before flashing.
+# Run `panio skill control-host` for the whole procedure.
+
+hostname: <hostname>
+manage_etc_hosts: true
+
+users:
+  - name: <user>
+    gecos: <full-name>
+    # dialout: serial consoles. video: HDMI capture devices. gpio/plugdev:
+    # USB helper hardware. The .deb deliberately does not manage group
+    # membership, so the seed does it declaratively.
+    groups: [adm, sudo, dialout, video, gpio, plugdev]
+    shell: /bin/bash
+    sudo: "ALL=(ALL) NOPASSWD:ALL"
+    lock_passwd: true
+    ssh_authorized_keys:
+      - <ssh-public-key>
+
+ssh_pwauth: false
+
+# Same three-part sshd arrangement as pi-sd: this key is a silent no-op on the
+# validated image, and the empty `ssh` flag file plus this bootcmd do the work.
+# NEVER add `--now` here: bootcmd runs pre-network, and it deadlocks the boot.
+enable_ssh: true
+bootcmd:
+  - [ sh, -c, "systemctl enable ssh || true" ]
+
+# Nothing here may touch the network: there may be none. Everything the stock
+# image lacks comes from panio-offline/ on the boot partition.
+package_update: false
+
+# Deliberately NOT `rpi: enable_usb_gadget: true`. That runs rpi-usb-gadget,
+# which makes the Pi a DHCP and NAT server on 10.12.194.1 with IPv6 off and
+# starts a watcher that switches profiles. This flavor is link-local, so the
+# seed loads the gadget itself. The matching dwc2 overlay line goes in
+# config.txt at flash time, so it is already active on the first boot.
+write_files:
+  - path: /etc/modules-load.d/panio-usb-gadget.conf
+    content: |
+      g_ether
+  # 85-nm-unmanaged.rules makes NetworkManager ignore gadget interfaces, which
+  # would leave the profile below unused. This must sort after it.
+  - path: /etc/udev/rules.d/86-panio-usb-gadget.rules
+    content: |
+      SUBSYSTEM=="net", ENV{DEVTYPE}=="gadget", ENV{NM_UNMANAGED}="0"
+  - path: /etc/NetworkManager/system-connections/usb0-link-local.nmconnection
+    permissions: "0600"
+    content: |
+      [connection]
+      id=USB link-local
+      type=ethernet
+      interface-name=usb0
+      autoconnect=true
+
+      [ipv4]
+      method=link-local
+
+      [ipv6]
+      method=link-local
+
+# Link first, packages last. A failed install then still leaves the Pi
+# reachable over USB, and because the install is the final command its exit
+# status is what cloud-init reports.
+runcmd:
+  # g_ether picks random MAC addresses on every load unless told otherwise, and
+  # the attached host would see a new adapter each boot. Derive both from the
+  # board serial so they are stable and differ between Pis. The image's own
+  # g_ether.conf leaves iSerialNumber blank, so set that here as well.
+  - - sh
+    - -c
+    - >-
+      serial=$(tr -d '\000' < /proc/device-tree/serial-number);
+      tail=$(printf %s "$serial" | tail -c 6 | sed 's/../:&/g');
+      echo "options g_ether dev_addr=02:70:69$tail host_addr=06:70:69$tail iSerialNumber=$serial" > /etc/modprobe.d/panio-g_ether.conf
+  - udevadm control --reload
+  - nmcli connection reload
+  - modprobe g_ether
+  # dpkg, not apt: the image ships stale package lists, and `apt-get install`
+  # of these files fails trying to fetch even with --no-download. The bundle is
+  # a complete dependency set collected against this image, so no resolver is
+  # needed. dpkg exits non-zero if anything is missing.
+  - dpkg -i /boot/firmware/panio-offline/*.deb

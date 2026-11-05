@@ -17,6 +17,7 @@ rationale is in
 | Flavor | Directory | Status |
 |---|---|---|
 | `pi-sd` — Raspberry Pi 4/5, Raspberry Pi OS Trixie Lite arm64 | [`pi-sd/`](pi-sd) | **Hardware-validated** (Pi 5 8 GB, 2026-08-20) |
+| `pi-usb` — Raspberry Pi 5, Raspberry Pi OS Trixie Lite arm64, no network needed, reached over the USB-C port | [`pi-usb/`](pi-usb) | **Not hardware-tested.** Seed and offline install validated against the 2026-06-18 image in a chroot with no network |
 | `x86-usb` — UEFI mini-PC, Ubuntu Server autoinstall | — | Designed, not built |
 
 There is no generator: copy these files and fill in five placeholders.
@@ -84,6 +85,36 @@ Do not "simplify" these back.
   per-instance state means the user, package and runcmd stages never re-run.
 - **`optional: false` on the uplink** makes boot wait for the link, so package
   and `.deb` downloads don't run early and fail quietly.
+
+## The `pi-usb` flavor
+
+`pi-usb` provisions with no network and turns the Pi's USB-C port into a USB
+Ethernet device, so one cable through a power-and-data splitter is the whole
+connection. It differs from `pi-sd` in these ways:
+
+- **Nothing is downloaded.** The panio `.deb` and the tesseract `.deb` set sit
+  in `panio-offline/` on `bootfs` (about 34 MB of its 512 MiB) and first boot
+  installs them from there.
+- **Four placeholders**, not five: the version comes from the `.deb` you copy.
+- **One extra flash step**: append the `dwc2` overlay to `config.txt`.
+- **Addresses are link-local** on both IPv4 and IPv6, and the host name comes
+  from avahi as `<hostname>.local`. There is no DHCP server on the link.
+
+`panio skill control-host` has the procedure. Do not "simplify" these back:
+
+- **`dpkg -i`, not `apt-get install`.** The image ships stale package lists, and
+  apt fails trying to fetch even with `--no-download`.
+- **Collect the tesseract set from the image you flash.** It is the exact set
+  missing from that image, so a set from another image may not satisfy
+  `dpkg`.
+- **No `rpi: enable_usb_gadget: true`.** That runs `rpi-usb-gadget`, which sets
+  up a DHCP and NAT server on `10.12.194.1` with IPv6 off.
+- **The udev rule is required.** `85-nm-unmanaged.rules` makes NetworkManager
+  ignore gadget interfaces, so the link-local profile would never apply.
+- **`eth0` is `optional: true`**, or boot waits for a cable that is not there.
+- **The MAC addresses and USB serial are derived from the board serial.**
+  `g_ether` otherwise picks new MAC addresses on each load, and the image's
+  serial string is blank.
 
 ## Bench note, not a seed concern
 
