@@ -80,6 +80,9 @@ lsblk -do NAME,SIZE,TRAN,RM,MODEL
 
 Read the output and find the device whose **size matches the SD card** and
 which is removable (`RM` is `1` on Linux; `external, physical` on macOS).
+A Mac's built-in SD reader lists its card as `internal, physical`, so it is
+missing from that command. Use `diskutil list` and confirm with `diskutil info
+/dev/diskN`, which shows `Built In SDXC Reader` and `Removable`.
 A real listing on a dev machine often includes something like a 4 TB external
 drive sitting right next to the card. Picking by position in the list, or
 assuming the newest device, is how that drive gets erased.
