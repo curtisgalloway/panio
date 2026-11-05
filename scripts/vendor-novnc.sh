@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# SPDX-FileCopyrightText: 2026 Curtis Galloway
+# SPDX-FileCopyrightText: 2026 The Panio Authors
 # SPDX-License-Identifier: Apache-2.0
 #
 # Vendor noVNC as one bundled ES module for the hdmicap dashboard, so the page

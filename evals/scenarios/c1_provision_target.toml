@@ -1,4 +1,4 @@
-# Copyright 2026 Curtis Galloway — Licensed under the Apache License, Version 2.0.
+# Copyright 2026 The Panio Authors — Licensed under the Apache License, Version 2.0.
 id = "c1"
 title = "Provision a Pi target end-to-end"
 tier = "t1"

@@ -1,5 +1,5 @@
 <!--
-Copyright 2026 Curtis Galloway
+Copyright 2026 The Panio Authors
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -419,6 +419,10 @@ host-singleton daemons (zigplug/cambrionix/netbootd) are one per host, in
   trusted because it has worked), `baseline` (a prior version of our own
   output), or `ground truth` only when the reference cannot itself be wrong (a
   human-verified screen reading, a measured value).
+- **Copyright lines name `The Panio Authors`**, never an individual: use
+  `Copyright 2026 The Panio Authors` (or the SPDX form) in new files, and add
+  a new contributor to the root `AUTHORS` file. Third-party files keep their
+  original holder.
 - **`panio setup`** builds native components from the source tree when run
   from a clone (`setup::find_repo_root` walks up from the cwd). Outside a
   checkout (Homebrew, .deb, tarball) it runs only `setup::run_packaged`: setuid

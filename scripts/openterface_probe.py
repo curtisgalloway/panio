@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 Curtis Galloway
+# SPDX-FileCopyrightText: 2026 The Panio Authors
 # SPDX-License-Identifier: Apache-2.0
 # /// script
 # requires-python = ">=3.11"

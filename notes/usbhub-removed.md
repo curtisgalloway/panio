@@ -1,5 +1,5 @@
 <!--
-SPDX-FileCopyrightText: 2026 Curtis Galloway
+SPDX-FileCopyrightText: 2026 The Panio Authors
 SPDX-License-Identifier: Apache-2.0
 -->
 
