@@ -197,6 +197,7 @@ crate_job "usbtoggle"  "usbtoggle"  "cargo test"
 crate_job "ch9329"     "ch9329"     "cargo test"
 crate_job "hidrig"     "hidrig"     "cargo test"
 crate_job "shellyplug" "shellyplug" "cargo test"
+crate_job "kasaplug"   "kasaplug"   "cargo test"
 crate_job "switchport" "switchport" "cargo test"
 crate_job "amt"        "amt"        "cargo test"
 crate_job "secret"     "secret"     "cargo test"
@@ -206,7 +207,7 @@ echo
 echo "########## LOCAL CI SUMMARY ##########"
 fail=0
 for k in "cli" "serialcap" "netbootd" "hdmicap" "cambrionix" "dsdrelay" "dsdble" "phidget" "usbtoggle" "ch9329" \
-         "hidrig" "shellyplug" "switchport" "amt" "secret" "jetkvm"; do
+         "hidrig" "shellyplug" "kasaplug" "switchport" "amt" "secret" "jetkvm"; do
   c="${RES[$k]:-NA}"
   if [ "$c" = "0" ]; then printf 'PASS       %s\n' "$k"; else printf 'FAIL(%s)  %s\n' "$c" "$k"; fail=1; fi
 done
