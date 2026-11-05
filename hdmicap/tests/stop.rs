@@ -1,4 +1,4 @@
-// Copyright 2026 Curtis Galloway
+// Copyright 2026 The Panio Authors
 // SPDX-License-Identifier: Apache-2.0
 
 //! `hdmicap stop` shuts the daemon down through its authenticated `POST /stop`

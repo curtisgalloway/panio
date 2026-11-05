@@ -170,15 +170,15 @@ feeds needs re-reading before `--update` re-pins it.
 
 | path | blob | feeds |
 |---|---|---|
-| `.github/workflows/release.yml` | 345af57c8869 | Channels (every arm's build and staging), Publish |
-| `.github/workflows/docs.yml` | 4ebb657bb860 | Publish: re-verify apt |
-| `packaging/nfpm.yaml` | e3496d9710c6 | Channels: deb |
-| `packaging/scripts/build-apt-repo.sh` | 391037a4ea4c | Channels: deb, install like a user |
-| `Makefile` | f147f0ade7b0 | Project: helpers; Channels: source |
-| `cli/src/setup.rs` | e6ed6816d4c8 | Channels: source |
-| `cli/src/skills.rs` | 0cf3c3778373 | Smoke contract S2; Channels: homebrew, windows |
-| `cli/src/daemons.rs` | 863b5e59da06 | Smoke contract S3 |
-| `scripts/ci-coverage-check.sh` | 14c39a57f1c7 | Project: helpers |
-| `scripts/sync-brik.sh` | 1920fb8f6241 | Channels: windows |
+| `.github/workflows/release.yml` | 7ef4f05a6564 | Channels (every arm's build and staging), Publish |
+| `.github/workflows/docs.yml` | d1b6f390074e | Publish: re-verify apt |
+| `packaging/nfpm.yaml` | b0b6a0e296de | Channels: deb |
+| `packaging/scripts/build-apt-repo.sh` | 27379213bcea | Channels: deb, install like a user |
+| `Makefile` | ae610d75ce39 | Project: helpers; Channels: source |
+| `cli/src/setup.rs` | bdb23b79e901 | Channels: source |
+| `cli/src/skills.rs` | c252a02ecd41 | Smoke contract S2; Channels: homebrew, windows |
+| `cli/src/daemons.rs` | d316c8352912 | Smoke contract S3 |
+| `scripts/ci-coverage-check.sh` | bfb5f20bafc3 | Project: helpers |
+| `scripts/sync-brik.sh` | 44b75b9c2091 | Channels: windows |
 | `README.md` | ba8cbccb6a24 | Channels: source; Publish: re-verify apt |
-| `AGENTS.md` | 2be04c13e4f2 | Project: bump rules, tag format; Publish |
+| `AGENTS.md` | 95af1ba78bfa | Project: bump rules, tag format; Publish |

@@ -1,4 +1,4 @@
-# Copyright 2026 Curtis Galloway — Licensed under the Apache License, Version 2.0.
+# Copyright 2026 The Panio Authors — Licensed under the Apache License, Version 2.0.
 id = "r9"
 title = "Test the USB-Ethernet link up and down"
 tier = "t0"
