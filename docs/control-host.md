@@ -71,6 +71,31 @@ A seeded host does not need `panio setup`: the seed already adds the
 `dialout` and `video` groups and installs `tesseract-ocr`. It carries no lab
 config and no credential beyond your public key.
 
+## Raspberry Pi over USB, with no network
+
+The `pi-usb` seed is for a Pi 5 that should have no network of its own. It
+installs everything from the card, so first boot needs no connection, and its
+USB-C port then appears on the attached host as a USB Ethernet adapter. Reach
+it with `ssh <user>@<hostname>.local`.
+
+Validated on a Pi 5 with a macOS host; a Linux host is untested.
+
+- **Cabling:** the USB-C port carries both power and data, so use a splitter
+  that passes data through from the host and takes power from its own supply.
+  Plug its data side into a USB-A port on the host: on a Mac's USB-C port the
+  same splitter never enumerated, likely because it does not pass the CC pins.
+- **Console:** the account has no password, so the HDMI console cannot log in
+  until you set one over SSH.
+- **Addressing:** link-local on IPv4 (`169.254.x.x`) and IPv6, with no DHCP
+  server. macOS configures its side by itself. A Linux host may need link-local
+  turned on for that adapter, and `avahi` with `nss-mdns` for `.local` names.
+- **Extra preparation:** collecting the tesseract packages needs an arm64 Linux
+  machine or VM, once per image.
+- **Clock:** with no network time and no clock battery, the Pi's clock is wrong
+  after each power-up, so do not rely on timestamps in its logs.
+
+The commands are in the `control-host` skill, under the `pi-usb` variant.
+
 ## When a boot does not come up
 
 Get on the console (HDMI, or the Pi's serial UART) and ask cloud-init:

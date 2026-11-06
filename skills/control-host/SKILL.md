@@ -8,7 +8,9 @@ description: >
   or bench host, when a control host must be replaced or rebuilt, or when
   someone has a blank Raspberry Pi that needs to become a panio host. Covers
   identifying the right removable device before writing to it, the placeholder
-  render, and the Pi OS first-boot gotchas. This is host *creation*; driving
+  render, and the Pi OS first-boot gotchas. Includes the `pi-usb` variant: a Pi
+  5 that provisions with no network and is reached over its USB-C port as a
+  link-local USB Ethernet device. This is host *creation*; driving
   targets from a host that already exists is the `panio` skill.
 ---
 
@@ -78,6 +80,9 @@ lsblk -do NAME,SIZE,TRAN,RM,MODEL
 
 Read the output and find the device whose **size matches the SD card** and
 which is removable (`RM` is `1` on Linux; `external, physical` on macOS).
+A Mac's built-in SD reader lists its card as `internal, physical`, so it is
+missing from that command. Use `diskutil list` and confirm with `diskutil info
+/dev/diskN`, which shows `Built In SDXC Reader` and `Removable`.
 A real listing on a dev machine often includes something like a 4 TB external
 drive sitting right next to the card. Picking by position in the list, or
 assuming the newest device, is how that drive gets erased.
@@ -240,6 +245,99 @@ copy is a week old.
 You should not need `panio setup` on a seeded host. On Linux its packaged
 mode only ensures the `dialout` and `video` groups and warns if Tesseract is
 missing, and the seed already does both.
+
+## Variant — `pi-usb`: no network, reached over USB-C
+
+Use this when the Pi should have no network of its own. Its USB-C port becomes
+a USB Ethernet device on the attached Mac or Linux host, with link-local
+addresses on IPv4 and IPv6. First boot downloads nothing.
+
+**Status: validated on a Pi 5 with a macOS host, 2026-11-06.** A Linux host is
+untested.
+
+The port carries both power and data, so the Pi needs a splitter that passes
+USB data through from the host and takes power from a separate supply. **Plug
+the splitter's data side into a USB-A port on the host.** On a Mac's USB-C port
+the same splitter never enumerated, likely because it does not pass the CC
+pins.
+
+Steps 1 to 4 are unchanged. Keep an uncompressed copy of the image for the
+collection step (`xz -dk`). Then:
+
+**Collect the tesseract packages, from the same image you flashed.** This needs
+an arm64 Linux machine with internet and root. On a Mac, use an arm64 Lima VM
+that can read the image. Either way, end with the directory at `panio-offline`
+under your working directory on the dev machine (`limactl copy -r` from a VM).
+
+```bash
+IMG=/path/to/raspios-lite-arm64.img
+LOOP=$(sudo losetup -Pfr --show "$IMG")
+sudo mkdir -p /mnt/pi-image /mnt/pi /var/tmp/pi-overlay/up /var/tmp/pi-overlay/work
+sudo mount -o ro,noload "${LOOP}p2" /mnt/pi-image
+sudo mount -t overlay overlay -o lowerdir=/mnt/pi-image,upperdir=/var/tmp/pi-overlay/up,workdir=/var/tmp/pi-overlay/work /mnt/pi
+sudo mount --bind /dev /mnt/pi/dev
+sudo mount -t proc proc /mnt/pi/proc
+sudo cp /etc/resolv.conf /mnt/pi/etc/resolv.conf
+sudo chroot /mnt/pi apt-get update -qq
+sudo chroot /mnt/pi apt-get install -y --download-only --no-install-recommends tesseract-ocr tesseract-ocr-eng
+mkdir -p /var/tmp/panio-offline
+cp /mnt/pi/var/cache/apt/archives/*.deb /var/tmp/panio-offline/
+sudo umount /mnt/pi/proc /mnt/pi/dev /mnt/pi /mnt/pi-image
+sudo losetup -d "$LOOP"
+sudo rm -rf /var/tmp/pi-overlay
+```
+
+The overlay keeps the image file unchanged. Expect about 29 files, 13 MB.
+
+**Install the seed (replaces Step 5).** Add the panio `.deb` to the same
+directory, and turn on the USB controller's device mode:
+
+```bash
+gh release download --repo curtisgalloway/panio --pattern 'panio_*_arm64.deb' --dir panio-offline
+cp -R panio-offline "$BOOTFS/"
+cp packaging/host-seed/pi-usb/user-data \
+   packaging/host-seed/pi-usb/meta-data \
+   packaging/host-seed/pi-usb/network-config "$BOOTFS/"
+touch "$BOOTFS/ssh"
+printf '\n[all]\ndtoverlay=dwc2,dr_mode=peripheral\n' >> "$BOOTFS/config.txt"
+```
+
+**Render the placeholders (Step 6)** as above, without `<version>`: this flavor
+has four, and the version is whichever `.deb` you copied.
+
+**Boot and verify (replaces Step 7).** Connect the splitter's data side to the
+host, then apply power. Allow several minutes. Then, from the attached host:
+
+```bash
+ssh <user>@<hostname>.local panio --version
+```
+
+macOS gives the new USB adapter a `169.254.x.x` address by itself. A Linux host
+using NetworkManager may need link-local turned on for that adapter, and needs
+`avahi` with `nss-mdns` to resolve `.local`.
+
+**Enroll it (Step 8)** with `panio host add <name> --ssh
+<user>@<hostname>.local`.
+
+The Pi has no clock battery and no network time here, so its clock is wrong
+after every power-up until something sets it. Log timestamps from it are not
+reliable.
+
+The account has no password, so the HDMI console cannot log in. If the link
+does not come up, plug Ethernet into the Pi to get in: `eth0` keeps an IPv6
+link-local address while DHCP is trying, so `<hostname>.local` works for a few
+minutes after boot, then drops when DHCP gives up if the link has no DHCP
+server.
+
+If it does not appear on the host, read `cat /sys/class/udc/*/state` on the Pi.
+`not attached` with `dwc2` bound means the Pi is ready and no host has reset
+the bus, so look at the cable and host port first: use a USB-A port with a
+splitter. `configured` means USB is up, so look at `ip -br addr show usb0`.
+On the Pi, the data connection is its USB-C port, not a USB-A port.
+
+If two adapters on the host hold `169.254.x.x` addresses, macOS may route a
+literal address out the wrong one. The `.local` name picked the right adapter
+in testing.
 
 ## When it does not come up
 

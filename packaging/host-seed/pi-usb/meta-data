@@ -1,0 +1,14 @@
+# SPDX-FileCopyrightText: 2026 The Panio Authors
+# SPDX-License-Identifier: Apache-2.0
+#
+# panio control-host seed — pi-usb flavor. Goes on the FAT `bootfs`
+# partition as `meta-data`. Derived from the stock Raspberry Pi OS file.
+
+# Datasource mode "local": everything about this datasource is on the card.
+dsmode: local
+
+# cloud-init caches this value on the rootfs and compares it on every boot. An
+# unchanged id means "same instance, already provisioned", so the user and
+# runcmd stages are SKIPPED. Re-seeding a card that has already booted takes
+# TWO edits: change `user-data`, AND bump this id.
+instance_id: panio-usb-seed-1

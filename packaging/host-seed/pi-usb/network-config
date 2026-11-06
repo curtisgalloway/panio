@@ -1,0 +1,18 @@
+# SPDX-FileCopyrightText: 2026 The Panio Authors
+# SPDX-License-Identifier: Apache-2.0
+#
+# panio control-host seed — pi-usb flavor. Goes on the FAT `bootfs`
+# partition as `network-config`.
+#
+# `optional: true` is the difference from pi-sd: this Pi normally has no cable
+# in eth0, and boot must not wait for one. DHCP stays on so a cable still
+# works if someone plugs one in.
+#
+# The USB link is not here. It is a NetworkManager profile in `user-data`,
+# because the gadget interface does not exist yet when this file is applied.
+network:
+  version: 2
+  ethernets:
+    eth0:
+      dhcp4: true
+      optional: true
