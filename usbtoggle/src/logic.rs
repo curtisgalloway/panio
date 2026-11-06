@@ -87,9 +87,17 @@ pub struct Config {
     pub command_timeout: Duration,
     pub source: Source,
     pub target_check: Option<String>,
+    /// Refuse to run in a way that could report an inferred `target`.
+    pub require_verified: bool,
 }
 
 impl Config {
+    /// True when `--require-verified` cannot be met: device mode with no target
+    /// check is the only configuration that can produce an inferred reading.
+    pub fn unverifiable(&self) -> bool {
+        self.require_verified && self.source == Source::Device && self.target_check.is_none()
+    }
+
     /// True when `--target-check-cmd` was given but the `usb` verbs will not
     /// run it, because `--state-cmd` replaces the whole reading.
     pub fn target_check_ignored(&self) -> bool {
@@ -141,6 +149,9 @@ pub struct Outcome {
 pub const INFERRED_WARNING: &str = "usbtoggle: WARNING: `target` is inferred only from the \
 device being absent from this host. It could equally be unplugged or a hub could be dead. \
 Add --target-check-cmd (or use --state-cmd) for a positive reading.";
+
+pub const UNVERIFIABLE_ERROR: &str = "--require-verified needs --target-check-cmd (or \
+--state-cmd): with --device alone, `target` can only be inferred";
 
 pub const TARGET_CHECK_IGNORED_WARNING: &str = "usbtoggle: WARNING: --target-check-cmd is \
 ignored by the `usb` verbs when --state-cmd is set: --state-cmd alone decides the position, \
@@ -210,6 +221,15 @@ pub fn describe_code(code: Option<i32>) -> String {
     }
 }
 
+/// Refuse before any reading, so an inferred first reading cannot lead to a
+/// wrong press.
+fn require_verifiable(cfg: &Config) -> Result<()> {
+    if cfg.unverifiable() {
+        bail!(UNVERIFIABLE_ERROR);
+    }
+    Ok(())
+}
+
 /// The `state` verb: one reading; `Neither` is an error.
 pub fn state(
     cfg: &Config,
@@ -217,6 +237,7 @@ pub fn state(
     probe: &mut dyn Probe,
     clock: &dyn Clock,
 ) -> Result<Outcome> {
+    require_verifiable(cfg)?;
     to_outcome(observe(cfg, runner, probe, clock, cfg.command_timeout)?)
 }
 
@@ -301,6 +322,7 @@ pub fn switch_to(
     clock: &mut dyn Clock,
 ) -> Result<Outcome> {
     // Refuse before reading anything if a press could not happen anyway.
+    require_verifiable(cfg)?;
     need(&cfg.close_cmd, "--close-cmd")?;
     need(&cfg.open_cmd, "--open-cmd")?;
 
@@ -452,6 +474,7 @@ mod tests {
             command_timeout: Duration::from_secs(30),
             source: Source::Device,
             target_check: None,
+            require_verified: false,
         }
     }
 
@@ -651,6 +674,60 @@ mod tests {
         let limit = Duration::from_millis(100);
         observe(&cfg, &mut r, &mut p, &clock, limit).unwrap();
         assert_eq!(r.limits, [Duration::from_millis(70)]);
+    }
+
+    #[test]
+    fn require_verified_without_a_check_refuses_before_reading_or_pressing() {
+        let mut cfg = cfg();
+        cfg.require_verified = true;
+        let (mut r, mut c) = (FakeRunner::default(), FakeClock::default());
+        let mut p = FakeProbe::new(&[false]);
+
+        let e = state(&cfg, &mut r, &mut p, &c).unwrap_err();
+        assert!(e.to_string().contains("--require-verified"), "{e}");
+        for side in [Side::Host, Side::Target] {
+            let e = switch_to(side, &cfg, &mut r, &mut p, &mut c).unwrap_err();
+            assert!(e.to_string().contains("--require-verified"), "{e}");
+        }
+        assert_eq!(p.reads, 0, "an inferred reading must never be taken");
+        assert!(r.log.is_empty(), "{:?}", r.log);
+    }
+
+    #[test]
+    fn require_verified_with_a_check_gives_positive_readings_only() {
+        let mut cfg = cfg();
+        cfg.require_verified = true;
+        cfg.target_check = Some("check".into());
+        let (mut r, mut c) = (FakeRunner::default(), FakeClock::default());
+        let mut p = FakeProbe::new(&[false]);
+        let o = switch_to(Side::Target, &cfg, &mut r, &mut p, &mut c).unwrap();
+        assert_eq!(
+            o,
+            Outcome {
+                side: Side::Target,
+                inferred: false
+            }
+        );
+
+        // The check failing is still a refusal, and no press.
+        r.captures.push((
+            "check".into(),
+            Captured {
+                code: Some(1),
+                stdout: String::new(),
+            },
+        ));
+        let e = switch_to(Side::Target, &cfg, &mut r, &mut p, &mut c).unwrap_err();
+        assert!(e.to_string().contains("neither side"), "{e}");
+        assert_eq!(presses(&r), 0);
+    }
+
+    #[test]
+    fn require_verified_trusts_a_state_cmd() {
+        let mut cfg = cfg();
+        cfg.require_verified = true;
+        cfg.source = Source::StateCmd("st".into());
+        assert!(!cfg.unverifiable());
     }
 
     #[test]

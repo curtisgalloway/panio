@@ -109,6 +109,16 @@ it cleans nothing up: the relay can stay closed and a running command keeps
 running, because commands run in their own process group. A command that asks
 for a password on the terminal will stop and time out.
 
+**For automation, add `--require-verified`.** Exit 0 can otherwise mean only
+"absent from the host", which a test could mistake for a real connection, and a
+lost `--target-check-cmd` would go unnoticed apart from the stderr warning. With
+the flag, `usb state`, `usb host` and `usb target` refuse a `--device` setup with
+no `--target-check-cmd` before reading or pressing anything, and `doctor` reports
+that as a `fail` on its `verified` line. `--state-cmd` counts as a trusted
+verifier: nothing corroborates it. `press` verifies nothing, so it refuses the
+flag. One positive reading is still only one sample: the flag does not show the
+device stayed connected, and it cannot catch a check that wrongly exits 0.
+
 `--state-cmd` replaces the whole reading, so the `usb` verbs ignore
 `--target-check-cmd` when both are set and warn about it on stderr; only
 `doctor` runs the check.

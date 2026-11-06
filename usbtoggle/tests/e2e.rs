@@ -377,3 +377,77 @@ fn a_zero_command_timeout_is_a_usage_error() {
     ]);
     assert_eq!(o.status.code(), Some(2));
 }
+
+#[test]
+fn require_verified_refuses_device_mode_without_a_check_and_never_presses() {
+    let dir = unique_dir("strict");
+    let pressed = dir.join("pressed");
+    let close_cmd = format!("touch '{}'", pressed.display());
+    for verb in ["state", "host", "target"] {
+        let (o, _) = usbtoggle(&[
+            "--device",
+            "046d:c08b",
+            "--close-cmd",
+            &close_cmd,
+            "--open-cmd",
+            "true",
+            "--require-verified",
+            "usb",
+            verb,
+        ]);
+        assert_eq!(o.status.code(), Some(1), "{verb}");
+        assert!(o.stdout.is_empty(), "{verb}");
+        let err = String::from_utf8_lossy(&o.stderr);
+        assert!(err.contains("--require-verified needs"), "{err}");
+    }
+    assert!(!pressed.exists());
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn require_verified_trusts_a_state_cmd() {
+    let (o, _) = usbtoggle(&[
+        "--state-cmd",
+        "echo target",
+        "--require-verified",
+        "usb",
+        "state",
+    ]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(String::from_utf8_lossy(&o.stdout), "target\n");
+}
+
+#[test]
+fn require_verified_refuses_press_before_touching_the_relay() {
+    let dir = unique_dir("strict-press");
+    let pressed = dir.join("pressed");
+    let close_cmd = format!("touch '{}'", pressed.display());
+    let (o, _) = usbtoggle(&[
+        "--close-cmd",
+        &close_cmd,
+        "--open-cmd",
+        "true",
+        "--require-verified",
+        "press",
+    ]);
+    assert_eq!(o.status.code(), Some(1));
+    assert!(!pressed.exists());
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn doctor_reports_an_unmet_require_verified() {
+    let (o, _) = usbtoggle(&[
+        "--device",
+        "046d:c08b",
+        "--require-verified",
+        "doctor",
+        "--json",
+    ]);
+    assert!(o.status.success());
+    let out = String::from_utf8_lossy(&o.stdout);
+    assert!(
+        out.contains("\"name\": \"verified\", \"status\": \"fail\""),
+        "{out}"
+    );
+}

@@ -995,6 +995,9 @@ Gotchas:
 - **`target` is inferred** (device absent from the host) unless
   `--target-check-cmd` confirms it; without it `usbtoggle` prints a loud
   warning on stderr every time. Treat `target` without a check as "probably".
+  For automation add `--require-verified`: without a check, the `usb` verbs then
+  refuse before reading or pressing, so exit 0 is never an inference. `press`
+  refuses the flag; `--state-cmd` is trusted as the verifier.
 - **It presses at most once and never retries.** A timeout (`--settle-ms`,
   default 5000) is an error that says what was last observed; look before
   running it again, because a second press toggles back. Observations completing
