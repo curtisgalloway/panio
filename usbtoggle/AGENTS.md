@@ -38,6 +38,12 @@ usbtoggle/       Rust crate: a `usb` channel helper (panio runs `<cmd> usb host|
   exclusive with `--device` (clap `conflicts_with`). With `--state-cmd`, the
   `usb` verbs never run `--target-check-cmd` and warn that they ignored it
   (`TARGET_CHECK_IGNORED_WARNING`); `doctor` does run it.
+- **`--require-verified` is a configuration check, not a reading check.** Device
+  mode with no target check is the only way to get `inferred: true`, so
+  `Config::unverifiable` refuses that setup before any read, in `state` and
+  `switch_to` alike. That also stops an inferred first reading from causing a
+  wrong press. `--state-cmd` stays a trusted verifier, `press` refuses the flag,
+  and `doctor` reports it on a `verified` line. It does not debounce.
 - **At most one press per `usb host|target`.** Already at the side: print and
   exit 0, no press. Otherwise press once and poll (50 ms) for up to
   `--settle-ms`; a timeout is an error naming the last observation. The deadline

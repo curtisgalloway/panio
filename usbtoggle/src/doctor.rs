@@ -17,7 +17,9 @@
 
 use std::time::Duration;
 
-use crate::logic::{describe_code, parse_side, Config, Probe, Runner, Side, Source};
+use crate::logic::{
+    describe_code, parse_side, Config, Probe, Runner, Side, Source, UNVERIFIABLE_ERROR,
+};
 use crate::sys::DeviceSpec;
 
 /// The most any one doctor step may take. A report runs up to two (a position
@@ -120,6 +122,24 @@ pub fn checks(
         }
     }
 
+    if cfg.require_verified {
+        if cfg.unverifiable() {
+            out.push(check("verified", "fail", UNVERIFIABLE_ERROR));
+        } else if matches!(cfg.source, Source::StateCmd(_)) {
+            out.push(check(
+                "verified",
+                "ok",
+                "--state-cmd is trusted as the verifier; nothing corroborates it",
+            ));
+        } else {
+            out.push(check(
+                "verified",
+                "ok",
+                "--target-check-cmd gives a positive reading of `target`",
+            ));
+        }
+    }
+
     let missing: Vec<&str> = [
         ("--close-cmd", cfg.close_cmd.is_none()),
         ("--open-cmd", cfg.open_cmd.is_none()),
@@ -196,6 +216,7 @@ mod tests {
             command_timeout: Duration::from_secs(30),
             source: Source::Device,
             target_check: None,
+            require_verified: false,
         }
     }
 
@@ -249,6 +270,27 @@ mod tests {
         let mut p = FakeProbe::new(&[false]);
         checks(&cfg, Some(&spec()), &mut r, &mut p);
         assert_eq!(p.limits, [cfg.command_timeout], "a shorter limit wins");
+    }
+
+    #[test]
+    fn require_verified_is_reported_only_when_set() {
+        let verified = |cfg: &Config| {
+            let mut r = FakeRunner::default();
+            let mut p = FakeProbe::new(&[true]);
+            checks(cfg, Some(&spec()), &mut r, &mut p)
+                .into_iter()
+                .find(|c| c.name == "verified")
+                .map(|c| c.status)
+        };
+        let mut cfg = cfg();
+        assert_eq!(verified(&cfg), None);
+        cfg.require_verified = true;
+        assert_eq!(verified(&cfg), Some("fail"));
+        cfg.target_check = Some("check".into());
+        assert_eq!(verified(&cfg), Some("ok"));
+        cfg.target_check = None;
+        cfg.source = Source::StateCmd("st".into());
+        assert_eq!(verified(&cfg), Some("ok"));
     }
 
     #[test]

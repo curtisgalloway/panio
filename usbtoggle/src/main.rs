@@ -64,6 +64,8 @@ READING THE POSITION
   goes to stderr unless --target-check-cmd exits 0 to confirm the target sees
   it. Absent and the check failing is an error (\"seen on neither side\").
   --state-cmd: a command that prints `host` or `target` replaces the probe.
+  --require-verified: refuse, before reading anything, a setup that can only
+  infer `target`, so exit 0 from a `usb` verb is never an inference.
 
 SAFETY
   `usb host|target` presses at most once, then waits up to --settle-ms for the
@@ -107,6 +109,13 @@ struct Cli {
     /// --state-cmd only `doctor` runs it; the `usb` verbs warn and ignore it.
     #[arg(long, value_name = "CMD")]
     target_check_cmd: Option<String>,
+
+    /// Refuse to run without positive evidence: with --device, the `usb` verbs
+    /// fail before reading or pressing unless --target-check-cmd is set.
+    /// --state-cmd is trusted as the verifier. `doctor` reports it; `press` is
+    /// unverified by design and refuses this flag.
+    #[arg(long)]
+    require_verified: bool,
 
     /// Milliseconds after a press within which the expected position must be
     /// observed (polled about every 50 ms). Zero cannot verify a press. Does
@@ -179,6 +188,7 @@ impl Cli {
                 None => Source::Device,
             },
             target_check: self.target_check_cmd.clone(),
+            require_verified: self.require_verified,
         }
     }
 
@@ -229,6 +239,9 @@ fn run(cli: Cli) -> Result<()> {
             Ok(())
         }
         Cmd::Press => {
+            if cfg.require_verified {
+                bail!("--require-verified cannot be used with `press`, which verifies nothing");
+            }
             logic::press(&cfg, &mut runner, &mut SystemClock::new())?;
             eprintln!("usbtoggle: pressed once (not verified)");
             Ok(())
