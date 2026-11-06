@@ -92,13 +92,26 @@ timeout; it **never presses again on its own**. An observation must complete
 an already-at-the-requested-side no-op, but a press cannot be verified and
 returns a timeout without a post-press read.
 
-`--settle-ms` is **not a whole-command execution timeout**. The budget starts
-after the relay opens; the initial position read and relay commands are outside
-it. An in-flight shell command or USB probe is not interrupted, so a hung one
-can still block indefinitely. A late observation is rejected when it returns,
-not accepted as success. The open command is attempted after a returned close
-failure, but cannot run while the close command remains stuck. Bounded command
-execution and descendant cleanup remain outstanding (#384).
+`--settle-ms` starts after the relay opens, so the initial position read and
+the relay commands are outside it. Those have their own limit:
+`--command-timeout-ms` (30000 by default, 1 ms to one day) caps every shell
+command and USB probe, and a reading taken after a press also gets no more than
+what is left of `--settle-ms`. A command past its limit is killed along with
+anything it started, and the verb fails with a message naming it. A hung close
+is killed and the open command still runs, so the worst case for a pair of hung
+relay commands is twice the limit. `doctor` caps each step at 4 s, so a hang
+shows up as a `fail` line inside panio's 10 s limit.
+
+A command that exits normally is left alone, along with anything it left running
+in the background. A listing of USB devices that hangs cannot be killed; it is
+abandoned and the verb fails. If `usbtoggle` itself is killed (Ctrl-C included)
+it cleans nothing up: the relay can stay closed and a running command keeps
+running, because commands run in their own process group. A command that asks
+for a password on the terminal will stop and time out.
+
+`--state-cmd` replaces the whole reading, so the `usb` verbs ignore
+`--target-check-cmd` when both are set and warn about it on stderr; only
+`doctor` runs the check.
 
 ### Check a switch before you rely on it
 

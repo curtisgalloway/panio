@@ -12,15 +12,16 @@ The root AGENTS.md rules still apply here; per-OS behavior lives in [docs/dev/pl
 ```
 usbtoggle/       Rust crate: a `usb` channel helper (panio runs `<cmd> usb host|target|state`)
                  for a toggle-only USB sharing switch pressed by any relay. Not a power
-                 helper. Deps: clap, anyhow, nusb (the same version as phidget).
+                 helper. Deps: clap, anyhow, nusb (the same version as phidget), libc (Unix).
   src/main.rs    CLI (clap derive, options before the verb): usb host|target|state, press,
                  doctor [--json]. Builds a logic::Config and the real Runner/Probe/Clock.
   src/logic.rs   All behavior, behind three traits: Runner (shell commands), Probe
                  (is the device on the host?), Clock (now/sleep). press, observe,
                  state, switch_to, emit (stdout side, stderr warning). Contains the
                  fakes (`logic::fakes`) the tests drive.
-  src/sys.rs     The real Runner (`sh -c` / `cmd /C`), SystemClock, UsbProbe (nusb
-                 enumeration, never opens a device), and the VID:PID[:SERIAL] parser.
+  src/sys.rs     The real Runner (`sh -c` / `cmd /C`, time-limited, kills the process
+                 tree), SystemClock, UsbProbe (nusb enumeration on a thread, never
+                 opens a device), and the VID:PID[:SERIAL] parser.
   src/doctor.rs  The read-only doctor report and its JSON.
   tests/e2e.rs   Unix-only: the built binary with shell commands that flip a state file.
 ```
@@ -34,20 +35,33 @@ usbtoggle/       Rust crate: a `usb` channel helper (panio runs `<cmd> usb host|
   `--target-check-cmd` exiting 0 makes it a positive reading; absent with the
   check failing is `Observed::Neither`, an error, and `switch_to` refuses to
   press blind from it. `--state-cmd` replaces the probe and is mutually
-  exclusive with `--device` (clap `conflicts_with`).
+  exclusive with `--device` (clap `conflicts_with`). With `--state-cmd`, the
+  `usb` verbs never run `--target-check-cmd` and warn that they ignored it
+  (`TARGET_CHECK_IGNORED_WARNING`); `doctor` does run it.
 - **At most one press per `usb host|target`.** Already at the side: print and
   exit 0, no press. Otherwise press once and poll (50 ms) for up to
   `--settle-ms`; a timeout is an error naming the last observation. The deadline
   is exclusive: an observation must complete before it, and sleeps are capped
   to remaining time. Zero permits no post-press observation, so only a no-op
-  can succeed. Commands/probes are still blocking and cannot be interrupted;
-  this budget is not a process timeout (the remaining part of #384). No retry:
-  a second press would toggle back, and the maintainer wants refusals or loud
-  warnings, never quiet surprises.
+  can succeed. No retry: a second press would toggle back, and the maintainer
+  wants refusals or loud warnings, never quiet surprises.
+- **Every command and probe has a limit.** `--command-timeout-ms` (default 30 s)
+  reaches `Runner`/`Probe` as an explicit `limit`; `observe` splits one limit
+  across the probe and the target check, and post-press readings get
+  `min(command timeout, time left to settle)`. `doctor` caps each step at 4 s so
+  two steps fit panio's 10 s kill. A timed-out command is killed as a tree: on
+  Unix it leads its own process group (SIGKILL to the group), on Windows
+  `taskkill /T /F`. Only a timeout kills: a command that exits normally keeps
+  anything it left in the background (an SSH ControlMaster, say). stdout is read
+  on a thread in chunks, so a chatty command cannot stall and output survives a
+  leftover process holding the pipe (`OUTPUT_GRACE`). `nusb` enumeration cannot
+  be cancelled, so its thread is abandoned. Own process groups mean a Ctrl-C to
+  `usbtoggle` does not reach the command, and `usbtoggle` has no signal handling.
 - **The open command always runs after the close was attempted.** `press`
-  holds an `OpenGuard` whose `Drop` runs the open command, so a failed close,
-  an early return, or a panic in the hold still attempts release. This is not
-  proof of physical release: open can fail, and a stuck close blocks the guard.
+  holds an `OpenGuard` whose `Drop` runs the open command, so a failed or
+  timed-out close, an early return, or a panic in the hold still attempts
+  release, within its own limit. This is not proof of physical release: open
+  can fail or time out.
   `finish()` runs it on the normal path and reports its failure. The tests
   `open_runs_even_when_close_fails` and `open_runs_when_the_hold_panics` fail
   if the `Drop` body is disabled (checked).
@@ -64,9 +78,9 @@ usbtoggle/       Rust crate: a `usb` channel helper (panio runs `<cmd> usb host|
 
 ## Testing
 
-`cargo test` runs the fakes-driven unit tests, a test that really spawns the
-platform shell (`exit 0` / `exit 3`, valid in sh and cmd), and, on Unix, the
-end-to-end tests. Nothing needs hardware.
+`cargo test` runs the fakes-driven unit tests, tests that really spawn the
+platform shell (exit codes, and killing a nested shell at its limit, which also
+run on Windows), and, on Unix, the end-to-end tests. Nothing needs hardware.
 
 ## Hardware notes
 

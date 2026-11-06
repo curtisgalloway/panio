@@ -68,10 +68,11 @@ READING THE POSITION
 SAFETY
   `usb host|target` presses at most once, then waits up to --settle-ms for the
   expected position and fails on timeout; it never retries. A result must arrive
-  before the deadline. Zero settling time cannot verify a press. Commands and
-  USB probes are not interrupted, so --settle-ms is not a whole-command timeout.
-  The open command is attempted once close returns or unwinds (even on error).
-  stdout carries only the
+  before the deadline. Zero settling time cannot verify a press.
+  Every shell command and USB probe is limited by --command-timeout-ms, and
+  readings after a press also by what is left of --settle-ms. A command past its
+  limit is killed with anything it started, and the verb fails. The open command
+  is attempted after close finishes, fails or is killed. stdout carries only the
   resulting side; the relay commands' output goes to stderr."
 )]
 struct Cli {
@@ -81,8 +82,8 @@ struct Cli {
     close_cmd: Option<String>,
 
     /// Shell command that opens the relay again. Required for `usb host`,
-    /// `usb target` and `press`; attempted after close returns or unwinds, even
-    /// on error (not while close is stuck).
+    /// `usb target` and `press`; attempted after close finishes, fails or is
+    /// killed at --command-timeout-ms.
     #[arg(long, value_name = "CMD")]
     open_cmd: Option<String>,
 
@@ -96,21 +97,34 @@ struct Cli {
     #[arg(long, value_name = "VID:PID[:SERIAL]", conflicts_with = "state_cmd")]
     device: Option<DeviceSpec>,
 
-    /// Command that prints `host` or `target`; replaces the probe. Give this
-    /// or --device for the `usb` verbs.
+    /// Command that prints `host` or `target`; replaces the probe and the
+    /// target check. Give this or --device for the `usb` verbs.
     #[arg(long, value_name = "CMD")]
     state_cmd: Option<String>,
 
     /// Optional shell command; exit 0 means the target sees the device.
-    /// Turns "absent from the host" from an inference into a reading.
+    /// Turns "absent from the host" from an inference into a reading. With
+    /// --state-cmd only `doctor` runs it; the `usb` verbs warn and ignore it.
     #[arg(long, value_name = "CMD")]
     target_check_cmd: Option<String>,
 
     /// Milliseconds after a press within which the expected position must be
     /// observed (polled about every 50 ms). Zero cannot verify a press. Does
-    /// not interrupt commands/probes or bound the initial read or relay commands.
+    /// not bound the initial read or the relay commands; those have
+    /// --command-timeout-ms.
     #[arg(long, value_name = "MS", default_value_t = 5000)]
     settle_ms: u64,
+
+    /// Longest any one shell command or USB probe may run, from 1 ms to one
+    /// day. A command past it is killed with anything it started and the verb
+    /// fails. `doctor` caps each step at 4 s, inside panio's 10 s limit.
+    #[arg(
+        long,
+        value_name = "MS",
+        default_value_t = 30_000,
+        value_parser = clap::value_parser!(u64).range(1..=86_400_000)
+    )]
+    command_timeout_ms: u64,
 
     #[command(subcommand)]
     cmd: Cmd,
@@ -159,6 +173,7 @@ impl Cli {
             hold: Duration::from_millis(self.hold_ms),
             settle: Duration::from_millis(self.settle_ms),
             poll: Duration::from_millis(50),
+            command_timeout: Duration::from_millis(self.command_timeout_ms),
             source: match &self.state_cmd {
                 Some(c) => Source::StateCmd(c.clone()),
                 None => Source::Device,
@@ -197,9 +212,12 @@ fn run(cli: Cli) -> Result<()> {
     match cli.cmd {
         Cmd::Usb { verb } => {
             cli.require_position_source()?;
+            if cfg.target_check_ignored() {
+                eprintln!("{}", logic::TARGET_CHECK_IGNORED_WARNING);
+            }
             let mut clock = SystemClock::new();
             let outcome = match verb {
-                UsbVerb::State => logic::state(&cfg, &mut runner, probe.as_mut())?,
+                UsbVerb::State => logic::state(&cfg, &mut runner, probe.as_mut(), &clock)?,
                 UsbVerb::Host => {
                     logic::switch_to(Side::Host, &cfg, &mut runner, probe.as_mut(), &mut clock)?
                 }
