@@ -1000,10 +1000,14 @@ Gotchas:
   running it again, because a second press toggles back. Observations completing
   at or after the deadline cannot succeed; zero settling time cannot verify a
   press (an already-at-the-side no-op still succeeds).
-- **`--settle-ms` is not a process timeout.** It starts after the relay opens,
-  does not bound the initial read or relay commands, and cannot interrupt a
-  shell command or USB probe. A late result fails when it returns, but a hung
-  command can still block, including preventing release while close is stuck.
+- **Hung commands fail instead of blocking.** `--command-timeout-ms` (default
+  30000) caps every shell command and USB probe; past it the command and
+  anything it started are killed and the verb exits 1. Readings after a press
+  also stop at the `--settle-ms` deadline. A killed close still runs open. Raise
+  the limit for a slow relay or an SSH check rather than retrying: the press may
+  already have happened.
+- **`--state-cmd` overrides `--target-check-cmd`.** The `usb` verbs ignore the
+  check and warn on stderr; a `target` from `--state-cmd` was not corroborated.
 - **"Seen on neither side"** (absent and the check failed) is an error, and it
   refuses to press blind.
 - `dsdrelay` assumes NC wiring; a button is on the NO contact, so closing the

@@ -44,19 +44,21 @@ pub struct Captured {
     pub stdout: String,
 }
 
-/// Runs shell commands.
+/// Runs shell commands, each for at most `limit`. A command still running at
+/// its limit is killed, with anything it started, and the call is an `Err`.
 pub trait Runner {
     /// Run a button command (close or open). Its stdout must not reach this
     /// process's stdout. Fails on a non-zero exit.
-    fn button(&mut self, cmd: &str) -> Result<()>;
+    fn button(&mut self, cmd: &str, limit: Duration) -> Result<()>;
     /// Run a command and capture its stdout. A non-zero exit is data, not an
-    /// error; only failing to start the command is an `Err`.
-    fn capture(&mut self, cmd: &str) -> Result<Captured>;
+    /// error; only failing to start or finish the command is an `Err`.
+    fn capture(&mut self, cmd: &str, limit: Duration) -> Result<Captured>;
 }
 
 /// Is the peripheral visible on the control host's USB bus?
 pub trait Probe {
-    fn present(&mut self) -> Result<bool>;
+    /// An answer not available within `limit` is an `Err`.
+    fn present(&mut self, limit: Duration) -> Result<bool>;
 }
 
 /// Time, injectable so tests do not wait.
@@ -81,8 +83,18 @@ pub struct Config {
     pub hold: Duration,
     pub settle: Duration,
     pub poll: Duration,
+    /// The longest any one shell command or USB probe may run.
+    pub command_timeout: Duration,
     pub source: Source,
     pub target_check: Option<String>,
+}
+
+impl Config {
+    /// True when `--target-check-cmd` was given but the `usb` verbs will not
+    /// run it, because `--state-cmd` replaces the whole reading.
+    pub fn target_check_ignored(&self) -> bool {
+        matches!(self.source, Source::StateCmd(_)) && self.target_check.is_some()
+    }
 }
 
 /// One reading of the position.
@@ -130,6 +142,10 @@ pub const INFERRED_WARNING: &str = "usbtoggle: WARNING: `target` is inferred onl
 device being absent from this host. It could equally be unplugged or a hub could be dead. \
 Add --target-check-cmd (or use --state-cmd) for a positive reading.";
 
+pub const TARGET_CHECK_IGNORED_WARNING: &str = "usbtoggle: WARNING: --target-check-cmd is \
+ignored by the `usb` verbs when --state-cmd is set: --state-cmd alone decides the position, \
+so its answer is not corroborated. Only `doctor` runs the check.";
+
 /// Write the verb's result: the side on stdout, any warning on stderr.
 pub fn emit(
     outcome: Outcome,
@@ -151,10 +167,16 @@ pub fn parse_side(text: &str) -> Result<Side> {
     }
 }
 
-/// Take one reading of the position.
-pub fn observe(cfg: &Config, runner: &mut dyn Runner, probe: &mut dyn Probe) -> Result<Observed> {
+/// Take one reading of the position, spending at most `limit` on it.
+pub fn observe(
+    cfg: &Config,
+    runner: &mut dyn Runner,
+    probe: &mut dyn Probe,
+    clock: &dyn Clock,
+    limit: Duration,
+) -> Result<Observed> {
     if let Source::StateCmd(cmd) = &cfg.source {
-        let cap = runner.capture(cmd)?;
+        let cap = runner.capture(cmd, limit)?;
         if cap.code != Some(0) {
             bail!("--state-cmd failed ({})", describe_code(cap.code));
         }
@@ -163,13 +185,15 @@ pub fn observe(cfg: &Config, runner: &mut dyn Runner, probe: &mut dyn Probe) -> 
             Side::Target => Observed::Target { inferred: false },
         });
     }
-    if probe.present()? {
+    let start = clock.now();
+    if probe.present(limit)? {
         return Ok(Observed::Host);
     }
     match &cfg.target_check {
         None => Ok(Observed::Target { inferred: true }),
         Some(cmd) => {
-            let cap = runner.capture(cmd)?;
+            let left = limit.saturating_sub(clock.now().saturating_sub(start));
+            let cap = runner.capture(cmd, left)?;
             if cap.code == Some(0) {
                 Ok(Observed::Target { inferred: false })
             } else {
@@ -187,8 +211,13 @@ pub fn describe_code(code: Option<i32>) -> String {
 }
 
 /// The `state` verb: one reading; `Neither` is an error.
-pub fn state(cfg: &Config, runner: &mut dyn Runner, probe: &mut dyn Probe) -> Result<Outcome> {
-    to_outcome(observe(cfg, runner, probe)?)
+pub fn state(
+    cfg: &Config,
+    runner: &mut dyn Runner,
+    probe: &mut dyn Probe,
+    clock: &dyn Clock,
+) -> Result<Outcome> {
+    to_outcome(observe(cfg, runner, probe, clock, cfg.command_timeout)?)
 }
 
 fn to_outcome(obs: Observed) -> Result<Outcome> {
@@ -209,11 +238,13 @@ fn to_outcome(obs: Observed) -> Result<Outcome> {
 }
 
 /// Runs the open command when dropped (or explicitly through `finish`), so a
-/// failed close, an error, or a panic between close and open still attempts
-/// release. A stuck close or a failing open cannot guarantee physical release.
+/// failed or timed-out close, an error, or a panic between close and open still
+/// attempts release, within its own command limit. A failing open cannot
+/// guarantee physical release.
 struct OpenGuard<'a> {
     runner: &'a mut dyn Runner,
     cmd: &'a str,
+    limit: Duration,
     armed: bool,
 }
 
@@ -221,14 +252,14 @@ impl OpenGuard<'_> {
     /// Run the open command now and report its result.
     fn finish(mut self) -> Result<()> {
         self.armed = false;
-        self.runner.button(self.cmd)
+        self.runner.button(self.cmd, self.limit)
     }
 }
 
 impl Drop for OpenGuard<'_> {
     fn drop(&mut self) {
         if self.armed {
-            if let Err(e) = self.runner.button(self.cmd) {
+            if let Err(e) = self.runner.button(self.cmd, self.limit) {
                 eprintln!("usbtoggle: open-cmd failed after an earlier error: {e:#}");
             }
         }
@@ -248,9 +279,10 @@ pub fn press(cfg: &Config, runner: &mut dyn Runner, clock: &mut dyn Clock) -> Re
     let guard = OpenGuard {
         runner,
         cmd: open,
+        limit: cfg.command_timeout,
         armed: true,
     };
-    if let Err(e) = guard.runner.button(close) {
+    if let Err(e) = guard.runner.button(close, cfg.command_timeout) {
         // The guard releases the button as it drops.
         return Err(e.context("--close-cmd failed (--open-cmd was still run)"));
     }
@@ -272,7 +304,7 @@ pub fn switch_to(
     need(&cfg.close_cmd, "--close-cmd")?;
     need(&cfg.open_cmd, "--open-cmd")?;
 
-    let first = observe(cfg, runner, probe)?;
+    let first = observe(cfg, runner, probe, clock, cfg.command_timeout)?;
     if first.side() == Some(want) {
         return to_outcome(first);
     }
@@ -290,7 +322,9 @@ pub fn switch_to(
         if elapsed >= cfg.settle {
             break;
         }
-        match observe(cfg, runner, probe) {
+        // A hung reading is killed at the deadline, when it can no longer count.
+        let limit = cfg.command_timeout.min(cfg.settle - elapsed);
+        match observe(cfg, runner, probe, clock, limit) {
             Ok(obs) => {
                 // The observation itself may have taken time. Never accept a
                 // result obtained at or after the settling deadline.
@@ -327,18 +361,22 @@ pub mod fakes {
         pub fail_button: Vec<String>,
         /// Results for `capture`, by command; default exit 0 with no output.
         pub captures: Vec<(String, Captured)>,
+        /// The limit each command was given, in order.
+        pub limits: Vec<Duration>,
     }
 
     impl Runner for FakeRunner {
-        fn button(&mut self, cmd: &str) -> Result<()> {
+        fn button(&mut self, cmd: &str, limit: Duration) -> Result<()> {
             self.log.push(format!("button:{cmd}"));
+            self.limits.push(limit);
             if self.fail_button.iter().any(|c| c == cmd) {
                 bail!("{cmd} exited with status 1");
             }
             Ok(())
         }
-        fn capture(&mut self, cmd: &str) -> Result<Captured> {
+        fn capture(&mut self, cmd: &str, limit: Duration) -> Result<Captured> {
             self.log.push(format!("capture:{cmd}"));
+            self.limits.push(limit);
             Ok(self
                 .captures
                 .iter()
@@ -356,6 +394,8 @@ pub mod fakes {
         pub answers: VecDeque<bool>,
         pub last: bool,
         pub reads: usize,
+        /// The limit each read was given, in order.
+        pub limits: Vec<Duration>,
     }
 
     impl FakeProbe {
@@ -364,13 +404,15 @@ pub mod fakes {
                 answers: answers.iter().copied().collect(),
                 last: *answers.last().unwrap_or(&false),
                 reads: 0,
+                limits: Vec::new(),
             }
         }
     }
 
     impl Probe for FakeProbe {
-        fn present(&mut self) -> Result<bool> {
+        fn present(&mut self, limit: Duration) -> Result<bool> {
             self.reads += 1;
+            self.limits.push(limit);
             if let Some(a) = self.answers.pop_front() {
                 self.last = a;
             }
@@ -407,6 +449,7 @@ mod tests {
             hold: Duration::from_millis(200),
             settle: Duration::from_millis(1000),
             poll: Duration::from_millis(50),
+            command_timeout: Duration::from_secs(30),
             source: Source::Device,
             target_check: None,
         }
@@ -504,7 +547,7 @@ mod tests {
             reads: usize,
         }
         impl Probe for SlowProbe {
-            fn present(&mut self) -> Result<bool> {
+            fn present(&mut self, _: Duration) -> Result<bool> {
                 self.reads += 1;
                 if self.reads == 1 {
                     return Ok(false);
@@ -535,6 +578,91 @@ mod tests {
             assert_eq!(p.reads, 2);
             assert_eq!(r.log, ["button:close", "button:open"]);
         }
+    }
+
+    #[test]
+    fn commands_get_the_command_limit_and_readings_after_a_press_only_what_is_left() {
+        let mut cfg = cfg();
+        cfg.source = Source::StateCmd("st".into());
+        cfg.settle = Duration::from_millis(120);
+        let (mut r, mut c) = (FakeRunner::default(), FakeClock::default());
+        let mut p = FakeProbe::new(&[]);
+        r.captures.push((
+            "st".into(),
+            Captured {
+                code: Some(0),
+                stdout: "target\n".into(),
+            },
+        ));
+        let e = switch_to(Side::Host, &cfg, &mut r, &mut p, &mut c).unwrap_err();
+        assert!(e.to_string().contains("timed out after 120 ms"), "{e}");
+        let ms = Duration::from_millis;
+        assert_eq!(
+            r.limits,
+            [
+                cfg.command_timeout, // the first reading
+                cfg.command_timeout, // close
+                cfg.command_timeout, // open
+                ms(120),             // polls, each with what the deadline leaves
+                ms(70),
+                ms(20),
+            ],
+            "{:?}",
+            r.log
+        );
+    }
+
+    #[test]
+    fn the_command_limit_still_caps_readings_after_a_press() {
+        let mut cfg = cfg();
+        cfg.command_timeout = Duration::from_millis(40);
+        let (mut r, mut c) = (FakeRunner::default(), FakeClock::default());
+        let mut p = FakeProbe::new(&[false, true]);
+        switch_to(Side::Host, &cfg, &mut r, &mut p, &mut c).unwrap();
+        assert_eq!(p.limits, [cfg.command_timeout, cfg.command_timeout]);
+    }
+
+    #[test]
+    fn a_slow_probe_leaves_the_target_check_only_the_rest_of_the_limit() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+
+        struct SharedClock(Rc<Cell<Duration>>);
+        impl Clock for SharedClock {
+            fn now(&self) -> Duration {
+                self.0.get()
+            }
+            fn sleep(&mut self, _: Duration) {}
+        }
+        struct SlowAbsent(Rc<Cell<Duration>>);
+        impl Probe for SlowAbsent {
+            fn present(&mut self, _: Duration) -> Result<bool> {
+                self.0.set(self.0.get() + Duration::from_millis(30));
+                Ok(false)
+            }
+        }
+
+        let mut cfg = cfg();
+        cfg.target_check = Some("check".into());
+        let time = Rc::new(Cell::new(Duration::from_secs(5)));
+        let clock = SharedClock(Rc::clone(&time));
+        let mut p = SlowAbsent(time);
+        let mut r = FakeRunner::default();
+        let limit = Duration::from_millis(100);
+        observe(&cfg, &mut r, &mut p, &clock, limit).unwrap();
+        assert_eq!(r.limits, [Duration::from_millis(70)]);
+    }
+
+    #[test]
+    fn target_check_is_reported_as_ignored_only_with_a_state_cmd() {
+        let mut cfg = cfg();
+        assert!(!cfg.target_check_ignored());
+        cfg.target_check = Some("check".into());
+        assert!(!cfg.target_check_ignored(), "--device runs the check");
+        cfg.source = Source::StateCmd("st".into());
+        assert!(cfg.target_check_ignored());
+        cfg.target_check = None;
+        assert!(!cfg.target_check_ignored());
     }
 
     #[test]
@@ -588,7 +716,7 @@ mod tests {
             },
         ));
         let mut p = FakeProbe::new(&[false]);
-        let e = state(&cfg, &mut r, &mut p).unwrap_err();
+        let e = state(&cfg, &mut r, &mut p, &FakeClock::default()).unwrap_err();
         assert!(e.to_string().contains("neither side"), "{e}");
 
         let mut c = FakeClock::default();
@@ -603,7 +731,7 @@ mod tests {
         cfg.target_check = Some("check".into());
         let mut r = FakeRunner::default();
         let mut p = FakeProbe::new(&[false]);
-        let o = state(&cfg, &mut r, &mut p).unwrap();
+        let o = state(&cfg, &mut r, &mut p, &FakeClock::default()).unwrap();
         assert_eq!(
             o,
             Outcome {
@@ -617,7 +745,7 @@ mod tests {
     fn inferred_target_prints_the_warning_on_stderr_only() {
         let mut r = FakeRunner::default();
         let mut p = FakeProbe::new(&[false]);
-        let o = state(&cfg(), &mut r, &mut p).unwrap();
+        let o = state(&cfg(), &mut r, &mut p, &FakeClock::default()).unwrap();
         assert!(o.inferred);
         let (mut out, mut err) = (Vec::new(), Vec::new());
         emit(o, &mut out, &mut err).unwrap();
@@ -651,17 +779,25 @@ mod tests {
 
         let mut r = FakeRunner::default();
         r.captures.push(("st".into(), cap("target\n", Some(0))));
-        assert_eq!(state(&cfg, &mut r, &mut p).unwrap().side, Side::Target);
+        assert_eq!(
+            state(&cfg, &mut r, &mut p, &FakeClock::default())
+                .unwrap()
+                .side,
+            Side::Target
+        );
         assert_eq!(p.reads, 0, "state-cmd mode never probes");
 
         let mut r = FakeRunner::default();
         r.captures.push(("st".into(), cap("banana\n", Some(0))));
-        let e = state(&cfg, &mut r, &mut p).unwrap_err();
+        let e = state(&cfg, &mut r, &mut p, &FakeClock::default()).unwrap_err();
         assert!(e.to_string().contains("expected `host` or `target`"), "{e}");
 
         let mut r = FakeRunner::default();
         r.captures.push(("st".into(), cap("host\n", Some(2))));
-        assert!(state(&cfg, &mut r, &mut p).is_err(), "non-zero exit fails");
+        assert!(
+            state(&cfg, &mut r, &mut p, &FakeClock::default()).is_err(),
+            "non-zero exit fails"
+        );
     }
 
     #[test]

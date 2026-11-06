@@ -15,8 +15,16 @@
 //! `doctor`: the read-only report panio reads (docs/dev/adding-power-helpers.md,
 //! "Doctor check"). It never runs the close or open command.
 
+use std::time::Duration;
+
 use crate::logic::{describe_code, parse_side, Config, Probe, Runner, Side, Source};
 use crate::sys::DeviceSpec;
+
+/// The most any one doctor step may take. A report runs up to two (a position
+/// read and the target check), and panio kills the whole check after 10 s
+/// (docs/dev/adding-power-helpers.md), so a hang must come back as a `fail`
+/// line before that.
+const STEP_LIMIT: Duration = Duration::from_secs(4);
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct Check {
@@ -41,9 +49,10 @@ pub fn checks(
 ) -> Vec<Check> {
     let mut out = Vec::new();
     let mut side = None;
+    let limit = cfg.command_timeout.min(STEP_LIMIT);
 
     match (&cfg.source, device) {
-        (Source::StateCmd(cmd), _) => match runner.capture(cmd) {
+        (Source::StateCmd(cmd), _) => match runner.capture(cmd, limit) {
             Ok(cap) if cap.code == Some(0) => match parse_side(&cap.stdout) {
                 Ok(s) => {
                     out.push(check("state-cmd", "ok", format!("prints {}", s.as_str())));
@@ -58,7 +67,7 @@ pub fn checks(
             )),
             Err(e) => out.push(check("state-cmd", "fail", format!("{e:#}"))),
         },
-        (Source::Device, Some(spec)) => match probe.present() {
+        (Source::Device, Some(spec)) => match probe.present(limit) {
             Ok(true) => {
                 out.push(check("probe", "ok", "USB enumeration works"));
                 out.push(check(
@@ -86,7 +95,7 @@ pub fn checks(
     }
 
     if let Some(cmd) = &cfg.target_check {
-        match runner.capture(cmd) {
+        match runner.capture(cmd, limit) {
             Ok(cap) if cap.code == Some(0) => out.push(check(
                 "target-check",
                 "ok",
@@ -176,7 +185,6 @@ mod tests {
     use super::*;
     use crate::logic::fakes::{FakeProbe, FakeRunner};
     use crate::logic::Captured;
-    use std::time::Duration;
 
     fn cfg() -> Config {
         Config {
@@ -185,6 +193,7 @@ mod tests {
             hold: Duration::ZERO,
             settle: Duration::ZERO,
             poll: Duration::ZERO,
+            command_timeout: Duration::from_secs(30),
             source: Source::Device,
             target_check: None,
         }
@@ -223,6 +232,23 @@ mod tests {
             .iter()
             .any(|c| c.name == "target-check" && c.status == "ok"));
         assert_eq!(r.log, ["capture:check"]);
+    }
+
+    #[test]
+    fn every_step_fits_inside_panios_doctor_limit() {
+        let mut cfg = cfg();
+        cfg.target_check = Some("check".into());
+        let mut r = FakeRunner::default();
+        let mut p = FakeProbe::new(&[false]);
+        checks(&cfg, Some(&spec()), &mut r, &mut p);
+        assert_eq!(p.limits, [STEP_LIMIT]);
+        assert_eq!(r.limits, [STEP_LIMIT]);
+
+        cfg.command_timeout = Duration::from_secs(1);
+        let mut r = FakeRunner::default();
+        let mut p = FakeProbe::new(&[false]);
+        checks(&cfg, Some(&spec()), &mut r, &mut p);
+        assert_eq!(p.limits, [cfg.command_timeout], "a shorter limit wins");
     }
 
     #[test]

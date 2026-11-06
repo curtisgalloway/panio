@@ -19,6 +19,7 @@
 use std::fs;
 use std::path::Path;
 use std::process::{Command, Output};
+use std::time::{Duration, Instant};
 
 fn flip_script(dir: &Path) -> (String, String, String) {
     let state = dir.join("state");
@@ -191,4 +192,188 @@ fn slow_matching_state_command_times_out_instead_of_reporting_success() {
     assert_eq!(fs::read_to_string(pressed).unwrap(), "close\n");
     assert_eq!(fs::read_to_string(opened).unwrap(), "open\n");
     fs::remove_dir_all(dir).unwrap();
+}
+
+fn unique_dir(name: &str) -> std::path::PathBuf {
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!(
+        "usbtoggle-e2e-{name}-{}-{unique}",
+        std::process::id()
+    ));
+    fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+fn usbtoggle(args: &[&str]) -> (Output, Duration) {
+    let start = Instant::now();
+    let o = Command::new(env!("CARGO_BIN_EXE_usbtoggle"))
+        .args(args)
+        .output()
+        .unwrap();
+    (o, start.elapsed())
+}
+
+#[test]
+fn a_hung_state_command_fails_and_its_descendants_die() {
+    let dir = unique_dir("hung-state");
+    let pid_file = dir.join("pid");
+    let state_cmd = format!("sleep 30 & echo $! > '{}'; wait", pid_file.display());
+    let (o, took) = usbtoggle(&[
+        "--state-cmd",
+        &state_cmd,
+        "--command-timeout-ms",
+        "200",
+        "usb",
+        "state",
+    ]);
+    assert_eq!(o.status.code(), Some(1));
+    assert!(o.stdout.is_empty());
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(err.contains("timed out after 200 ms"), "{err}");
+    assert!(took < Duration::from_secs(5), "took {took:?}");
+
+    let pid = fs::read_to_string(&pid_file).unwrap();
+    let alive = Command::new("kill")
+        .args(["-0", pid.trim()])
+        .stderr(std::process::Stdio::null())
+        .status()
+        .unwrap();
+    assert!(!alive.success(), "the background sleep survived");
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn a_hung_close_is_killed_and_open_still_runs_once() {
+    let dir = unique_dir("hung-close");
+    let opened = dir.join("opened");
+    let open_cmd = format!("echo open >> '{}'", opened.display());
+    let (o, took) = usbtoggle(&[
+        "--state-cmd",
+        "echo host",
+        "--close-cmd",
+        "sleep 30",
+        "--open-cmd",
+        &open_cmd,
+        "--command-timeout-ms",
+        "200",
+        "usb",
+        "target",
+    ]);
+    assert_eq!(o.status.code(), Some(1));
+    assert!(o.stdout.is_empty());
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(err.contains("--close-cmd failed"), "{err}");
+    assert!(err.contains("timed out after 200 ms"), "{err}");
+    assert!(took < Duration::from_secs(5), "took {took:?}");
+    assert_eq!(fs::read_to_string(opened).unwrap(), "open\n");
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn a_hung_open_is_reported_as_possibly_held() {
+    let (o, took) = usbtoggle(&[
+        "--close-cmd",
+        "true",
+        "--open-cmd",
+        "sleep 30",
+        "--hold-ms",
+        "0",
+        "--command-timeout-ms",
+        "200",
+        "press",
+    ]);
+    assert_eq!(o.status.code(), Some(1));
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(err.contains("may be left held"), "{err}");
+    assert!(took < Duration::from_secs(5), "took {took:?}");
+}
+
+#[test]
+fn a_reading_hung_after_the_press_is_killed_at_the_settling_deadline() {
+    let dir = unique_dir("hung-poll");
+    let pressed = dir.join("pressed");
+    let state_cmd = format!(
+        "if [ -f '{}' ]; then sleep 30; else echo host; fi",
+        pressed.display()
+    );
+    let close_cmd = format!("touch '{}'", pressed.display());
+    let (o, took) = usbtoggle(&[
+        "--state-cmd",
+        &state_cmd,
+        "--close-cmd",
+        &close_cmd,
+        "--open-cmd",
+        "true",
+        "--hold-ms",
+        "0",
+        "--settle-ms",
+        "200",
+        "usb",
+        "target",
+    ]);
+    assert_eq!(o.status.code(), Some(1));
+    assert!(o.stdout.is_empty());
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(err.contains("timed out after 200 ms waiting"), "{err}");
+    assert!(took < Duration::from_secs(5), "took {took:?}");
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn something_left_holding_stdout_does_not_block_or_lose_the_answer() {
+    let (o, took) = usbtoggle(&[
+        "--state-cmd",
+        "echo host; sleep 8 2>/dev/null &",
+        "usb",
+        "state",
+    ]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(String::from_utf8_lossy(&o.stdout), "host\n");
+    assert!(took < Duration::from_secs(5), "took {took:?}");
+}
+
+#[test]
+fn a_chatty_state_command_cannot_stall_on_a_full_pipe() {
+    let (o, took) = usbtoggle(&["--state-cmd", "yes host | head -c 1000000", "usb", "state"]);
+    assert_eq!(o.status.code(), Some(1), "that output is not a side");
+    assert!(took < Duration::from_secs(5), "took {took:?}");
+}
+
+#[test]
+fn an_ignored_target_check_is_warned_about_and_does_not_change_the_answer() {
+    let (o, _) = usbtoggle(&[
+        "--state-cmd",
+        "echo target",
+        "--target-check-cmd",
+        "exit 1",
+        "usb",
+        "state",
+    ]);
+    assert!(o.status.success());
+    assert_eq!(String::from_utf8_lossy(&o.stdout), "target\n");
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(err.contains("--target-check-cmd is ignored"), "{err}");
+
+    let (o, _) = usbtoggle(&["--state-cmd", "echo target", "usb", "state"]);
+    assert!(
+        o.stderr.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+}
+
+#[test]
+fn a_zero_command_timeout_is_a_usage_error() {
+    let (o, _) = usbtoggle(&[
+        "--state-cmd",
+        "echo host",
+        "--command-timeout-ms",
+        "0",
+        "usb",
+        "state",
+    ]);
+    assert_eq!(o.status.code(), Some(2));
 }
