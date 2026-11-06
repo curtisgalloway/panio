@@ -252,12 +252,14 @@ Use this when the Pi should have no network of its own. Its USB-C port becomes
 a USB Ethernet device on the attached Mac or Linux host, with link-local
 addresses on IPv4 and IPv6. First boot downloads nothing.
 
-**Status: not yet tested on hardware.** The seed and the offline install were
-validated against the 2026-06-18 image in a chroot with no network. Tell the
-user this, and treat the first boot as a test.
+**Status: validated on a Pi 5 with a macOS host, 2026-11-06.** A Linux host is
+untested.
 
 The port carries both power and data, so the Pi needs a splitter that passes
-USB data through from the host and takes power from a separate supply.
+USB data through from the host and takes power from a separate supply. **Plug
+the splitter's data side into a USB-A port on the host.** On a Mac's USB-C port
+the same splitter never enumerated, likely because it does not pass the CC
+pins.
 
 Steps 1 to 4 are unchanged. Keep an uncompressed copy of the image for the
 collection step (`xz -dk`). Then:
@@ -321,10 +323,21 @@ The Pi has no clock battery and no network time here, so its clock is wrong
 after every power-up until something sets it. Log timestamps from it are not
 reliable.
 
-If it does not appear on the host, check that the splitter passes data, that
-`config.txt` has the `dwc2` line, and use the USB-C port, not a USB-A port.
-Over HDMI or the UART, `ip -br addr show usb0` and `nmcli device status` show
-whether the link came up.
+The account has no password, so the HDMI console cannot log in. If the link
+does not come up, plug Ethernet into the Pi to get in: `eth0` keeps an IPv6
+link-local address while DHCP is trying, so `<hostname>.local` works for a few
+minutes after boot, then drops when DHCP gives up if the link has no DHCP
+server.
+
+If it does not appear on the host, read `cat /sys/class/udc/*/state` on the Pi.
+`not attached` with `dwc2` bound means the Pi is ready and no host has reset
+the bus, so look at the cable and host port first: use a USB-A port with a
+splitter. `configured` means USB is up, so look at `ip -br addr show usb0`.
+On the Pi, the data connection is its USB-C port, not a USB-A port.
+
+If two adapters on the host hold `169.254.x.x` addresses, macOS may route a
+literal address out the wrong one. The `.local` name picked the right adapter
+in testing.
 
 ## When it does not come up
 

@@ -17,7 +17,7 @@ rationale is in
 | Flavor | Directory | Status |
 |---|---|---|
 | `pi-sd` — Raspberry Pi 4/5, Raspberry Pi OS Trixie Lite arm64 | [`pi-sd/`](pi-sd) | **Hardware-validated** (Pi 5 8 GB, 2026-08-20) |
-| `pi-usb` — Raspberry Pi 5, Raspberry Pi OS Trixie Lite arm64, no network needed, reached over the USB-C port | [`pi-usb/`](pi-usb) | **Not hardware-tested.** Seed and offline install validated against the 2026-06-18 image in a chroot with no network |
+| `pi-usb` — Raspberry Pi 5, Raspberry Pi OS Trixie Lite arm64, no network needed, reached over the USB-C port | [`pi-usb/`](pi-usb) | **Hardware-validated** with a macOS host (Pi 5, 2026-10-06 image, 2026-11-06); Linux host untested |
 | `x86-usb` — UEFI mini-PC, Ubuntu Server autoinstall | — | Designed, not built |
 
 There is no generator: copy these files and fill in five placeholders.
@@ -114,7 +114,19 @@ connection. It differs from `pi-sd` in these ways:
 - **`eth0` is `optional: true`**, or boot waits for a cable that is not there.
 - **The MAC addresses and USB serial are derived from the board serial.**
   `g_ether` otherwise picks new MAC addresses on each load, and the image's
-  serial string is blank.
+  serial string is blank. They take effect from the second boot, because the
+  module is already loaded when first boot writes them.
+
+Two limits to know about:
+
+- **A splitter needs a USB-A port on the host.** On a Mac's USB-C port the Pi
+  saw VBUS and connected but no host ever reset the bus, while the same
+  splitter worked at once from a USB-A port. The likely cause is that a USB-C
+  host needs the CC pins to detect a device and the splitter does not pass
+  them. A plain USB-C cable works, but then the host powers the Pi.
+- **The console has no login.** The account has no password, so a broken link
+  leaves no way in. Set one over SSH with `sudo passwd <user>` if you want a
+  console fallback.
 
 ## Bench note, not a seed concern
 

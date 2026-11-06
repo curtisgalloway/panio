@@ -78,11 +78,14 @@ installs everything from the card, so first boot needs no connection, and its
 USB-C port then appears on the attached host as a USB Ethernet adapter. Reach
 it with `ssh <user>@<hostname>.local`.
 
-**This flavor has not been tested on hardware yet.** Its seed and offline
-install were validated against the 2026-06-18 image in a chroot with no network.
+Validated on a Pi 5 with a macOS host; a Linux host is untested.
 
 - **Cabling:** the USB-C port carries both power and data, so use a splitter
   that passes data through from the host and takes power from its own supply.
+  Plug its data side into a USB-A port on the host: on a Mac's USB-C port the
+  same splitter never enumerated, likely because it does not pass the CC pins.
+- **Console:** the account has no password, so the HDMI console cannot log in
+  until you set one over SSH.
 - **Addressing:** link-local on IPv4 (`169.254.x.x`) and IPv6, with no DHCP
   server. macOS configures its side by itself. A Linux host may need link-local
   turned on for that adapter, and `avahi` with `nss-mdns` for `.local` names.
