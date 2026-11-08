@@ -1,5 +1,5 @@
 <!--
-SPDX-FileCopyrightText: 2026 Bayanasar Khurd
+SPDX-FileCopyrightText: 2026 The Panio Authors
 SPDX-License-Identifier: Apache-2.0
 -->
 
