@@ -346,16 +346,24 @@ impl Client {
     /// no meter.
     pub fn realtime(&self, outlet: &Outlet) -> Result<Option<Realtime>> {
         let req = with_context(json!({"emeter": {"get_realtime": {}}}), outlet);
-        let v = self.call(&req)?;
-        if module_error(&v, "emeter").is_some() {
-            return Ok(None);
-        }
-        Ok(Some(Realtime::parse(&result(
-            &v,
-            "emeter",
-            "get_realtime",
-        )?)))
+        parse_realtime(&self.call(&req)?)
     }
+}
+
+/// The module-level `err_code` a device returns for a module it does not
+/// have: `{"emeter": {"err_code": -1, "err_msg": "module not support"}}`.
+/// Seen on an HS300 for a module it lacks; an unknown method is -2 and an
+/// unknown outlet -14, both inside the method's object.
+const NO_SUCH_MODULE: i64 = -1;
+
+/// An `emeter.get_realtime` reply. `Ok(None)` only when the device says it
+/// has no meter module; any other error is an error, so a metered device
+/// that fails a read is not mistaken for one without a meter.
+fn parse_realtime(v: &Value) -> Result<Option<Realtime>> {
+    if module_code(v, "emeter") == Some(NO_SUCH_MODULE) {
+        return Ok(None);
+    }
+    Ok(Some(Realtime::parse(&result(v, "emeter", "get_realtime")?)))
 }
 
 /// Time left before `deadline`; a `TimedOut` error once it has passed.
@@ -400,11 +408,16 @@ fn with_context(mut req: Value, outlet: &Outlet) -> Value {
     req
 }
 
-/// A module-level error (`{"emeter": {"err_code": -1, "err_msg": "module not
-/// support"}}`), which a device returns when it lacks the module.
+/// A module-level `err_code`: one directly in the module's object, not in a
+/// method's.
+fn module_code(v: &Value, module: &str) -> Option<i64> {
+    v.get(module)?.get("err_code")?.as_i64()
+}
+
+/// A module-level error, such as [`NO_SUCH_MODULE`], as a message.
 fn module_error(v: &Value, module: &str) -> Option<String> {
     let m = v.get(module)?;
-    let code = m.get("err_code")?.as_i64()?;
+    let code = module_code(v, module)?;
     (code != 0).then(|| {
         let msg = printable(m.get("err_msg").and_then(Value::as_str).unwrap_or(""));
         format!("{module}: device error {code} {msg}")
@@ -595,6 +608,26 @@ mod tests {
         let err = format!("{err:#}");
         assert!(err.contains("reading a 64-byte reply"), "{err}");
         assert!(err.contains("timed out"), "{err}");
+    }
+
+    #[test]
+    fn only_a_missing_meter_module_reads_as_no_meter() {
+        // Replies an HS300 gave, and one module-level code it has not.
+        let absent = json!({"emeter": {"err_code": -1, "err_msg": "module not support"}});
+        assert_eq!(parse_realtime(&absent).unwrap(), None);
+        let other = json!({"emeter": {"err_code": -3, "err_msg": "other"}});
+        let err = parse_realtime(&other).unwrap_err().to_string();
+        assert!(err.contains("emeter: device error -3 other"), "{err}");
+        let outlet =
+            json!({"emeter": {"get_realtime": {"err_code": -14, "err_msg": "entry not exist"}}});
+        let err = parse_realtime(&outlet).unwrap_err().to_string();
+        assert!(err.contains("device error -14 entry not exist"), "{err}");
+        let read = json!({"emeter": {"get_realtime": {
+            "slot_id": 4, "current_ma": 0, "voltage_mv": 121818, "power_mw": 0,
+            "total_wh": 43, "err_code": 0
+        }}});
+        let rt = parse_realtime(&read).unwrap().unwrap();
+        assert_eq!((rt.watts, rt.watt_hours), (Some(0.0), Some(43.0)));
     }
 
     #[test]
