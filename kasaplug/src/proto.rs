@@ -47,6 +47,26 @@ const TIMEOUT: Duration = Duration::from_secs(3);
 /// about 1.3 KB; anything near this is a corrupt prefix, not a reply.
 const MAX_REPLY: usize = 64 * 1024;
 
+/// Longest device-supplied string kept, in characters; a cut is marked `…`.
+/// The bound panio's own doctor applies to a helper's report.
+const MAX_FIELD_CHARS: usize = 300;
+
+/// A device-supplied string made safe to print: control characters become
+/// spaces and the length is capped, as `printable` in cli/src/doctor.rs
+/// does. The API has no login, so anyone on the network can set an alias;
+/// unfiltered, a peer could plant escape sequences or forge output lines.
+fn printable(s: &str) -> String {
+    let mut out: String = s
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .take(MAX_FIELD_CHARS)
+        .collect();
+    if s.chars().count() > MAX_FIELD_CHARS {
+        out.push('…');
+    }
+    out.trim().to_string()
+}
+
 /// Apply the XOR autokey cipher (key 171, each output byte keys the next).
 pub fn encrypt(plain: &[u8]) -> Vec<u8> {
     let mut key = 171u8;
@@ -114,14 +134,16 @@ pub fn relay_on(raw: &Value) -> Result<bool> {
 #[derive(Debug, Clone)]
 pub struct Outlet {
     /// The child id to name in a request's `context`; `None` for a plug's
-    /// own relay.
+    /// own relay. Kept verbatim, since it goes back to the device; it is
+    /// never printed.
     pub child_id: Option<String>,
     pub alias: String,
     /// The relay state exactly as reported; interpret with [`relay_on`].
     pub state: Value,
 }
 
-/// Subset of `system.get_sysinfo` we surface.
+/// Subset of `system.get_sysinfo` we surface. Every string field is
+/// [`printable`].
 #[derive(Debug, Clone)]
 pub struct SysInfo {
     pub device_id: String,
@@ -136,7 +158,7 @@ pub struct SysInfo {
 
 impl SysInfo {
     fn parse(v: &Value) -> Result<SysInfo> {
-        let s = |k: &str| v.get(k).and_then(Value::as_str).unwrap_or("?").to_string();
+        let s = |k: &str| printable(v.get(k).and_then(Value::as_str).unwrap_or("?"));
         let outlets = if let Some(children) = v.get("children").and_then(Value::as_array) {
             children
                 .iter()
@@ -147,11 +169,7 @@ impl SysInfo {
                         .ok_or_else(|| anyhow!("a child in get_sysinfo has no id: {c}"))?;
                     Ok(Outlet {
                         child_id: Some(id.to_string()),
-                        alias: c
-                            .get("alias")
-                            .and_then(Value::as_str)
-                            .unwrap_or("")
-                            .to_string(),
+                        alias: printable(c.get("alias").and_then(Value::as_str).unwrap_or("")),
                         state: c.get("state").cloned().unwrap_or(Value::Null),
                     })
                 })
@@ -388,7 +406,7 @@ fn module_error(v: &Value, module: &str) -> Option<String> {
     let m = v.get(module)?;
     let code = m.get("err_code")?.as_i64()?;
     (code != 0).then(|| {
-        let msg = m.get("err_msg").and_then(Value::as_str).unwrap_or("");
+        let msg = printable(m.get("err_msg").and_then(Value::as_str).unwrap_or(""));
         format!("{module}: device error {code} {msg}")
             .trim_end()
             .to_string()
@@ -407,7 +425,7 @@ fn result(v: &Value, module: &str, method: &str) -> Result<Value> {
     match r.get("err_code").and_then(Value::as_i64) {
         None | Some(0) => Ok(r.clone()),
         Some(code) => {
-            let msg = r.get("err_msg").and_then(Value::as_str).unwrap_or("");
+            let msg = printable(r.get("err_msg").and_then(Value::as_str).unwrap_or(""));
             bail!("{module}.{method}: device error {code} {msg}")
         }
     }
@@ -493,6 +511,44 @@ mod tests {
         let bulb = SysInfo::parse(&json!({"model": "KL110(US)"})).unwrap();
         assert!(bulb.outlets.is_empty());
         assert!(bulb.outlet(0).is_err());
+    }
+
+    #[test]
+    fn device_strings_are_made_printable() {
+        let clean = |s: &str| !s.chars().any(char::is_control);
+        // As the wire carries them: JSON escapes, which serde decodes into
+        // the control characters themselves.
+        let info = SysInfo::parse(
+            &serde_json::from_str(
+                r#"{"model": "HS300(US)\u001b[2J", "alias": "strip\nkasaplug: outlet 0: off",
+                    "deviceId": "AA00\u009b31m", "sw_ver": "1.1.2\r",
+                    "children": [{"id": "AA00BB11CC22DD3300\u0007", "state": 1,
+                                  "alias": "Plug 1\u001b]0;title\u0007"}]}"#,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(info.model, "HS300(US) [2J");
+        assert_eq!(info.alias, "strip kasaplug: outlet 0: off");
+        assert_eq!(info.device_id, "AA00 31m");
+        assert_eq!(info.sw_ver, "1.1.2");
+        assert_eq!(info.outlets[0].alias, "Plug 1 ]0;title");
+        // The id goes back to the device as it came.
+        assert_eq!(
+            info.outlets[0].child_id.as_deref(),
+            Some("AA00BB11CC22DD3300\u{7}")
+        );
+
+        let long = SysInfo::parse(&json!({"alias": "x".repeat(400)})).unwrap();
+        assert_eq!(long.alias.chars().count(), MAX_FIELD_CHARS + 1);
+        assert!(long.alias.ends_with('…'), "{}", long.alias);
+
+        let v = json!({"emeter": {"err_code": -3, "err_msg": "no\u{1b}[2Jpe"}});
+        let err = module_error(&v, "emeter").unwrap();
+        assert!(clean(&err), "{err:?}");
+        let v = json!({"system": {"get_sysinfo": {"err_code": -3, "err_msg": "a\nb"}}});
+        let err = result(&v, "system", "get_sysinfo").unwrap_err().to_string();
+        assert!(clean(&err), "{err:?}");
     }
 
     #[test]
