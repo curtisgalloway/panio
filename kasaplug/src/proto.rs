@@ -26,9 +26,9 @@
 //! an authenticated HTTP protocol this helper does not implement. Such a
 //! device refuses TCP 9999; [`Client::call`] is where it surfaces.
 
-use std::io::{Read, Write};
+use std::io::{self, Read, Write};
 use std::net::{IpAddr, SocketAddr, TcpStream, ToSocketAddrs};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{json, Value};
@@ -36,14 +36,16 @@ use serde_json::{json, Value};
 /// The legacy protocol's TCP port.
 pub const PORT: u16 = 9999;
 
-/// Connect and per-read/write timeout. Generous enough for a sleepy Wi-Fi
-/// device to answer, short enough that a wrong/dead address fails a hook
-/// promptly and a doctor check stays inside panio's 10 s.
+/// Deadline for one whole exchange: connect, send, and the complete reply.
+/// It is one budget, not a per-read timeout, so a peer that drips its reply
+/// a byte at a time cannot hold a hook open past it. Generous enough for a
+/// sleepy Wi-Fi device to answer, short enough that a wrong/dead address
+/// fails a hook promptly and a doctor check stays inside panio's 10 s.
 const TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Upper bound on a reply's length prefix. A six-outlet strip's sysinfo is
 /// about 1.3 KB; anything near this is a corrupt prefix, not a reply.
-const MAX_REPLY: usize = 1 << 20;
+const MAX_REPLY: usize = 64 * 1024;
 
 /// Apply the XOR autokey cipher (key 171, each output byte keys the next).
 pub fn encrypt(plain: &[u8]) -> Vec<u8> {
@@ -215,13 +217,27 @@ impl Realtime {
 pub struct Client {
     host: String,
     port: u16,
+    /// Deadline per exchange; [`TIMEOUT`] outside tests.
+    timeout: Duration,
 }
 
 impl Client {
     /// Build a client from a user-supplied address (see [`split_device`]).
     pub fn new(device: &str) -> Self {
         let (host, port) = split_device(device);
-        Client { host, port }
+        Client {
+            host,
+            port,
+            timeout: TIMEOUT,
+        }
+    }
+
+    /// The same client with another deadline, so a test of it runs in
+    /// milliseconds.
+    #[cfg(test)]
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout;
+        self
     }
 
     /// `host:port`, for messages.
@@ -233,22 +249,25 @@ impl Client {
         }
     }
 
-    /// Open the TCP connection one request travels on. The `io::Error` stays
-    /// in the chain, so `doctor` can tell a refused port (the host is there,
-    /// the API is not) from a host that does not answer.
+    /// Open a TCP connection within one deadline, as `doctor`'s first probe.
+    /// The `io::Error` stays in the chain, so `doctor` can tell a refused
+    /// port (the host is there, the API is not) from a host that does not
+    /// answer.
     pub fn connect(&self) -> Result<TcpStream> {
+        self.connect_by(Instant::now() + self.timeout)
+    }
+
+    /// [`Client::connect`] within an exchange's deadline: every address
+    /// tried shares it.
+    fn connect_by(&self, deadline: Instant) -> Result<TcpStream> {
         let addrs: Vec<SocketAddr> = (self.host.as_str(), self.port)
             .to_socket_addrs()
             .with_context(|| format!("cannot resolve {}", self.host))?
             .collect();
         let mut last = None;
         for a in &addrs {
-            match TcpStream::connect_timeout(a, TIMEOUT) {
-                Ok(s) => {
-                    s.set_read_timeout(Some(TIMEOUT))?;
-                    s.set_write_timeout(Some(TIMEOUT))?;
-                    return Ok(s);
-                }
+            match time_left(deadline).and_then(|left| TcpStream::connect_timeout(a, left)) {
+                Ok(s) => return Ok(s),
                 Err(e) => last = Some(e),
             }
         }
@@ -260,13 +279,19 @@ impl Client {
     }
 
     /// The one place every request is issued. Returns the decoded reply,
-    /// mapping transport failures to clear messages.
+    /// mapping transport failures to clear messages. One deadline, set here,
+    /// bounds the whole exchange.
     fn call(&self, req: &Value) -> Result<Value> {
-        let mut s = self.connect()?;
-        s.write_all(&frame(req))
+        let deadline = Instant::now() + self.timeout;
+        let mut s = self.connect_by(deadline)?;
+        // A request is under 200 bytes and fits the socket's send buffer in
+        // one write, so a single timeout bounds it.
+        time_left(deadline)
+            .and_then(|left| s.set_write_timeout(Some(left)))
+            .and_then(|()| s.write_all(&frame(req)))
             .with_context(|| format!("sending to {}", self.addr()))?;
         let mut len = [0u8; 4];
-        s.read_exact(&mut len)
+        read_exact_by(&mut s, &mut len, deadline)
             .with_context(|| format!("no legacy reply from {}", self.addr()))?;
         let n = u32::from_be_bytes(len) as usize;
         if n > MAX_REPLY {
@@ -276,7 +301,7 @@ impl Client {
             );
         }
         let mut body = vec![0u8; n];
-        s.read_exact(&mut body)
+        read_exact_by(&mut s, &mut body, deadline)
             .with_context(|| format!("reading a {n}-byte reply from {}", self.addr()))?;
         serde_json::from_slice(&decrypt(&body))
             .with_context(|| format!("decoding the reply from {}", self.addr()))
@@ -313,6 +338,39 @@ impl Client {
             "get_realtime",
         )?)))
     }
+}
+
+/// Time left before `deadline`; a `TimedOut` error once it has passed.
+/// Never zero, which a socket timeout rejects.
+fn time_left(deadline: Instant) -> io::Result<Duration> {
+    match deadline.checked_duration_since(Instant::now()) {
+        Some(left) if !left.is_zero() => Ok(left),
+        _ => Err(timed_out()),
+    }
+}
+
+fn timed_out() -> io::Error {
+    io::Error::new(io::ErrorKind::TimedOut, "timed out")
+}
+
+/// `read_exact` against a deadline: the socket timeout is reset to the time
+/// left before every read, so the whole read is bounded, not each byte.
+fn read_exact_by(s: &mut TcpStream, buf: &mut [u8], deadline: Instant) -> io::Result<()> {
+    let mut got = 0;
+    while got < buf.len() {
+        s.set_read_timeout(Some(time_left(deadline)?))?;
+        match s.read(&mut buf[got..]) {
+            Ok(0) => return Err(io::ErrorKind::UnexpectedEof.into()),
+            Ok(n) => got += n,
+            Err(e) => match e.kind() {
+                io::ErrorKind::Interrupted => {}
+                // A read timeout is WouldBlock on Unix, TimedOut on Windows.
+                io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut => return Err(timed_out()),
+                _ => return Err(e),
+            },
+        }
+    }
+    Ok(())
 }
 
 /// Address a request at one outlet of a strip; a plug's own relay needs no
@@ -358,6 +416,8 @@ fn result(v: &Value, module: &str, method: &str) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::TcpListener;
+    use std::thread;
 
     #[test]
     fn cipher_matches_a_known_good_request() {
@@ -448,6 +508,37 @@ mod tests {
         assert_eq!(plain.watts, Some(3.1));
         assert_eq!(plain.amps, None);
         assert_eq!(plain.watt_hours, Some(500.0));
+    }
+
+    #[test]
+    fn a_reply_dripped_byte_by_byte_ends_at_the_deadline() {
+        // Promises a 64-byte reply, then sends a byte every 50 ms. Each read
+        // returns well inside the deadline, so only a deadline over the
+        // whole exchange ends it before the 3.2 s the drip takes.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        thread::spawn(move || {
+            for s in listener.incoming() {
+                let Ok(mut s) = s else { continue };
+                thread::spawn(move || {
+                    let _ = s.write_all(&64u32.to_be_bytes());
+                    for _ in 0..64 {
+                        thread::sleep(Duration::from_millis(50));
+                        if s.write_all(&[0]).is_err() {
+                            return;
+                        }
+                    }
+                });
+            }
+        });
+        let client = Client::new(&addr).with_timeout(Duration::from_millis(500));
+        let start = Instant::now();
+        let err = client.sysinfo().unwrap_err();
+        let took = start.elapsed();
+        assert!(took < Duration::from_secs(2), "took {took:?}: {err:#}");
+        let err = format!("{err:#}");
+        assert!(err.contains("reading a 64-byte reply"), "{err}");
+        assert!(err.contains("timed out"), "{err}");
     }
 
     #[test]
