@@ -28,7 +28,7 @@ mod proto;
 use std::thread;
 use std::time::Duration;
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use clap::{Parser, Subcommand};
 
 use proto::{relay_on, Client};
@@ -317,12 +317,15 @@ fn cmd_switch(client: &Client, id: u32, on: bool) -> Result<()> {
 /// off → confirm → delay → on → confirm. The off phase is confirmed before
 /// the hold starts: an outlet that ignored the off command would otherwise
 /// produce a "cycle" that never removed power, with the final read-back
-/// happily reporting on.
+/// happily reporting on. Each phase adds context rather than rewording the
+/// error, so the cause (a refused connection, a mismatched read-back) stays
+/// in the chain.
 fn cmd_cycle(client: &Client, id: u32, delay_ms: u64) -> Result<()> {
     set_confirmed(client, id, false)
-        .map_err(|e| anyhow!("{e} (cycle aborted before the off-hold)"))?;
+        .with_context(|| format!("cycle of outlet {id} aborted before the off-hold"))?;
     thread::sleep(Duration::from_millis(delay_ms));
-    set_confirmed(client, id, true).map_err(|e| anyhow!("{e} (after the off-hold)"))?;
+    set_confirmed(client, id, true)
+        .with_context(|| format!("cycle of outlet {id} failed after the off-hold"))?;
     println!("outlet {id}: cycled ({delay_ms} ms off)");
     Ok(())
 }
@@ -537,7 +540,7 @@ mod tests {
     #[test]
     fn a_missing_outlet_is_refused_before_switching() {
         let (c, dev) = strip(&[1, 1]);
-        let err = cmd_cycle(&c, 5, 0).unwrap_err().to_string();
+        let err = format!("{:#}", cmd_cycle(&c, 5, 0).unwrap_err());
         assert!(err.contains("outlet 5 not found"), "{err}");
         assert_eq!(seen(&dev), ["get_sysinfo"]);
     }
@@ -564,11 +567,12 @@ mod tests {
     fn cycle_aborts_before_the_hold_when_off_did_not_take() {
         let (c, dev) = strip(&[1, 1]);
         dev.lock().unwrap().ignore_off = true;
-        let err = cmd_cycle(&c, 0, 0)
-            .expect_err("an outlet stuck on must fail the cycle")
-            .to_string();
-        assert!(err.contains("commanded off"), "{err}");
-        assert!(err.contains("cycle aborted before the off-hold"), "{err}");
+        let err = cmd_cycle(&c, 0, 0).expect_err("an outlet stuck on must fail the cycle");
+        let err = format!("{err:#}");
+        assert!(
+            err.contains("cycle of outlet 0 aborted before the off-hold: outlet 0: commanded off"),
+            "{err}"
+        );
         // It must stop right there: no power-on was ever sent.
         assert_eq!(
             seen(&dev),
@@ -580,10 +584,25 @@ mod tests {
     fn cycle_fails_when_on_did_not_take() {
         let (c, dev) = strip(&[1]);
         dev.lock().unwrap().ignore_on = true;
-        let err = cmd_cycle(&c, 0, 0).unwrap_err().to_string();
-        assert!(err.contains("commanded on"), "{err}");
-        assert!(err.contains("after the off-hold"), "{err}");
+        let err = format!("{:#}", cmd_cycle(&c, 0, 0).unwrap_err());
+        assert!(
+            err.contains("cycle of outlet 0 failed after the off-hold: outlet 0: commanded on"),
+            "{err}"
+        );
         assert_eq!(states(&dev)[0], json!(0));
+    }
+
+    #[test]
+    fn a_failed_cycle_keeps_the_transport_error() {
+        let addr = format!("127.0.0.1:{}", closed_port());
+        let err = cmd_cycle(&Client::new(&addr), 0, 0).unwrap_err();
+        // The io::Error the README tells users to look for is still there.
+        assert!(refused(&err), "{err:#}");
+        let err = format!("{err:#}");
+        assert!(
+            err.contains("cycle of outlet 0 aborted before the off-hold: cannot reach Kasa device"),
+            "{err}"
+        );
     }
 
     #[test]
@@ -648,16 +667,20 @@ mod tests {
         );
     }
 
-    #[test]
-    fn doctor_fails_auth_when_the_local_api_is_off() {
-        // A port nothing listens on: bind one, learn its number, drop it.
-        // The host answers with a refusal, as a device with the legacy API
-        // turned off does.
-        let port = TcpListener::bind("127.0.0.1:0")
+    /// A port nothing listens on: bind one, learn its number, drop it. The
+    /// host answers with a refusal, as a device with the legacy API turned
+    /// off does.
+    fn closed_port() -> u16 {
+        TcpListener::bind("127.0.0.1:0")
             .unwrap()
             .local_addr()
             .unwrap()
-            .port();
+            .port()
+    }
+
+    #[test]
+    fn doctor_fails_auth_when_the_local_api_is_off() {
+        let port = closed_port();
         let checks = doctor_checks(&Client::new(&format!("127.0.0.1:{port}")), None);
         assert_eq!(statuses(&checks), [("reachable", "ok"), ("auth", "fail")]);
         assert!(checks[0].detail.contains("refused"), "{checks:?}");
