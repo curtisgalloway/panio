@@ -291,7 +291,8 @@ channel to a remote control host (see the lab section below).
   named level too; with more than one run each line says which, e.g.
   `power doctor (level hard): <check>`): `FAIL` is a problem (exit 1),
   `warn` and `no-check` (the helper has no doctor check) are not. Of the
-  bundled helpers only `shellyplug` implements it. A doctor `FAIL` on a channel
+  bundled helpers `shellyplug`, `kasaplug`, `dsdrelay`, `dsdble`, `phidget`
+  and `usbtoggle` implement it. A doctor `FAIL` on a channel
   that still works is still a hint, not ground truth (see the gotchas).
 
 ## Netboot (DHCP + TFTP + HTTP)

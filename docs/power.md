@@ -414,7 +414,8 @@ target-machine  power doctor: switch     @bench1  ok    switch:0 present
 A `fail` (or a check that times out) is a problem and makes `doctor` exit 1;
 a `warn` is shown but is not. A helper without a `doctor` subcommand shows
 once as `no-check … helper has no doctor check` and is not a problem. Of the
-bundled power helpers, `shellyplug` implements it. Only opt in a hook whose
+bundled power helpers, `shellyplug`, `kasaplug`, `dsdrelay`, `dsdble` and
+`phidget` implement it. Only opt in a hook whose
 program implements the check: a script that ignores its arguments would run
 its normal action. The derivation rule and the JSON contract are in
 [Adding power helpers](dev/adding-power-helpers.md#doctor-check-optional-recommended).
@@ -1162,7 +1163,11 @@ kasaplug -d <host> doctor [id] [--json] # read-only health check (panio doctor)
 ```
 
 `state` reads `system.get_sysinfo` live on every call and fails if the device
-is unreachable.
+is unreachable. Each request has one 3 s deadline covering the connection,
+the request and the whole reply, so a device that stalls mid-reply fails the
+hook instead of holding it. Text the device supplies (names, model, error
+messages) is printed with control characters replaced by spaces, since
+anyone on the network can set it.
 
 `doctor` never switches an outlet. It reports three checks: `reachable` (the
 host answers; model and firmware once the protocol works), `auth` (fails when

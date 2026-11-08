@@ -30,6 +30,16 @@ kasaplug/        Rust crate: standalone helper for TP-Link Kasa smart plugs
                  real client against a loopback TCP stub speaking the
                  protocol. src/main.rs: CLI + command logic; src/proto.rs:
                  framing, cipher, get_sysinfo/set_relay_state/emeter.
+                 Client::call sets one deadline (TIMEOUT, 3 s) per
+                 exchange; connect, send and every read share it, so a
+                 peer dripping bytes cannot stretch it, and a reply over
+                 MAX_REPLY (64 KiB) is refused. The protocol has no login,
+                 so every device string (aliases, model, err_msg) goes
+                 through printable() at parse time, as cli/src/doctor.rs
+                 does; the child id stays verbatim (sent back, never
+                 printed). Only a module-level err_code -1 ("module not
+                 support") means "no meter"; -2 (unknown method) and -14
+                 (unknown outlet) come inside the method's object.
                  Like shellyplug it reaches a LAN device, so the macOS Local
                  Network privacy gate applies — see docs/power.md gotchas.
 ```

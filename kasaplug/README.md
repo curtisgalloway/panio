@@ -68,7 +68,8 @@ kasaplug -d <host> doctor [id] [--json] read-only health check: reachable, auth,
 
 `on`/`off`/`cycle` read `system.get_sysinfo` back and exit non-zero on a
 mismatch. An outlet that ignores the off command aborts `cycle` before the
-hold.
+hold. Each request has one 3 s deadline for the connection and the whole
+reply.
 
 `doctor` never switches an outlet. `--json` prints the report `panio doctor`
 reads when the power channel is set with `--doctor`, and exits 0 whatever the
