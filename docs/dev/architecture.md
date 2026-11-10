@@ -69,6 +69,7 @@ invocations. State lives in plain files.
 | `dsdrelay` | Rust | Standalone power helper: DSD TECH USB serial AT relay boards (CP2102N, 9600 8N1), NC wiring, per-channel on/off/cycle with read-back, wired in via the generic power hooks. One-shot, stateless. |
 | `zigplug` | Python (uv tool, zigpy-znp) | Standalone power helper: Zigbee smart-plug control through a CC2652 coordinator; one-shots proxy through an auto-spawned daemon that owns the ZNP session. |
 | `shellyplug` | Rust (ureq) | Standalone power helper: Shelly Gen2+ smart plugs/relays over the device's local HTTP RPC — one-shot, stateless. |
+| `kasaplug` | Rust | Standalone power helper: TP-Link Kasa smart plugs and power strips over the device's legacy local protocol (TCP 9999) — one-shot, stateless. |
 | `amt` | Rust (ureq) | Standalone power helper: Intel AMT/vPro power over WS-Management (verified HTTPS on 16993 with HTTP Digest; legacy HTTP on 16992 requires explicit opt-in), with true power-state readback from the ME. |
 | `hidrig` | Rust | HID-injection helper: protocol client + `serve` daemon for the KB2040 injector, wired in via the generic `hid` channel. |
 | `ch9329` | Rust | HID-injection helper with the same CLI + `serve` daemon, speaking the CH9329 (serial-to-USB-HID chip) frame protocol for Openterface Mini-KVM / KVM-Go and Sipeed NanoKVM-USB. |
@@ -309,7 +310,7 @@ Two mechanisms:
   `power-state`).
 
 Device-specific logic lives in helpers behind those hooks, never in the core: `cambrionix`,
-`dsdrelay`, `dsdble`, `phidget`, `zigplug`, `shellyplug`, and `amt` ship with panio, and `hidrig` can switch a DUT relay
+`dsdrelay`, `dsdble`, `phidget`, `zigplug`, `shellyplug`, `kasaplug`, and `amt` ship with panio, and `hidrig` can switch a DUT relay
 (`hidrig power`). Without a `state_cmd`, `panio power-state` falls back to an optional
 **power-sense** input on the target rail via serialcap's `/status`.
 

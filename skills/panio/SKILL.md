@@ -92,7 +92,7 @@ rejects `--json-errors`.
 cd ~/src/panio
 make install               # cargo-installs the `panio` CLI, then `panio setup`
                            # builds/installs the helper binaries (hdmicap, serialcap,
-                           # netbootd, cambrionix, dsdrelay, dsdble, phidget, usbtoggle, hidrig, ch9329, shellyplug,
+                           # netbootd, cambrionix, dsdrelay, dsdble, phidget, usbtoggle, hidrig, ch9329, shellyplug, kasaplug,
                            # amt), the OCR helper, zigplug, and the bundled skills;
                            # on macOS also installs netbootd-bpf-helper
                            # setuid-root (one sudo)
@@ -101,7 +101,7 @@ make install               # cargo-installs the `panio` CLI, then `panio setup`
 Run once per machine; re-run after pulling or editing (it's a full rebuild).
 Only the `panio` CLI lands in `~/.cargo/bin` — make sure that's on `PATH`.
 The helpers (hdmicap, serialcap, netbootd, cambrionix, dsdrelay, dsdble, phidget, usbtoggle, hidrig, ch9329,
-shellyplug, amt, jetkvm (needs Go), zigplug, the
+shellyplug, kasaplug, amt, jetkvm (needs Go), zigplug, the
 OCR tool) live in the private libexec dir `~/.local/libexec/panio/bin`,
 off PATH; panio resolves them itself, and `panio helper [NAME] [ARGS…]`
 lists or runs one directly. If a different `panio` shadows the CLI on PATH
@@ -291,7 +291,8 @@ channel to a remote control host (see the lab section below).
   named level too; with more than one run each line says which, e.g.
   `power doctor (level hard): <check>`): `FAIL` is a problem (exit 1),
   `warn` and `no-check` (the helper has no doctor check) are not. Of the
-  bundled helpers only `shellyplug` implements it. A doctor `FAIL` on a channel
+  bundled helpers `shellyplug`, `kasaplug`, `dsdrelay`, `dsdble`, `phidget`
+  and `usbtoggle` implement it. A doctor `FAIL` on a channel
   that still works is still a hint, not ground truth (see the gotchas).
 
 ## Netboot (DHCP + TFTP + HTTP)
