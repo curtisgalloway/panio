@@ -509,7 +509,7 @@ jobs:
   package-macos:
     needs: profile-pins
     name: package (macos universal)
-    runs-on: macos-14
+    runs-on: macos-15
     # The six secrets that gate Developer ID signing + notarization below are
     # read into env here (a step `if:` can't see `secrets` directly — same
     # reason the winget job routes WINGET_TOKEN through env). All six are
