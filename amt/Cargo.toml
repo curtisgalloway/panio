@@ -30,18 +30,18 @@ path = "src/main.rs"
 [dependencies]
 clap = { version = "4", features = ["derive", "env"] }
 anyhow = "1"
-ureq = "2"
+ureq = "3"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 rustls-pemfile = "2"
 webpki-roots = "1"
 # AMT's HTTP Digest is MD5-only (RFC 2617); md-5 is the RustCrypto
 # implementation, pulled in solely for that handshake.
-md-5 = "0.10"
+md-5 = "0.11"
 # Password from AMT_PASSWORD, --password-file, or --password-command (#249).
 secret = { path = "../secret" }
 
 [dev-dependencies]
-rcgen = "0.13"
+rcgen = "0.14"
 tempfile = "3"
 
 [profile.release]

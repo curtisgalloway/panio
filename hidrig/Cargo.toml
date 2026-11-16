@@ -33,7 +33,7 @@ serialport = "4"
 # thread (see uart.rs) — tokio-serial's async reads are unreliable on a macOS
 # tty — bridged to the async server via tokio channels.
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time", "net", "io-util"] }
-axum = { version = "0.7", features = ["ws"] }
+axum = { version = "0.8", features = ["ws"] }
 futures-util = "0.3"
 
 # --- daemon plumbing + client ----------------------------------------------
@@ -41,10 +41,10 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-ureq = "2"
+ureq = "3"
 
 # --- daemon auth: OS entropy for the per-start bearer token (src/auth.rs) ---
-getrandom = "0.2"
+getrandom = "0.3"
 
 # --- process/identity primitives behind src/platform.rs -----------------
 # Each platform gets only what it can use: libc on Unix, the Win32 process
@@ -53,7 +53,7 @@ getrandom = "0.2"
 libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = [
+windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_System_Threading",
 ] }

@@ -34,7 +34,7 @@ path = "src/bin/netbootd-bpf-helper.rs"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "io-util", "fs", "process"] }
 
 # --- Socket options (SO_REUSEADDR, interface-pinned reply sockets) -------
-socket2 = "0.5"
+socket2 = "0.6"
 
 # --- Low-level socket / BPF FFI ------------------------------------------
 # libc drives the /dev/bpf ioctls (in the helper), the SCM_RIGHTS fd handoff,

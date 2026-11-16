@@ -12,7 +12,7 @@ path = "src/main.rs"
 [dependencies]
 # --- Async runtime + HTTP ------------------------------------------------
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time", "net", "io-util"] }
-axum = { version = "0.7", features = ["ws"] }
+axum = { version = "0.8", features = ["ws"] }
 futures-util = "0.3"
 
 # --- Serial --------------------------------------------------------------
@@ -35,10 +35,10 @@ serde_json = "1"
 bytes = "1"
 
 # --- daemon auth: OS entropy for the per-start bearer token (src/auth.rs) ---
-getrandom = "0.2"
+getrandom = "0.3"
 
 # --- Client subcommands --------------------------------------------------
-ureq = "2"
+ureq = "3"
 
 # --- process/identity primitives behind src/platform.rs -----------------
 # Each platform gets only what it can use: libc on Unix, the Win32 process
@@ -47,7 +47,7 @@ ureq = "2"
 libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = [
+windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_System_Threading",
 ] }

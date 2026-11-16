@@ -29,19 +29,19 @@ clap = { version = "4", features = ["derive"] }
 
 # --- Config: typed read model (serde/toml) + comment-preserving edits ----
 serde = { version = "1", features = ["derive"] }
-toml = "0.8"
-toml_edit = "0.22"
+toml = "1.2"
+toml_edit = "0.25"
 
 # --- Errors --------------------------------------------------------------
 anyhow = "1"
 thiserror = "2"
 
 # --- Paths ---------------------------------------------------------------
-dirs = "5"
+dirs = "7"
 
 
 # --- talking to the serialcap/hdmicap daemons (localhost HTTP) -----------
-ureq = { version = "2", features = ["json"] }
+ureq = { version = "3", features = ["json"] }
 serde_json = "1"
 
 # --- direct DTR control fallback when serialcap isn't running ------------
@@ -64,7 +64,7 @@ tempfile = "3"
 libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = [
+windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Security",
     "Win32_Security_Cryptography",
