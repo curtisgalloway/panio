@@ -16,8 +16,15 @@
 # is pinned to a full commit rather than a movable tag (Review M7;
 # scripts/ci-actions-pinned.sh enforces it). Dependabot bumps the SHA and the
 # trailing `# vX.Y.Z` comment together, in one grouped PR a week, so pinning
-# does not mean freezing. Only GitHub Actions is covered here: Cargo
-# dependency bumps are reviewed by hand.
+# does not mean freezing.
+#
+# Cargo dependencies are covered too, in one grouped PR a week across every
+# crate. There is no Cargo workspace, so each crate directory is listed; keep
+# this list in step with the Cargo.toml files in the tree (the Makefile's
+# CRATES plus ocr/winocr). A merged Cargo bump counts toward the weekly
+# release; a GitHub Actions bump does not, because it changes no shipped code.
+# Go (jetkvm) and Python (zigplug, evals/ocr) dependencies are still bumped
+# by hand.
 
 version: 2
 updates:
@@ -27,5 +34,31 @@ updates:
       interval: weekly
     groups:
       github-actions:
+        patterns:
+          - "*"
+
+  - package-ecosystem: cargo
+    directories:
+      - /amt
+      - /cambrionix
+      - /ch9329
+      - /cli
+      - /dsdble
+      - /dsdrelay
+      - /hdmicap
+      - /hidrig
+      - /kasaplug
+      - /netbootd
+      - /ocr/winocr
+      - /phidget
+      - /secret
+      - /serialcap
+      - /shellyplug
+      - /switchport
+      - /usbtoggle
+    schedule:
+      interval: weekly
+    groups:
+      cargo:
         patterns:
           - "*"
