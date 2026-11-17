@@ -171,7 +171,7 @@ feeds needs re-reading before `--update` re-pins it.
 | path | blob | feeds |
 |---|---|---|
 | `.github/workflows/release.yml` | 6511506f29d7 | Channels (every arm's build and staging), Publish |
-| `.github/workflows/docs.yml` | d6a77e81400e | Publish: re-verify apt |
+| `.github/workflows/docs.yml` | d6c5b0440a0f | Publish: re-verify apt |
 | `packaging/nfpm.yaml` | 3c8d9bd416f2 | Channels: deb |
 | `packaging/scripts/build-apt-repo.sh` | 27379213bcea | Channels: deb, install like a user |
 | `Makefile` | d1642260ba48 | Project: helpers; Channels: source |
