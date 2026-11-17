@@ -23,6 +23,16 @@
 # this list in step with the Cargo.toml files in the tree (the Makefile's
 # CRATES plus ocr/winocr). A merged Cargo bump counts toward the weekly
 # release; a GitHub Actions bump does not, because it changes no shipped code.
+#
+# The weekly Cargo batch is compatible updates only (GitHub #411).
+# `versioning-strategy: lockfile-only` moves Cargo.lock inside the ranges the
+# Cargo.toml files already allow and never rewrites a requirement, so the
+# boundary is Cargo's own caret rule. That rule also covers pre-1.0 crates,
+# where 0.7 -> 0.8 is a breaking change even though Dependabot labels it
+# semver-minor (axum 0.7 -> 0.8 and getrandom 0.2 -> 0.3 broke the first
+# all-in batch, #410, along with ureq 2 -> 3). An incompatible upgrade is a
+# migration instead: its own issue and PR, with the source changes and tests
+# for the behavior it touches, never a manifest-only bump in this group.
 # Go (jetkvm) and Python (zigplug, evals/ocr) dependencies are still bumped
 # by hand.
 
@@ -56,6 +66,7 @@ updates:
       - /shellyplug
       - /switchport
       - /usbtoggle
+    versioning-strategy: lockfile-only
     schedule:
       interval: weekly
     groups:
