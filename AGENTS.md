@@ -289,6 +289,29 @@ build)`. Each package smoke step asserts the versions agree.
    `gh release view vX.Y.Z` to confirm artifacts and notes. Confirm the
    dispatched `docs.yml` run went green too, or apt clients keep the old version.
 
+**A releaser that cannot push a tag** (a cloud agent session: its git proxy
+rejects every push that is not a branch) does steps 1 and 2, then replaces
+steps 3 and 4 by dispatching `.github/workflows/cut-release.yml` from `main`:
+
+```bash
+gh workflow run cut-release.yml --ref main \
+    -f version=vX.Y.Z -f sha=<full main HEAD commit id> \
+    -f summary='<lowercase one-line summary>' -f body='<body paragraph>'
+```
+
+That workflow re-checks the pre-flight itself (the commit is `main` HEAD, CI is
+green on it, the profile pins are current, the tag is new and newer than the
+latest release), then creates the annotated tag as `github-actions[bot]` and
+pushes it with the deploy key in the `RELEASE_TAG_DEPLOY_KEY` secret. It
+publishes nothing: the pushed tag triggers `release.yml` exactly as a
+maintainer's push does. The deploy key is what makes that work, because a tag
+pushed with the workflow's own `GITHUB_TOKEN` starts no workflow.
+
+The key is a secret of the `release-tag` **environment**, whose deployment
+branches are limited to `main`, and must never become a repository secret.
+Anyone who can push a branch can dispatch an edited copy of the workflow from
+it; the environment's branch policy is what keeps the key out of that run.
+
 An unshipped botched tag can be moved (`git tag -f` + `git push -f origin
 vX.Y.Z`). Once the Release and tap bump are public, roll forward with a new
 patch tag.
