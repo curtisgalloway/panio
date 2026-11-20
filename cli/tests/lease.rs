@@ -1437,6 +1437,111 @@ fn a_history_write_failure_leaves_the_target_blocked_and_mints_no_token() {
 }
 
 #[test]
+fn corrupt_history_preserves_records_and_blocks_turnover() {
+    let b = Blockable::new("block_corrupt_history");
+    b.fix();
+    write_lease(&b.dir, "old", now() - 10, now() - 20);
+    let hist = lease_path(&b.dir).with_file_name("lease-history.jsonl");
+    let original = concat!(
+        r#"{"at":1,"previous_owner":"a","previous_token":"t","new_owner":null,"how":"expired","cleanup_errors":[]}"#,
+        "\n",
+        r#"{"at":"fake-token"}"#,
+        "\n",
+    );
+    std::fs::write(&hist, original).unwrap();
+
+    let o = panio(
+        &b.dir,
+        &["lease", "acquire", "dut", "--owner", "bob@bench1"],
+        None,
+    );
+    assert_eq!(std::fs::read(&hist).unwrap(), original.as_bytes());
+    assert_ne!(o.status.code(), Some(0), "{o:?}");
+    assert!(stdout(&o).is_empty(), "{o:?}");
+    let err = stderr(&o);
+    assert!(
+        err.contains("lease-history.jsonl") && err.contains("line 2"),
+        "{err}"
+    );
+    assert!(!err.contains("fake-token"), "{err}");
+    assert_eq!(b.status()["state"], "blocked");
+    assert!(!b.ran());
+}
+
+#[test]
+fn corrupt_history_refuses_unverified_tokens_and_keeps_reads_available() {
+    let b = Blockable::new("corrupt_history_token");
+    let hist = lease_path(&b.dir).with_file_name("lease-history.jsonl");
+    std::fs::create_dir_all(hist.parent().unwrap()).unwrap();
+    std::fs::write(&hist, "{truncated").unwrap();
+
+    let o = panio(&b.dir, &["power", "on", "dut"], Some("old-token"));
+    assert_eq!(o.status.code(), Some(23), "{o:?}");
+    assert!(stderr(&o).contains("lease-history.jsonl"), "{o:?}");
+    assert!(!b.ran());
+
+    let o = panio(&b.dir, &["power-state", "dut"], Some("old-token"));
+    assert_eq!(o.status.code(), Some(0), "{o:?}");
+    let err = stderr(&o);
+    assert!(
+        err.contains("warning: PANIO_LEASE is set but") && err.contains("lease-history.jsonl"),
+        "{err}"
+    );
+    let s = b.status();
+    assert_eq!(s["state"], "unleased", "{s}");
+    assert!(s["last_change"].is_null(), "{s}");
+    assert!(
+        s["error"].as_str().unwrap().contains("lease-history.jsonl"),
+        "{s}"
+    );
+
+    let partial = concat!(
+        r#"{"at":1,"previous_owner":"a","previous_token":"old-token","how":"released","cleanup_errors":[]}"#,
+        "\n{truncated",
+    );
+    std::fs::write(&hist, partial).unwrap();
+    let o = panio(&b.dir, &["lease", "release", "dut"], Some("old-token"));
+    assert_eq!(o.status.code(), Some(23), "{o:?}");
+    assert!(stderr(&o).contains("lease-history.jsonl"), "{o:?}");
+    assert_eq!(std::fs::read_to_string(&hist).unwrap(), partial);
+}
+
+#[test]
+fn history_io_failure_refuses_unverified_tokens() {
+    let b = Blockable::new("unreadable_history_token");
+    let hist = lease_path(&b.dir).with_file_name("lease-history.jsonl");
+    // Reading a directory as a file fails even if the tests run as root.
+    std::fs::create_dir_all(&hist).unwrap();
+    let o = panio(&b.dir, &["power", "on", "dut"], Some("old-token"));
+    assert_eq!(o.status.code(), Some(23), "{o:?}");
+    assert!(stderr(&o).contains("lease-history.jsonl"), "{o:?}");
+    assert!(!b.ran());
+    assert!(hist.is_dir());
+}
+
+#[test]
+fn a_history_entry_with_an_unknown_end_reason_still_retires_the_token() {
+    let b = Blockable::new("new_history_reason");
+    let hist = lease_path(&b.dir).with_file_name("lease-history.jsonl");
+    std::fs::create_dir_all(hist.parent().unwrap()).unwrap();
+    std::fs::write(
+        &hist,
+        r#"{"at":1,"previous_owner":"a","previous_token":"old-token","how":"future_reason","cleanup_errors":[]}"#,
+    )
+    .unwrap();
+    let o = panio(&b.dir, &["power", "on", "dut"], Some("old-token"));
+    assert_eq!(o.status.code(), Some(23), "{o:?}");
+    assert!(stderr(&o).contains("your lease on 'dut' ended"), "{o:?}");
+    assert!(!b.ran());
+    let o = panio(&b.dir, &["power-state", "dut"], Some("old-token"));
+    assert_eq!(o.status.code(), Some(0), "{o:?}");
+    assert!(
+        stderr(&o).contains("warning: your lease on 'dut' ended"),
+        "{o:?}"
+    );
+}
+
+#[test]
 fn a_corrupt_record_refuses_and_shows_unknown_until_moved_aside() {
     let b = Blockable::new("block_corrupt");
     let p = lease_path(&b.dir);

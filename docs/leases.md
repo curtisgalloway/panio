@@ -292,7 +292,17 @@ token no longer works. panio does not run quietly as if nothing happened:
   its token while it touches a different, unleased target.
 
 The record of why a token stopped working is kept in `lease-history.jsonl`
-(the last 50 entries).
+(the last 50 entries). Panio preserves the original contents of each retained
+entry when it appends to the file. A matching entry still marks the token as
+ended when it uses a reason this version of panio does not recognize.
+
+If the history is unreadable, a mutating command carrying a token on an
+unleased target exits 23 because panio cannot tell whether that token ended
+there. Reads with a token warn and continue. Status for an unleased target
+still reports its state, with an error and no last-change time. Repair the
+history file on the target's default host before retrying a command that
+needs to append an entry. Panio preserves the original history and any
+cleanup block while the file is unreadable.
 
 ## Where it lives
 
