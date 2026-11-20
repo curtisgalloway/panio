@@ -720,7 +720,7 @@ dependencies = [
  "nokhwa",
  "serde",
  "serde_json",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "tokio",
  "tokio-tungstenite",
  "tower",
@@ -730,7 +730,7 @@ dependencies = [
  "ureq",
  "v4l",
  "windows",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
