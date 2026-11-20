@@ -242,6 +242,53 @@ pub fn write_atomic(path: &Path, data: &[u8]) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Publish a synchronized sibling temporary file. The caller syncs the
+/// containing directories on Unix when the operation requires durability.
+#[cfg(unix)]
+pub fn publish_state_file(tmp: tempfile::NamedTempFile, path: &Path) -> std::io::Result<()> {
+    tmp.as_file().sync_all()?;
+    tmp.persist(path).map(|_| ()).map_err(|err| err.error)
+}
+
+#[cfg(windows)]
+pub fn publish_state_file(tmp: tempfile::NamedTempFile, path: &Path) -> std::io::Result<()> {
+    use std::io;
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MoveFileExW, SetFileAttributesW, FILE_ATTRIBUTE_NORMAL, MOVEFILE_REPLACE_EXISTING,
+        MOVEFILE_WRITE_THROUGH,
+    };
+
+    let invalid_path = || io::Error::new(io::ErrorKind::InvalidInput, "expected a state file path");
+    let parent = path.parent().filter(|p| !p.as_os_str().is_empty());
+    let name = path.file_name().ok_or_else(invalid_path)?;
+    let destination = std::fs::canonicalize(parent.unwrap_or(Path::new(".")))?.join(name);
+    let source = std::fs::canonicalize(tmp.path())?;
+    let wide = |path: &Path| -> Vec<u16> {
+        path.as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect()
+    };
+    let source = wide(&source);
+    let destination = wide(&destination);
+
+    // Safe: both paths stay live and NUL-terminated for the Win32 calls.
+    // Clear tempfile's caching hint as its standard persistence path does.
+    if unsafe { SetFileAttributesW(source.as_ptr(), FILE_ATTRIBUTE_NORMAL) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    tmp.as_file().sync_all()?;
+    // Request write-through for this same-volume replacement. Omitting
+    // MOVEFILE_COPY_ALLOWED rules out a copy/delete fallback.
+    let flags = MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH;
+    if unsafe { MoveFileExW(source.as_ptr(), destination.as_ptr(), flags) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // Flush the published file through the handle that followed the rename.
+    tmp.as_file().sync_all()
+}
+
 /// Take an exclusive, blocking advisory lock on `file`. The lock is released
 /// when the file is closed (dropped), including when the process dies, so a
 /// crashed holder never wedges the next caller.

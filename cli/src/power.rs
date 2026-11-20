@@ -24,7 +24,75 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 
+use crate::action_guard_store::Store;
+use crate::actions::{self, HookLock};
 use crate::daemons::{self, Endpoint};
+
+/// Set only for commands launched by an active power hook. A nested power
+/// write must match the durable marker before it can reuse the hook lock.
+pub const MUTATION_ENV: &str = "PANIO_POWER_MUTATION";
+
+/// The real or inherited hook lock plus a durable marker for an effect that
+/// may outlive this process. Only definite completion clears the marker.
+pub struct Mutation {
+    lock: HookLock,
+    store: Store,
+    id: String,
+    nested: bool,
+}
+
+impl Mutation {
+    pub fn begin(target: &str, operation: &str) -> Result<Self> {
+        let lock = actions::hook_lock(target, actions::LOCK_WAIT)?;
+        let store = Store::for_target(target);
+        let inherited = if lock.inherited() {
+            std::env::var(MUTATION_ENV).ok()
+        } else {
+            None
+        };
+        let (id, nested) = if let Some(id) = inherited {
+            store.begin_nested_mutation(&id)?;
+            (id, true)
+        } else {
+            (store.begin_mutation(operation)?, false)
+        };
+        Ok(Self {
+            lock,
+            store,
+            id,
+            nested,
+        })
+    }
+
+    pub fn lock(&self) -> &HookLock {
+        &self.lock
+    }
+
+    pub fn env(&self) -> (&'static str, &str) {
+        (MUTATION_ENV, &self.id)
+    }
+
+    pub fn finish(&self) -> Result<()> {
+        if self.nested {
+            self.store.finish_nested_mutation(&self.id)
+        } else {
+            self.store.finish_mutation(&self.id)
+        }
+    }
+
+    pub fn known_failure(&self, error: anyhow::Error) -> anyhow::Error {
+        match self.finish() {
+            Ok(()) => error,
+            Err(cleanup) => {
+                error.context(format!("could not clear the power mutation: {cleanup:#}"))
+            }
+        }
+    }
+
+    pub fn uncertain(&self, error: anyhow::Error) -> anyhow::Error {
+        error.context(format!("power mutation {} has an unknown outcome", self.id))
+    }
+}
 
 /// The request timeout (ms) for a `ms`-long DTR pulse: enough time for the
 /// pulse itself plus 5s of daemon/request overhead, floored at 15s so even a

@@ -19,6 +19,8 @@
 //! channels that connect them. This module is the CLI surface; the model and
 //! editor live in [`model`] and [`labfile`].
 
+mod action_guard;
+mod action_guard_store;
 mod actions;
 mod adb;
 mod daemons;
@@ -1122,6 +1124,34 @@ enum PowerCmd {
 
 #[derive(Subcommand)]
 enum ActionCmd {
+    /// Show the durable record for an interrupted or active power-guarded action.
+    GuardStatus {
+        #[command(flatten)]
+        target: TargetArg,
+        /// Inspect an interrupted power command on this power or serial host.
+        #[arg(long, value_name = "HOST")]
+        power_host: Option<String>,
+    },
+    /// Fence an interrupted power-guarded action and release its power reservations.
+    Recover {
+        #[command(flatten)]
+        target: TargetArg,
+        /// Recover a power command on this power or serial host after verifying it has stopped.
+        #[arg(long, value_name = "HOST")]
+        power_host: Option<String>,
+        /// Operation ID printed by action guard-status.
+        #[arg(long)]
+        id: String,
+        /// Confirm that the hook, its children, and any pending hardware operation have stopped.
+        #[arg(long)]
+        confirm_stopped: bool,
+    },
+    #[command(hide = true)]
+    GuardStep {
+        #[arg(short, long)]
+        target: String,
+        request: action_guard::Step,
+    },
     /// List the named actions of one target, or of every target.
     List {
         /// Target to list (default: every target).
@@ -1131,18 +1161,19 @@ enum ActionCmd {
         #[arg(long)]
         json: bool,
     },
-    /// Run one named action on the host its actions are bound to.
+    /// Run one named action, checking its required power state when configured.
     Run {
         /// Target (optional when the lab has exactly one).
         #[arg(long, short)]
         target: Option<String>,
         /// Action to run, as `action list` names it.
         name: String,
-        /// Internal: the near side already checked requires_power (set on
-        /// dispatch to the action's host, which may not have the power
-        /// channel).
+        /// Compatibility with older senders. Guarded actions reject this flag.
         #[arg(long, hide = true)]
         power_checked: bool,
+        /// Require a local check under the lock and record the sending lab's host label.
+        #[arg(long, hide = true, value_name = "HOST")]
+        require_power_lock: Option<String>,
     },
     /// Create or update a named action. `--host` and `--doctor`/`--no-doctor`
     /// apply to all of the target's actions.
@@ -1713,6 +1744,19 @@ fn lease_scope(cmd: &Command) -> (lease::Access, LeaseScope<'_>) {
             UsbCmd::State { target } => (Read, o(target)),
         },
         Command::Action { cmd } => match cmd {
+            ActionCmd::GuardStatus { target, .. } => (Read, a(target)),
+            ActionCmd::Recover { target, .. } => (Mutating, a(target)),
+            ActionCmd::GuardStep { target, request } => (
+                if matches!(
+                    request,
+                    action_guard::Step::Inspect | action_guard::Step::InspectMutation
+                ) {
+                    Read
+                } else {
+                    Mutating
+                },
+                LeaseScope::Named(target),
+            ),
             ActionCmd::Set { .. } | ActionCmd::Rm { .. } => none(),
             ActionCmd::Run { target, .. } => (Mutating, o(target)),
             ActionCmd::List { target, .. } => (Read, o(target)),
@@ -3897,14 +3941,16 @@ fn cmd_serial_dtr(
     }
     let serials = local_serials(&lab, &target)?;
     let ch = pick_serial(&target, &serials, Some(&iface))?;
-    if let Some(daemon) = serial::daemon(&target) {
+    let mutation = power::Mutation::begin(&target, label)?;
+    let result = if let Some(daemon) = serial::daemon(&target) {
         eprintln!("{label} on '{target}' ({ms} ms via serialcap daemon)");
-        power::dtr_press_daemon(&daemon, &ch.name, ms)
-            .map_err(|e| error::with_target(e, &target))?;
+        power::dtr_press_daemon(&daemon, &ch.name, ms).map_err(|e| error::with_target(e, &target))
     } else {
         eprintln!("{label} on '{target}' ({ms} ms via {} directly)", ch.device);
-        power::dtr_press_direct(&ch.device, ms)?;
-    }
+        power::dtr_press_direct(&ch.device, ms)
+    };
+    result.map_err(|e| mutation.uncertain(e))?;
+    mutation.finish()?;
     println!("Done.");
     Ok(())
 }
@@ -4858,29 +4904,42 @@ fn hook_envs(cmd: &str) -> Vec<(&'static str, std::path::PathBuf)> {
 ///
 /// Holds the target's hook lock, shared with the action hooks: both often
 /// drive the same exclusive device ([`actions`]).
-fn run_power_hook(cmd: &str, label: &str, target: &str, level: Option<&str>) -> Result<()> {
-    let lock = actions::hook_lock(target, actions::LOCK_WAIT)?;
+fn run_power_hook(
+    mutation: &power::Mutation,
+    cmd: &str,
+    label: &str,
+    target: &str,
+    level: Option<&str>,
+) -> Result<()> {
     eprintln!("{label} '{target}'{} via {cmd}", level_suffix(level));
-    let (k, v) = lock.env();
-    let status = platform::shell_command(cmd)
+    let (lock_key, lock_value) = mutation.lock().env();
+    let (mutation_key, mutation_value) = mutation.env();
+    let mut child = platform::shell_command(cmd)
         .env("PATH", daemons::hook_path())
         .envs(hook_envs(cmd))
-        .env(k, v)
-        .status()?;
+        .env(lock_key, lock_value)
+        .env(mutation_key, mutation_value)
+        .spawn()
+        .map_err(|e| mutation.known_failure(e.into()))?;
+    let status = child.wait().map_err(|e| mutation.uncertain(e.into()))?;
     if status.success() {
-        Ok(())
+        return Ok(());
+    }
+    let failure = error::hook_failed(
+        status,
+        format!(
+            "{label} script{} exited with code {}",
+            level_suffix(level),
+            error::shell_code(status)
+        ),
+    )
+    .target(target)
+    .channel("power")
+    .into();
+    if actions::conclusive_hook_exit(status.code()) {
+        Err(mutation.known_failure(failure))
     } else {
-        Err(error::hook_failed(
-            status,
-            format!(
-                "{label} script{} exited with code {}",
-                level_suffix(level),
-                error::shell_code(status)
-            ),
-        )
-        .target(target)
-        .channel("power")
-        .into())
+        Err(mutation.uncertain(failure))
     }
 }
 
@@ -4897,13 +4956,17 @@ fn forward_state_hook_stderr<W: std::io::Write>(out: &mut W, bytes: &[u8]) {
 /// token is an error naming what came back.
 fn read_state_cmd(cmd: &str, target: &str) -> Result<bool> {
     let lock = actions::hook_lock(target, actions::LOCK_WAIT)?;
+    read_state_cmd_locked(&lock, cmd, target)
+}
+
+fn read_state_cmd_locked(lock: &actions::HookLock, cmd: &str, target: &str) -> Result<bool> {
     let (k, v) = lock.env();
     let out = platform::shell_command(cmd)
         .env("PATH", daemons::hook_path())
         .envs(hook_envs(cmd))
         .env(k, v)
+        .env_remove(power::MUTATION_ENV)
         .output()?;
-    drop(lock);
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
         let stdout = String::from_utf8_lossy(&out.stdout);
@@ -4980,24 +5043,30 @@ fn cmd_power_cycle(
     let cmd = p
         .cycle_cmd
         .ok_or_else(|| missing_power_hook(&target, level, "cycle_cmd", "cycle-cmd"))?;
-    run_power_hook(&cmd, "Power cycling", &target, level)?;
+    let sfx = level_suffix(level);
+    let mutation = power::Mutation::begin(&target, &format!("power-cycle{sfx}"))?;
+    run_power_hook(&mutation, &cmd, "Power cycling", &target, level)?;
     // A cycle_cmd may return before the cycle ends: a relay board that
     // accepts "cycle" and times the off period itself (#259). With a
     // state_cmd, "complete" means power is back on; without one, panio
     // cannot tell, so it says only that the hook finished. A named level
     // confirms with its own state_cmd only, never the default level's.
-    let sfx = level_suffix(level);
     let Some(state_cmd) = p.state_cmd else {
+        // The hook owns the entire transition when it supplies no state check.
+        mutation.finish()?;
         println!("Power cycle requested{sfx} (cycle_cmd exited 0; no state_cmd to confirm power).");
         return Ok(());
     };
     confirm_power_on(
+        mutation.lock(),
         &state_cmd,
         &target,
         level,
         POWER_CYCLE_POLL,
         POWER_CYCLE_DEADLINE,
-    )?;
+    )
+    .map_err(|e| mutation.uncertain(e))?;
+    mutation.finish()?;
     println!("Power cycle complete{sfx} (power is back on).");
     Ok(())
 }
@@ -5005,13 +5074,18 @@ fn cmd_power_cycle(
 /// Wait for `state_cmd` to report `target` on; `timeout` (exit 22, outcome
 /// unknown) when it still reports off at `deadline`.
 fn confirm_power_on(
+    lock: &actions::HookLock,
     state_cmd: &str,
     target: &str,
     level: Option<&str>,
     poll: std::time::Duration,
     deadline: std::time::Duration,
 ) -> Result<()> {
-    if wait_for_power_on(|| read_state_cmd(state_cmd, target), poll, deadline)? {
+    if wait_for_power_on(
+        || read_state_cmd_locked(lock, state_cmd, target),
+        poll,
+        deadline,
+    )? {
         return Ok(());
     }
     Err(error::PanioError::new(
@@ -5044,7 +5118,9 @@ fn cmd_power_on(lab_flag: Option<&str>, target: Option<&str>, level: Option<&str
     let cmd = p
         .on_cmd
         .ok_or_else(|| missing_power_hook(&target, level, "on_cmd", "on-cmd"))?;
-    run_power_hook(&cmd, "Powering on", &target, level)?;
+    let mutation = power::Mutation::begin(&target, &format!("power on{}", level_suffix(level)))?;
+    run_power_hook(&mutation, &cmd, "Powering on", &target, level)?;
+    mutation.finish()?;
     println!("Power on complete{}.", level_suffix(level));
     Ok(())
 }
@@ -5066,7 +5142,9 @@ fn cmd_power_off(lab_flag: Option<&str>, target: Option<&str>, level: Option<&st
     let cmd = p
         .off_cmd
         .ok_or_else(|| missing_power_hook(&target, level, "off_cmd", "off-cmd"))?;
-    run_power_hook(&cmd, "Powering off", &target, level)?;
+    let mutation = power::Mutation::begin(&target, &format!("power off{}", level_suffix(level)))?;
+    run_power_hook(&mutation, &cmd, "Powering off", &target, level)?;
+    mutation.finish()?;
     println!("Power off complete{}.", level_suffix(level));
     Ok(())
 }
@@ -5184,11 +5262,16 @@ fn power_state_all_levels(lab: &Lab, target: &str) -> Result<()> {
 /// else the serial sense signal. The body of `power-state`, shared with the
 /// `requires_power` check of `action run`.
 fn local_power_is_on(lab: &Lab, target: &str) -> Result<bool> {
+    let lock = actions::hook_lock(target, actions::LOCK_WAIT)?;
+    local_power_is_on_locked(lab, target, &lock)
+}
+
+fn local_power_is_on_locked(lab: &Lab, target: &str, lock: &actions::HookLock) -> Result<bool> {
     let p = local_power(lab, target)?;
-    if let Some(cmd) = p.state_cmd {
-        return read_state_cmd(&cmd, target);
+    if let Some(cmd) = &p.state_cmd {
+        return read_state_cmd_locked(lock, cmd, target);
     }
-    let si = p.serial_interface.ok_or_else(|| {
+    let si = p.serial_interface.as_deref().ok_or_else(|| {
         error::channel_missing(
             target,
             "power",
@@ -5205,7 +5288,7 @@ fn local_power_is_on(lab: &Lab, target: &str) -> Result<bool> {
         )
         .target(target)
     })?;
-    match power::read_power_state(&daemon, &si) {
+    match power::read_power_state(&daemon, si) {
         Some(on) => Ok(on),
         None => bail!(
             "power state unknown — the sense signal may not be configured on '{si}' \
@@ -6492,12 +6575,45 @@ const HID_DAEMON: &str = "hid";
 
 fn action_cmd(lab_flag: Option<&str>, cmd: ActionCmd) -> Result<()> {
     match cmd {
+        ActionCmd::GuardStatus { target, power_host } => {
+            let lab = load_for_read(lab_flag)?;
+            action_guard::status(
+                &lab,
+                &resolve_single_target(&lab, target.name())?,
+                power_host.as_deref(),
+            )
+        }
+        ActionCmd::Recover {
+            target,
+            power_host,
+            id,
+            confirm_stopped,
+        } => {
+            let lab = load_for_read(lab_flag)?;
+            action_guard::recover(
+                &lab,
+                &resolve_single_target(&lab, target.name())?,
+                &id,
+                confirm_stopped,
+                power_host.as_deref(),
+            )
+        }
+        ActionCmd::GuardStep { target, request } => {
+            action_guard::serve(&load_for_read(lab_flag)?, &target, &request)
+        }
         ActionCmd::List { target, json } => cmd_action_list(lab_flag, target.as_deref(), json),
         ActionCmd::Run {
             target,
             name,
             power_checked,
-        } => cmd_action_run(lab_flag, target.as_deref(), &name, power_checked),
+            require_power_lock,
+        } => cmd_action_run(
+            lab_flag,
+            target.as_deref(),
+            &name,
+            power_checked,
+            require_power_lock.as_deref(),
+        ),
         ActionCmd::Set {
             target,
             name,
@@ -6585,59 +6701,98 @@ fn cmd_action_list(lab_flag: Option<&str>, target: Option<&str>, json: bool) -> 
     Ok(())
 }
 
-/// `action run`: check `requires_power` (wherever the power channel is), then
-/// run the hook on the actions' host — locally under the target's hook lock,
-/// or by re-exec there with `--power-checked` so the far side, whose lab
-/// slice may hold no power channel, does not check again.
-///
-/// The power check runs before the lock is taken, because reading the state
-/// takes that same lock; a power change in between is not prevented.
+/// A guarded action runs its power check and hook under one lock on the
+/// control host. Split-host actions reserve their power hosts first.
 fn cmd_action_run(
     lab_flag: Option<&str>,
     target: Option<&str>,
     name: &str,
     power_checked: bool,
+    require_power_lock: Option<&str>,
 ) -> Result<()> {
     let lab = load_for_read(lab_flag)?;
     let target = resolve_single_target(&lab, target)?;
-    let action = actions::find(&lab, &target, name)?.clone();
-    if let (Some(requires), false) = (action.requires_power.as_deref(), power_checked) {
-        let is_on = power_is_on_anywhere(&lab, &target)?;
-        if let Some(refusal) = actions::power_refusal(&target, name, requires, is_on) {
-            return Err(refusal.into());
-        }
-    }
+    let action = actions::find(&lab, &target, name)?;
     let rt = lab
         .resolved_target(&target)
         .ok_or_else(|| error::target_not_found(&target))?;
     let host_name = model::channel_host(&rt, model::ChannelKind::Actions, None)?;
-    if !lab.host(&host_name).is_local(&host_name) {
+    let actions_local = lab.host(&host_name).is_local(&host_name);
+    if require_power_lock.is_some() && (action.requires_power.is_none() || !actions_local) {
+        return Err(action_power_usage(
+            &target,
+            "guarded action dispatch requires a local action with requires_power configured",
+        ));
+    }
+    if let Some(requires) = action.requires_power.as_deref() {
+        if power_checked {
+            return Err(action_power_usage(
+                &target,
+                "guarded actions require a current panio on the calling host",
+            ));
+        }
+        let power_host = action_power_host(&lab, &rt, &target)?;
+        let config = &lab.targets[&target];
+        let split_button = config.serial.iter().filter(|s| s.power_button).any(|s| {
+            let serial_host = s.host.as_deref().unwrap_or(config.default_host());
+            !same_hook_host(&lab, &power_host, serial_host)
+        });
+        if !same_hook_host(&lab, &host_name, &power_host) || split_button {
+            if require_power_lock.is_some() {
+                return Err(action_power_usage(
+                    &target,
+                    "guarded action dispatch requires co-located power controls",
+                ));
+            }
+            return crate::action_guard::run_split(
+                &lab,
+                &target,
+                name,
+                requires,
+                &power_host,
+                &host_name,
+            );
+        }
+    }
+    if !actions_local {
         let mut argv = dispatch::subcommand_args();
-        if !power_checked {
-            argv.push("--power-checked".to_string());
+        if action.requires_power.is_some() {
+            // An older receiver must refuse, since it would otherwise release
+            // the power lock before acquiring the action lock. Insert ahead of
+            // the end-of-options marker used by callers such as MCP.
+            let i = argv.iter().position(|a| a == "--").unwrap_or(argv.len());
+            argv.insert(i, format!("--require-power-lock={host_name}"));
         }
         let code = dispatch::dispatch(&lab, &target, &host_name, dispatch::Mode::Reexec, &argv)?;
         std::process::exit(code);
     }
-    let lock = actions::hook_lock(&target, actions::LOCK_WAIT)?;
-    actions::run_hook(&lock, &target, name, &action.cmd)?;
+
+    if let Some(requires) = action.requires_power.as_deref() {
+        let guard_host = require_power_lock.unwrap_or(&host_name);
+        actions::run_guarded(&lab, &target, name, action, requires, guard_host)?;
+    } else {
+        let lock = actions::hook_lock(&target, actions::LOCK_WAIT)?;
+        actions::run_hook(&lock, &target, name, &action.cmd)?;
+    }
     println!("Action '{name}' complete.");
     Ok(())
 }
 
-/// The target's power state, read on whichever host has its power channel:
-/// in process when that is this host, else `power-state` over SSH. A remote
-/// failure keeps its kind (from the exit status) and its stderr.
-fn power_is_on_anywhere(lab: &Lab, target: &str) -> Result<bool> {
-    let rt = lab
-        .resolved_target(target)
-        .ok_or_else(|| error::target_not_found(target))?;
-    if !rt
-        .channels
-        .iter()
-        .any(|c| c.kind == model::ChannelKind::Power)
-    {
-        return Err(error::channel_missing(
+fn action_power_usage(target: &str, message: impl Into<String>) -> anyhow::Error {
+    error::PanioError::new(error::Kind::Usage, message)
+        .target(target)
+        .channel("actions")
+        .into()
+}
+
+fn same_hook_host(lab: &Lab, first: &str, second: &str) -> bool {
+    first == second || (lab.host(first).is_local(first) && lab.host(second).is_local(second))
+}
+
+fn action_power_host(lab: &Lab, rt: &ResolvedTarget, target: &str) -> Result<String> {
+    let config = &lab.targets[target];
+    let power = config.power.as_ref().ok_or_else(|| {
+        error::channel_missing(
             target,
             "power",
             format!(
@@ -6645,54 +6800,22 @@ fn power_is_on_anywhere(lab: &Lab, target: &str) -> Result<bool> {
                  channel to read (panio power set -t {target} --state-cmd ...)"
             ),
         )
-        .into());
+    })?;
+    let host = model::channel_host(rt, model::ChannelKind::Power, None)?;
+    if let Some(sense) = power
+        .serial_interface
+        .as_deref()
+        .filter(|_| power.state_cmd.is_none())
+    {
+        let serial_host = model::channel_host(rt, model::ChannelKind::Serial, Some(sense))?;
+        if !same_hook_host(lab, &host, &serial_host) {
+            return Err(action_power_usage(
+                target,
+                format!("serial power sense for '{target}' needs interface '{sense}' on the power host '{host}'"),
+            ));
+        }
     }
-    let host_name = model::channel_host(&rt, model::ChannelKind::Power, None)?;
-    if lab.host(&host_name).is_local(&host_name) {
-        return local_power_is_on(lab, target);
-    }
-    // With named levels, `power-state` alone reports every level; ask for the
-    // default one, which is what requires_power means. Without levels the
-    // plain form is kept, so an older panio on the power host still works.
-    let has_levels = lab
-        .targets
-        .get(target)
-        .and_then(|t| t.power.as_ref())
-        .is_some_and(|p| !p.levels.is_empty());
-    let mut argv = vec!["power-state", "-t", target];
-    if has_levels {
-        argv.extend(["--level", model::DEFAULT_POWER_LEVEL]);
-    }
-    let out = dispatch::run_subcommand(lab, target, &host_name, &argv)?;
-    if out.status != 0 {
-        let kind = error::Kind::from_exit_code(out.status).unwrap_or(error::Kind::Internal);
-        return Err(error::PanioError::new(
-            kind,
-            format!(
-                "reading power state on '{host_name}' failed: {}",
-                out.stderr.trim()
-            ),
-        )
-        .target(target)
-        .channel("power")
-        .into());
-    }
-    parse_power_state_line(&out.stdout).ok_or_else(|| {
-        anyhow::anyhow!(
-            "unexpected power-state output from '{host_name}': {}",
-            out.stdout.trim()
-        )
-    })
-}
-
-/// The verdict in `power-state`'s output (`Power ON  (pi5)`).
-fn parse_power_state_line(stdout: &str) -> Option<bool> {
-    let line = stdout.lines().find(|l| l.starts_with("Power "))?;
-    match line.split_whitespace().nth(1)? {
-        "ON" => Some(true),
-        "OFF" => Some(false),
-        _ => None,
-    }
+    Ok(host)
 }
 
 fn usb_cmd(lab_flag: Option<&str>, cmd: UsbCmd) -> Result<()> {
@@ -7815,7 +7938,9 @@ device = "/dev/video-nuc"
     #[cfg(unix)]
     #[test]
     fn confirm_power_on_times_out_as_timeout() {
+        let lock = actions::hook_lock("nuc", actions::LOCK_WAIT).unwrap();
         let err = confirm_power_on(
+            &lock,
             "echo off",
             "nuc",
             None,
@@ -7889,57 +8014,6 @@ device = "/dev/video-nuc"
         );
     }
 
-    /// The level's own hooks run (under the per-target hook lock, in a
-    /// private runtime base), `--level default` is the default level, and a
-    /// level's cycle confirms with its own state_cmd.
-    #[cfg(unix)]
-    #[test]
-    fn power_verbs_run_the_chosen_levels_hooks() {
-        let _guard = daemons::RUNTIME_BASE_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let base = tempfile::tempdir().unwrap();
-        let prev = std::env::var_os("PANIO_RUNTIME_BASE");
-        // Safe: serialized by RUNTIME_BASE_LOCK; restored below.
-        unsafe { std::env::set_var("PANIO_RUNTIME_BASE", base.path()) };
-        let dir = tempfile::tempdir().unwrap();
-        let mark = |n: &str| dir.path().join(n);
-        let lab = power_levels_lab(
-            dir.path(),
-            &format!(
-                "on_cmd = \"touch {}\"\ncycle_cmd = \"touch {}\"\nstate_cmd = \"echo on\"\n",
-                mark("hard-on").display(),
-                mark("hard-cycle").display()
-            ),
-        );
-        // Point the default on_cmd at its own marker.
-        let text = std::fs::read_to_string(&lab).unwrap().replacen(
-            "on_cmd = \"true\"",
-            &format!("on_cmd = \"touch {}\"", mark("default-on").display()),
-            1,
-        );
-        std::fs::write(&lab, text).unwrap();
-        let lab = Some(lab.as_str());
-        let on_hard = cmd_power_on(lab, Some("t"), Some("hard"));
-        let hard_on = mark("hard-on").exists();
-        let default_on_after_hard = mark("default-on").exists();
-        let on_default = cmd_power_on(lab, Some("t"), Some("default"));
-        let cycle_hard = cmd_power_cycle(lab, Some("t"), Some("hard"));
-        let state_hard = cmd_power_state(lab, Some("t"), Some("hard"));
-        match prev {
-            Some(p) => unsafe { std::env::set_var("PANIO_RUNTIME_BASE", p) },
-            None => unsafe { std::env::remove_var("PANIO_RUNTIME_BASE") },
-        }
-        on_hard.unwrap();
-        assert!(hard_on);
-        assert!(!default_on_after_hard, "the default on_cmd must not run");
-        on_default.unwrap();
-        assert!(mark("default-on").exists());
-        cycle_hard.unwrap();
-        assert!(mark("hard-cycle").exists());
-        state_hard.unwrap();
-    }
-
     /// `power-state` with levels: one line per level, default first, the
     /// verdict always the second word; an unreadable level is reported, not
     /// an error; a failed read fails the command after every line; nothing
@@ -7956,11 +8030,6 @@ device = "/dev/video-nuc"
             power_state_line("pi5", Some("pmic"), Err(LevelState::Unconfigured)),
             "Power UNKNOWN  (pi5, level pmic: no state_cmd)"
         );
-        assert_eq!(
-            parse_power_state_line("Power ON  (pi5)\nPower OFF  (pi5, level hard)\n"),
-            Some(true)
-        );
-
         let _guard = daemons::RUNTIME_BASE_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -8276,17 +8345,6 @@ device = "/dev/video-nuc"
             vec!["helper", "--", "serialcap", "--help"]
         );
         assert_eq!(helper_remote_argv(None, &[]), vec!["helper"]);
-    }
-
-    #[test]
-    fn power_state_line_parses_both_verdicts() {
-        assert_eq!(parse_power_state_line("Power ON  (pi5)\n"), Some(true));
-        assert_eq!(
-            parse_power_state_line("note\nPower OFF  (pi5)\n"),
-            Some(false)
-        );
-        assert_eq!(parse_power_state_line("Power maybe\n"), None);
-        assert_eq!(parse_power_state_line(""), None);
     }
 
     /// `video preview --open` is the form that keeps the token off the

@@ -38,13 +38,19 @@ fn panio(dir: &Path, json: bool, args: &[&str]) -> Output {
 
 fn panio_env(dir: &Path, json: bool, args: &[&str], env: &[(&str, String)]) -> Output {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_panio"));
-    cmd.arg("--lab")
+    cmd.current_dir(dir)
+        .arg("--lab")
         .arg(dir.join("lab.toml"))
         .args(args)
         .env("PANIO_RUNTIME_BASE", dir.join("run"))
         .env("XDG_RUNTIME_DIR", dir.join("run"))
         .env_remove("PANIO_JSON_ERRORS")
-        .env_remove("PANIO_LAB");
+        .env_remove("PANIO_LAB")
+        .env_remove("PANIO_LEASE")
+        .env_remove("PANIO_HOOK_LOCK")
+        .env_remove("PANIO_POWER_MUTATION");
+    #[cfg(unix)]
+    cmd.env("HOME", dir);
     if json {
         cmd.env("PANIO_JSON_ERRORS", "1");
     }
@@ -435,24 +441,64 @@ fn a_repeated_json_errors_flag_is_accepted() {
 
 // ── M2: the child boundary ──────────────────────────────────────────────────
 
-fn power_lab(cycle_cmd: &str) -> String {
-    format!("[targets.nuc]\n[targets.nuc.power]\ncycle_cmd = {cycle_cmd:?}\n")
+struct PowerFixture {
+    dir: PathBuf,
+    target: String,
+    #[cfg(windows)]
+    _durable_state: tempfile::TempDir,
+}
+
+impl PowerFixture {
+    fn new(name: &str, cycle_cmd: &str) -> Self {
+        // Windows resolves its home through the known-folder API, so set up
+        // a unique temporary target in the state root panio actually uses.
+        #[cfg(windows)]
+        let durable_state = {
+            let root = dirs::home_dir().unwrap().join(".local/share/panio");
+            std::fs::create_dir_all(&root).unwrap();
+            tempfile::Builder::new()
+                .prefix("panio-test-")
+                .tempdir_in(root)
+                .unwrap()
+        };
+        #[cfg(windows)]
+        let target = durable_state
+            .path()
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_owned();
+        #[cfg(not(windows))]
+        let target = "nuc".to_owned();
+        let lab = format!("[targets.{target}.power]\ncycle_cmd = {cycle_cmd:?}\n");
+        Self {
+            dir: scratch(name, &lab),
+            target,
+            #[cfg(windows)]
+            _durable_state: durable_state,
+        }
+    }
+
+    fn cycle(&self, json_errors: bool) -> Output {
+        panio(&self.dir, json_errors, &["power-cycle", &self.target])
+    }
 }
 
 #[test]
 fn a_failing_power_hook_is_helper_failed_with_its_code() {
-    let dir = scratch("hook_7", &power_lab("exit 7"));
-    let out = panio(&dir, true, &["power-cycle", "nuc"]);
+    let fixture = PowerFixture::new("hook_7", "exit 7");
+    let out = fixture.cycle(true);
     assert_eq!(out.status.code(), Some(101), "{out:?}");
     let e = error_object(&out);
     assert_eq!(e["kind"], "helper_failed");
     assert_eq!(e["category"], "device_state");
     assert_eq!(e["child_exit"], 7);
-    assert_eq!(e["target"], "nuc");
+    assert_eq!(e["target"], fixture.target);
     assert_eq!(e["channel"], "power");
     // A hook exiting 2 no longer reads as a usage error.
-    let dir = scratch("hook_2", &power_lab("exit 2"));
-    let out = panio(&dir, false, &["power-cycle", "nuc"]);
+    let fixture = PowerFixture::new("hook_2", "exit 2");
+    let out = fixture.cycle(false);
     assert_eq!(out.status.code(), Some(101), "{out:?}");
 }
 
@@ -461,8 +507,8 @@ fn a_failing_power_hook_is_helper_failed_with_its_code() {
 #[cfg(unix)]
 #[test]
 fn a_missing_power_hook_is_not_configured() {
-    let dir = scratch("hook_127", &power_lab("/nonexistent/relay-script"));
-    let out = panio(&dir, true, &["power-cycle", "nuc"]);
+    let fixture = PowerFixture::new("hook_127", "/nonexistent/relay-script");
+    let out = fixture.cycle(true);
     assert_eq!(out.status.code(), Some(3), "{out:?}");
     let e = error_object(&out);
     assert_eq!(e["kind"], "not_configured");
@@ -514,11 +560,8 @@ cmd = 'echo ran >> "$HOME/action-ran"'
 #[cfg(windows)]
 #[test]
 fn a_missing_hook_is_helper_failed_on_windows() {
-    let dir = scratch(
-        "hook_missing_win",
-        &power_lab("panio-no-such-relay-command"),
-    );
-    let out = panio(&dir, true, &["power-cycle", "nuc"]);
+    let fixture = PowerFixture::new("hook_missing_win", "panio-no-such-relay-command");
+    let out = fixture.cycle(true);
     assert_eq!(out.status.code(), Some(101), "{out:?}");
     let e = error_object(&out);
     assert_eq!(e["kind"], "helper_failed");
@@ -528,8 +571,8 @@ fn a_missing_hook_is_helper_failed_on_windows() {
 #[cfg(unix)]
 #[test]
 fn a_hook_killed_by_a_signal_is_helper_failed_without_a_code() {
-    let dir = scratch("hook_sig", &power_lab("kill -TERM $$"));
-    let out = panio(&dir, true, &["power-cycle", "nuc"]);
+    let fixture = PowerFixture::new("hook_sig", "kill -TERM $$");
+    let out = fixture.cycle(true);
     assert_eq!(out.status.code(), Some(101), "{out:?}");
     assert!(error_object(&out)["child_exit"].is_null());
 }
@@ -562,12 +605,54 @@ fn power_cycle_waits_for_state_cmd_to_report_on() {
 /// instead of claiming it is complete.
 #[test]
 fn power_cycle_without_state_cmd_does_not_claim_completion() {
-    let dir = scratch("cycle_no_state", &power_lab("exit 0"));
-    let out = panio(&dir, true, &["power-cycle", "nuc"]);
+    let fixture = PowerFixture::new("cycle_no_state", "exit 0");
+    let out = fixture.cycle(true);
     assert_eq!(out.status.code(), Some(0), "{out:?}");
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("requested"), "{stdout}");
     assert!(!stdout.contains("complete"), "{stdout}");
+}
+
+/// Each named level uses its own hooks. An explicit default still uses the
+/// default hook, and a cycle confirms with the chosen level's state hook.
+#[cfg(unix)]
+#[test]
+fn power_verbs_run_the_chosen_levels_hooks() {
+    let dir = scratch(
+        "power_levels",
+        r#"
+[targets.t.power]
+on_cmd = "touch default-on"
+
+[targets.t.power.levels.hard]
+on_cmd = "touch hard-on"
+cycle_cmd = "touch hard-cycle"
+state_cmd = "echo on"
+"#,
+    );
+    let on_hard = panio(&dir, false, &["power", "on", "t", "--level", "hard"]);
+    assert!(on_hard.status.success(), "{on_hard:?}");
+    assert!(dir.join("hard-on").exists());
+    assert!(
+        !dir.join("default-on").exists(),
+        "the default on_cmd must not run"
+    );
+
+    let on_default = panio(&dir, false, &["power", "on", "t", "--level", "default"]);
+    assert!(on_default.status.success(), "{on_default:?}");
+    assert!(dir.join("default-on").exists());
+
+    let cycle_hard = panio(&dir, false, &["power-cycle", "t", "--level", "hard"]);
+    assert!(cycle_hard.status.success(), "{cycle_hard:?}");
+    assert!(
+        String::from_utf8_lossy(&cycle_hard.stdout).contains("back on"),
+        "{cycle_hard:?}"
+    );
+    assert!(dir.join("hard-cycle").exists());
+
+    let state_hard = panio(&dir, false, &["power-state", "t", "--level", "hard"]);
+    assert!(state_hard.status.success(), "{state_hard:?}");
+    assert_eq!(state_hard.stdout, b"Power ON  (t, level hard)\n");
 }
 
 /// A directory with fake `ssh` and `sftp` first on PATH. `sftp` logs its
@@ -707,16 +792,17 @@ fn hooks_do_not_inherit_the_json_request() {
     } else {
         r#"[ -n "$PANIO_JSON_ERRORS" ] && exit 9; exit 7"#
     };
-    for (name, json, args) in [
-        ("inherit_var", true, vec!["power-cycle", "nuc"]),
-        (
-            "inherit_flag",
-            false,
-            vec!["--json-errors", "power-cycle", "nuc"],
-        ),
-    ] {
-        let dir = scratch(name, &power_lab(hook));
-        let out = panio(&dir, json, &args);
+    for (name, json) in [("inherit_var", true), ("inherit_flag", false)] {
+        let fixture = PowerFixture::new(name, hook);
+        let out = if json {
+            fixture.cycle(true)
+        } else {
+            panio(
+                &fixture.dir,
+                false,
+                &["--json-errors", "power-cycle", &fixture.target],
+            )
+        };
         assert_eq!(out.status.code(), Some(101), "{out:?}");
         assert_eq!(error_object(&out)["child_exit"], 7, "{name}");
     }
