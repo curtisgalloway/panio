@@ -468,16 +468,15 @@ mod tests {
         assert!(err.to_string().contains("device reports off"), "{err}");
     }
 
-    // ── doctor, against a stub of the device's HTTP RPC API ─────────────
+    // ── commands against a stub of the device's HTTP RPC API ────────────
 
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::sync::{Arc, Mutex};
 
-    /// A loopback HTTP server answering `GET /rpc/<Method>` from `routes`
-    /// (method, HTTP status, JSON body; anything else is 404), recording
-    /// every method it was asked for. It drives the real [`Client`], so the
-    /// doctor checks run over the same HTTP path a plug would see.
+    /// A loopback HTTP server answering `GET /rpc/<route>` from `routes`
+    /// (method with any query string, HTTP status, JSON body). It records
+    /// each requested route and returns 404 for unrecognized routes.
     fn stub(routes: &[(&'static str, u16, &'static str)]) -> (String, Arc<Mutex<Vec<String>>>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
@@ -501,17 +500,11 @@ mod tests {
                     .unwrap_or("")
                     .to_string();
                 let path = line.split(' ').nth(1).unwrap_or("");
-                let method = path
-                    .strip_prefix("/rpc/")
-                    .unwrap_or(path)
-                    .split('?')
-                    .next()
-                    .unwrap_or("")
-                    .to_string();
-                log.lock().unwrap().push(method.clone());
+                let route = path.strip_prefix("/rpc/").unwrap_or(path);
+                log.lock().unwrap().push(route.to_string());
                 let (code, body) = routes
                     .iter()
-                    .find(|(m, _, _)| *m == method)
+                    .find(|(r, _, _)| *r == route)
                     .map(|(_, c, b)| (*c, *b))
                     .unwrap_or((404, "{\"code\":404,\"message\":\"No handler\"}"));
                 let _ = write!(
@@ -523,6 +516,47 @@ mod tests {
             }
         });
         (addr.to_string(), seen)
+    }
+
+    #[test]
+    fn switch_sets_and_confirms_the_selected_id_over_rpc() {
+        for (on, set_route, status) in [
+            (true, "Switch.Set?id=3&on=true", r#"{"id":3,"output":true}"#),
+            (
+                false,
+                "Switch.Set?id=3&on=false",
+                r#"{"id":3,"output":false}"#,
+            ),
+        ] {
+            let status_route = "Switch.GetStatus?id=3";
+            let (addr, seen) = stub(&[
+                (set_route, 200, r#"{"was_on":false}"#),
+                (status_route, 200, status),
+            ]);
+            cmd_switch(&Client::new(&addr), 3, on).unwrap();
+            assert_eq!(*seen.lock().unwrap(), [set_route, status_route]);
+        }
+    }
+
+    #[test]
+    fn cycle_stops_when_the_off_read_back_fails_over_rpc() {
+        let set_route = "Switch.Set?id=3&on=false";
+        let status_route = "Switch.GetStatus?id=3";
+        let (addr, seen) = stub(&[
+            (set_route, 200, r#"{"was_on":true}"#),
+            (
+                status_route,
+                503,
+                r#"{"error":{"message":"Switch status unavailable"}}"#,
+            ),
+        ]);
+
+        let err = cmd_cycle(&Client::new(&addr), 3, 0).unwrap_err();
+        assert!(
+            err.to_string().contains("Switch status unavailable"),
+            "{err}"
+        );
+        assert_eq!(*seen.lock().unwrap(), [set_route, status_route]);
     }
 
     const INFO: &str = r#"{"name":null,"id":"shellyplusplugs-aa00bb11cc22","model":"SNPL-00112EU","gen":2,"ver":"1.4.4","auth_en":false}"#;
@@ -537,7 +571,12 @@ mod tests {
     /// Never `Switch.Set`: the contract says a doctor check changes nothing.
     fn assert_read_only(seen: &Arc<Mutex<Vec<String>>>) {
         let seen = seen.lock().unwrap();
-        assert!(!seen.iter().any(|m| m == "Switch.Set"), "{seen:?}");
+        assert!(
+            !seen
+                .iter()
+                .any(|r| r.split('?').next() == Some("Switch.Set")),
+            "{seen:?}"
+        );
     }
 
     #[test]
@@ -566,7 +605,7 @@ mod tests {
     fn doctor_checks_one_named_switch() {
         let (addr, seen) = stub(&[
             ("Shelly.GetDeviceInfo", 200, INFO),
-            ("Switch.GetStatus", 200, r#"{"id":0,"output":true}"#),
+            ("Switch.GetStatus?id=0", 200, r#"{"id":0,"output":true}"#),
         ]);
         let checks = doctor_checks(&Client::new(&addr), Some(0));
         assert_eq!(
@@ -578,7 +617,7 @@ mod tests {
         let (addr, _) = stub(&[
             ("Shelly.GetDeviceInfo", 200, INFO),
             (
-                "Switch.GetStatus",
+                "Switch.GetStatus?id=3",
                 404,
                 r#"{"code":-105,"message":"Argument 'id', value 3 not found!"}"#,
             ),
