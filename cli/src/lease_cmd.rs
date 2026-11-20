@@ -294,12 +294,20 @@ fn not_holder_error(
         .into();
     };
     let msg = match lock.history_for_token(token) {
-        Some(h) if h.how == "preempted" => match &h.new_owner {
+        Ok(Some(h)) if h.how == "preempted" => match &h.new_owner {
             Some(n) => format!("{what}: your lease on '{target}' was preempted by {n}"),
             None => format!("{what}: your lease on '{target}' was released by someone else"),
         },
-        Some(h) => format!("{what}: your lease on '{target}' ended ({})", h.how),
-        None => format!("{what}: PANIO_LEASE does not match a lease on '{target}'"),
+        Ok(Some(h)) => {
+            let reason = match h.how.as_str() {
+                "released" => "released",
+                "expired" => "expired",
+                _ => "reason unavailable",
+            };
+            format!("{what}: your lease on '{target}' ended ({reason})")
+        }
+        Ok(None) => format!("{what}: PANIO_LEASE does not match a lease on '{target}'"),
+        Err(e) => return lease::history_token_error(target, e).into(),
     };
     error::target_leased(target, msg).into()
 }
@@ -440,7 +448,7 @@ pub fn renew(lab: &Lab, target: &str, duration: &Option<String>) -> Result<()> {
             if let Retired::Blocked(b) = retire(lab, target, &lock, &l, "expired", None)? {
                 return Err(lease::blocked_error(target, &b));
             }
-            let msg = lease::lost_lease_message(&lock, token.as_deref(), target)
+            let msg = lease::lost_lease_hint(&lock, token.as_deref(), target)
                 .unwrap_or_else(|| format!("the lease on '{target}' has expired"));
             Err(error::target_leased(target, format!("{what}: {msg}")).into())
         }
@@ -454,6 +462,10 @@ pub fn release(lab: &Lab, target: &str, preempt: bool) -> Result<()> {
     let lock = open(target)?;
     let token = env_token();
     let what = "cannot release";
+    let ended = || {
+        lease::lost_lease_message(&lock, token.as_deref(), target)
+            .map_err(|e| lease::history_token_error(target, e))
+    };
     match read_state(&lock, target)? {
         State::Blocked(b) => Err(lease::blocked_error(target, &b)),
         State::Held(l) => {
@@ -461,7 +473,7 @@ pub fn release(lab: &Lab, target: &str, preempt: bool) -> Result<()> {
                 retire(lab, target, &lock, &l, "released", None)?
             } else if preempt {
                 retire(lab, target, &lock, &l, "preempted", None)?
-            } else if let Some(msg) = lease::lost_lease_message(&lock, token.as_deref(), target) {
+            } else if let Some(msg) = ended()? {
                 // The caller's own lease already ended and someone else holds
                 // the target now: nothing of theirs is left to release, and
                 // the new holder's lease is not theirs to end.
@@ -493,7 +505,7 @@ pub fn release(lab: &Lab, target: &str, preempt: bool) -> Result<()> {
                 println!("'{target}' is not leased");
                 Ok(())
             }
-            Some(t) => match lease::lost_lease_message(&lock, Some(t), target) {
+            Some(_) => match ended()? {
                 Some(msg) => {
                     eprintln!("note: {msg}");
                     Ok(())
@@ -550,6 +562,13 @@ fn fill_blocked(row: &mut StatusRow, l: &Lease) {
     row.last_change = l.cleanup_block().map(|b| b.ended_at);
 }
 
+fn fill_history(row: &mut StatusRow, lock: &StoreLock) {
+    match lock.last_history() {
+        Ok(last) => row.last_change = last.map(|h| h.at),
+        Err(e) => row.error = Some(e.to_string()),
+    }
+}
+
 /// This host's view of one target, cleaning up an expired lease first (once:
 /// a blocked target is only reported afterward).
 fn local_row(lab: &Lab, target: &str) -> Result<StatusRow> {
@@ -576,10 +595,10 @@ fn local_row(lab: &Lab, target: &str) -> Result<StatusRow> {
         State::Held(l) => fill_held(&mut row, l, now),
         State::Blocked(l) => fill_blocked(&mut row, &l),
         State::Expired(l) => match retire(lab, target, &lock, &l, "expired", None)? {
-            Retired::Clean => row.last_change = lock.last_history().map(|h| h.at),
+            Retired::Clean => fill_history(&mut row, &lock),
             Retired::Blocked(b) => fill_blocked(&mut row, &b),
         },
-        State::Unleased => row.last_change = lock.last_history().map(|h| h.at),
+        State::Unleased => fill_history(&mut row, &lock),
     }
     Ok(row)
 }
@@ -607,6 +626,7 @@ fn row_text(r: &StatusRow) -> String {
     }
     match (&r.error, r.held) {
         (Some(e), _) if r.state == "blocked" => format!("{}: blocked: {e}", r.target),
+        (Some(e), _) if r.state == "unleased" => format!("{}: unleased ({e})", r.target),
         (Some(e), _) => format!("{}: unknown ({e})", r.target),
         (None, Some(true)) => {
             let idle = match r.idle_left_secs {

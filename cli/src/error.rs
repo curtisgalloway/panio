@@ -31,8 +31,8 @@ Exit status:
                          a hook or helper missing or not executable
   4    unreachable       control host not reachable over SSH
   22   timeout           no answer within a deadline; outcome unknown
-  23   target_leased     the target is leased to someone else, or the lab requires
-                         a lease and none is held
+  23   target_leased     the target is leased to someone else, the lab requires
+                         a lease, or the supplied token is unusable
   24   target_cleanup_blocked  the last lease's cleanup failed; the target is
                          refused to everyone until `lease cleanup` or
                          `lease override-cleanup` clears it

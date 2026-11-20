@@ -1187,6 +1187,11 @@ the job is still yours, or report the preemption. A warning that
 `PANIO_LEASE` is set but the target is "not leased" means the token matches
 nothing there; it ran without a lease.
 
+If `lease-history.jsonl` cannot be read, an unleased target refuses mutations
+carrying a token with exit 23. Reads with a token warn and continue. Tell the
+user which file needs repair before retrying a command that writes history
+or clears a cleanup block.
+
 ## Companion skills
 
 Panio ships its own agent skills; list them and read any one from the CLI,

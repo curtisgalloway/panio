@@ -234,7 +234,12 @@ cli/src/
                 reads allowed, mutating needs PANIO_LEASE, ended tokens refuse
                 or warn), `cleanup` (registered procs, serialcap/hdmicap/hid
                 daemons, netboot, link down; never power and never the lease
-                check, since it runs under the lock), `--lease-file` handoff
+                check, since it runs under the lock), `--lease-file` handoff.
+                History reads accept a missing file and blank lines, and
+                surface read and parse errors before appending or allowing a
+                mutation with an unverified token on an unleased target.
+                Appending validates even the rows that will be pruned and
+                copies the retained rows verbatim.
   lease_cmd.rs  `panio lease acquire|renew|release|status|cleanup|override-cleanup`
                 bodies and `retire` (#372: persists a `State::Blocked` cleanup
                 block before cleanup, then clears it with a history line or

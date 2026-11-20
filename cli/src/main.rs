@@ -1278,6 +1278,7 @@ enum LeaseCmd {
     /// that names an ended lease it exits 0 and says how it ended (a new
     /// holder is left alone); on a target nobody holds, with no token, it
     /// exits 0 ("not leased").
+    /// If the history cannot verify an ended token, release exits 23.
     Release {
         #[command(flatten)]
         target: TargetArg,
@@ -1293,11 +1294,13 @@ enum LeaseCmd {
     /// with the cleanup id and exits 0). While a registered process is alive the
     /// lease cannot idle out, so the idle countdown is replaced by
     /// "kept alive by N process(es)" (`idle_left_secs` is null in JSON).
+    /// On an unleased target with unreadable history, shows the history error
+    /// and leaves `last_change` null in JSON.
     Status {
         #[command(flatten)]
         target: TargetArg,
         /// Print JSON ({target, state, held, owner, expires_in_secs,
-        /// idle_left_secs, procs, idle_secs, last_change, cleanup}; an array
+        /// idle_left_secs, procs, idle_secs, last_change, error, cleanup}; an array
         /// when listing every target).
         #[arg(long)]
         json: bool,

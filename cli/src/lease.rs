@@ -9,8 +9,10 @@
 //! [`StoreLock`], an exclusive file lock on `lease.lock` beside it, so two
 //! panio processes can never both decide a target is free.
 
+use std::collections::VecDeque;
 use std::fs::File;
-use std::path::PathBuf;
+use std::io::{self, ErrorKind};
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -25,6 +27,7 @@ pub const DEFAULT_IDLE: u64 = 1800;
 pub const MAX_SECS: u64 = 86_400;
 /// How many history lines are kept.
 const HISTORY_KEEP: usize = 50;
+const HISTORY_FILE: &str = "lease-history.jsonl";
 
 /// A process registered under a lease. The start time makes the identity
 /// survive pid reuse.
@@ -301,8 +304,8 @@ impl Store {
     }
 
     /// Whether a history file exists, without creating anything.
-    pub fn history_exists(&self) -> bool {
-        self.dir.join("lease-history.jsonl").exists()
+    fn history_exists(&self) -> io::Result<bool> {
+        history_exists(&self.dir.join(HISTORY_FILE))
     }
 
     /// Whether a lease record file exists, without creating anything.
@@ -329,13 +332,45 @@ impl Store {
     }
 }
 
+fn history_exists(path: &Path) -> io::Result<bool> {
+    match path.symlink_metadata() {
+        Ok(_) => Ok(true),
+        Err(e) if e.kind() == ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(history_read_error(e)),
+    }
+}
+
+fn history_read_error(e: io::Error) -> io::Error {
+    io::Error::new(e.kind(), format!("cannot read {HISTORY_FILE}: {e}"))
+}
+
+fn history_rows(text: &str) -> impl Iterator<Item = io::Result<(&str, HistoryEntry)>> {
+    text.split_inclusive('\n')
+        .enumerate()
+        .filter(|(_, line)| !line.trim_matches([' ', '\t', '\r', '\n']).is_empty())
+        .map(|(i, line)| {
+            let entry = serde_json::from_str(line.trim_end_matches(['\r', '\n'])).map_err(|e| {
+                // Serde's error text can quote a value from the history.
+                io::Error::new(
+                    ErrorKind::InvalidData,
+                    format!(
+                        "invalid history entry in {HISTORY_FILE} at line {}, column {}",
+                        i + 1,
+                        e.column()
+                    ),
+                )
+            })?;
+            Ok((line, entry))
+        })
+}
+
 impl StoreLock {
     fn record_path(&self) -> PathBuf {
         self.dir.join("lease.json")
     }
 
     fn history_path(&self) -> PathBuf {
-        self.dir.join("lease-history.jsonl")
+        self.dir.join(HISTORY_FILE)
     }
 
     /// The current record: `Ok(None)` when there is none,
@@ -376,39 +411,64 @@ impl StoreLock {
         }
     }
 
-    fn history(&self) -> Vec<HistoryEntry> {
-        let Ok(text) = std::fs::read_to_string(self.history_path()) else {
-            return Vec::new();
-        };
-        text.lines()
-            .filter_map(|l| serde_json::from_str(l).ok())
-            .collect()
+    fn history_text(&self) -> io::Result<String> {
+        let path = self.history_path();
+        match std::fs::read_to_string(&path) {
+            Ok(text) => Ok(text),
+            Err(e) if e.kind() == ErrorKind::NotFound && !history_exists(&path)? => {
+                Ok(String::new())
+            }
+            Err(e) => Err(history_read_error(e)),
+        }
     }
 
-    /// Append a line and keep only the newest 50.
-    pub fn append_history(&self, e: &HistoryEntry) -> std::io::Result<()> {
-        let mut all = self.history();
-        all.push(e.clone());
-        let skip = all.len().saturating_sub(HISTORY_KEEP);
+    /// Validate the whole file before appending. Copy the retained lines so
+    /// fields written by another version of panio survive.
+    pub fn append_history(&self, e: &HistoryEntry) -> io::Result<()> {
+        let history = self.history_text()?;
+        let mut retained = VecDeque::with_capacity(HISTORY_KEEP - 1);
+        for row in history_rows(&history) {
+            let (line, _) = row?;
+            if retained.len() == HISTORY_KEEP - 1 {
+                retained.pop_front();
+            }
+            retained.push_back(line);
+        }
         let mut out = Vec::new();
-        for entry in &all[skip..] {
-            serde_json::to_writer(&mut out, entry).map_err(std::io::Error::other)?;
+        for line in retained {
+            out.extend_from_slice(line.as_bytes());
+        }
+        if !out.is_empty() && !out.ends_with(b"\n") {
             out.push(b'\n');
         }
+        serde_json::to_writer(&mut out, e).map_err(io::Error::other)?;
+        out.push(b'\n');
         write_private(&self.history_path(), &out)
     }
 
     /// The newest history line, if any.
-    pub fn last_history(&self) -> Option<HistoryEntry> {
-        self.history().pop()
+    pub fn last_history(&self) -> io::Result<Option<HistoryEntry>> {
+        self.find_history(|_| true)
     }
 
     /// The newest history line whose previous holder used `token`.
-    pub fn history_for_token(&self, token: &str) -> Option<HistoryEntry> {
-        self.history()
-            .into_iter()
-            .rev()
-            .find(|e| e.previous_token == token)
+    pub fn history_for_token(&self, token: &str) -> io::Result<Option<HistoryEntry>> {
+        self.find_history(|e| e.previous_token == token)
+    }
+
+    fn find_history(
+        &self,
+        matches: impl Fn(&HistoryEntry) -> bool,
+    ) -> io::Result<Option<HistoryEntry>> {
+        let text = self.history_text()?;
+        let mut newest = None;
+        for row in history_rows(&text) {
+            let (_, entry) = row?;
+            if matches(&entry) {
+                newest = Some(entry);
+            }
+        }
+        Ok(newest)
     }
 }
 
@@ -951,21 +1011,45 @@ fn ended_message(target: &str, at: u64, reason: &str) -> String {
     )
 }
 
-/// Why the caller's token stopped working, if the history knows.
+/// Whether the caller's token stopped working, with a reason if understood.
 pub(crate) fn lost_lease_message(
     lock: &StoreLock,
     token: Option<&str>,
     target: &str,
-) -> Option<String> {
-    let e = lock.history_for_token(token?)?;
+) -> io::Result<Option<String>> {
+    let Some(token) = token else {
+        return Ok(None);
+    };
+    let Some(e) = lock.history_for_token(token)? else {
+        return Ok(None);
+    };
     let reason = match (e.how.as_str(), &e.new_owner) {
         ("preempted", Some(o)) => format!("preempted by {o}"),
         ("preempted", None) => "ended by a forced release".to_string(),
         ("released", _) => "released".to_string(),
         ("expired", _) => "found expired".to_string(),
-        _ => return None,
+        _ => "reason unavailable".to_string(),
     };
-    Some(ended_message(target, e.at, &reason))
+    Ok(Some(ended_message(target, e.at, &reason)))
+}
+
+/// Use history to explain a lease loss already established by the record.
+pub(crate) fn lost_lease_hint(
+    lock: &StoreLock,
+    token: Option<&str>,
+    target: &str,
+) -> Option<String> {
+    lost_lease_message(lock, token, target)
+        .inspect_err(|e| eprintln!("warning: {target}: {e}"))
+        .ok()
+        .flatten()
+}
+
+pub(crate) fn history_token_error(target: &str, e: io::Error) -> crate::error::PanioError {
+    crate::error::target_leased(
+        target,
+        format!("cannot verify PANIO_LEASE for '{target}': {e}"),
+    )
 }
 
 /// The target has no lease now. Tell a caller whose token names one that
@@ -982,17 +1066,28 @@ fn note_no_lease(
     let Some(t) = token else {
         return Ok(());
     };
-    let msg = lock
-        .and_then(|l| lost_lease_message(l, Some(t), target))
-        .or_else(|| {
-            expired.filter(|l| l.token == t).map(|l| {
-                ended_message(
-                    target,
-                    l.expires_at.min(l.last_used_at.saturating_add(l.idle_secs)),
-                    "found expired",
-                )
-            })
-        });
+    let expired_message = || {
+        expired.filter(|l| l.token == t).map(|l| {
+            ended_message(
+                target,
+                l.expires_at.min(l.last_used_at.saturating_add(l.idle_secs)),
+                "found expired",
+            )
+        })
+    };
+    let msg = match lock
+        .map(|l| lost_lease_message(l, Some(t), target))
+        .transpose()
+    {
+        Ok(history) => history.flatten().or_else(expired_message),
+        Err(e) if access == Access::Read => {
+            let msg = expired_message()
+                .unwrap_or_else(|| format!("{NOT_LEASED_PREFIX}{target}' has no active lease"));
+            eprintln!("warning: {msg}; {e}");
+            return Ok(());
+        }
+        Err(e) => return Err(history_token_error(target, e).into()),
+    };
     match msg {
         Some(m) if access == Access::Mutating => Err(crate::error::target_leased(target, m).into()),
         Some(m) => {
@@ -1045,8 +1140,14 @@ pub fn enforce_with(
         if token.is_none() {
             return Ok(());
         }
-        if !store.history_exists() {
-            return note_no_lease(None, access, token.as_deref(), target, None);
+        match store.history_exists() {
+            Ok(true) => {}
+            Ok(false) => return note_no_lease(None, access, token.as_deref(), target, None),
+            Err(e) if access == Access::Read => {
+                eprintln!("warning: {target}: {e}");
+                return Ok(());
+            }
+            Err(e) => return Err(history_token_error(target, e).into()),
         }
     }
     let lock = store
@@ -1067,8 +1168,12 @@ pub fn enforce_with(
     };
     let now = now();
     let st = state(rec, now, proc_is_live);
-    let refuse = |lock: &StoreLock, msg: String| {
-        let msg = lost_lease_message(lock, token.as_deref(), target).unwrap_or(msg);
+    let refuse = |msg: String, held: bool| {
+        let msg = match lost_lease_hint(&lock, token.as_deref(), target) {
+            Some(ended) if held => format!("{ended}; meanwhile: {msg}"),
+            Some(ended) => ended,
+            None => msg,
+        };
         anyhow::Error::from(crate::error::target_leased(target, msg))
     };
     match decide(&st, access, token.as_deref(), lease_required, target, now) {
@@ -1084,7 +1189,7 @@ pub fn enforce_with(
             State::Held(l) => {
                 // A read that carries a token which is not the holder's runs,
                 // but never silently: the caller most likely lost its lease.
-                let msg = lost_lease_message(&lock, token.as_deref(), target)
+                let msg = lost_lease_hint(&lock, token.as_deref(), target)
                     .unwrap_or_else(|| format!("{NOT_HOLDER_PREFIX} ({}) of '{target}'", l.owner));
                 eprintln!("warning: {msg}");
                 Ok(())
@@ -1105,16 +1210,7 @@ pub fn enforce_with(
             lock.write(&l).context("recording lease activity")?;
             Ok(())
         }
-        Verdict::Refuse(msg) => {
-            let held = matches!(st, State::Held(_));
-            match lost_lease_message(&lock, token.as_deref(), target) {
-                Some(ended) if held => {
-                    let m = format!("{ended}; meanwhile: {msg}");
-                    Err(crate::error::target_leased(target, m).into())
-                }
-                _ => Err(refuse(&lock, msg)),
-            }
-        }
+        Verdict::Refuse(msg) => Err(refuse(msg, matches!(st, State::Held(_)))),
         Verdict::CleanupBlocked(msg) => Err(crate::error::cleanup_blocked(target, msg).into()),
         Verdict::CleanupThenRun(old) => {
             match crate::lease_cmd::retire(lab, target, &lock, &old, "expired", None)? {
@@ -1126,7 +1222,7 @@ pub fn enforce_with(
         }
         Verdict::CleanupThenRefuse(old, msg) => {
             match crate::lease_cmd::retire(lab, target, &lock, &old, "expired", None)? {
-                crate::lease_cmd::Retired::Clean => Err(refuse(&lock, msg)),
+                crate::lease_cmd::Retired::Clean => Err(refuse(msg, false)),
                 crate::lease_cmd::Retired::Blocked(b) => Err(blocked_error(target, &b)),
             }
         }
@@ -1176,7 +1272,7 @@ fn lost_reason(store: &Store, token: &str, target: &str, now: u64) -> Poll {
     match state(rec, now, proc_is_live) {
         State::Held(l) if l.token == token => Poll::Holds,
         State::Held(l) => Poll::Lost(
-            lost_lease_message(&lock, Some(token), target)
+            lost_lease_hint(&lock, Some(token), target)
                 .unwrap_or_else(|| format!("{NOT_HOLDER_PREFIX} ({}) of '{target}'", l.owner)),
         ),
         State::Expired(l) if l.token == token => Poll::Lost(format!(
@@ -1186,7 +1282,7 @@ fn lost_reason(store: &Store, token: &str, target: &str, now: u64) -> Poll {
         )),
         State::Blocked(l) => Poll::Lost(blocked_message(target, &l)),
         State::Expired(_) | State::Unleased => Poll::Lost(
-            lost_lease_message(&lock, Some(token), target)
+            lost_lease_hint(&lock, Some(token), target)
                 .unwrap_or_else(|| format!("'{target}' is no longer leased to you")),
         ),
     }
@@ -1971,9 +2067,86 @@ mod tests {
         }
         let text = std::fs::read_to_string(dir.path().join("lease-history.jsonl")).unwrap();
         assert_eq!(text.lines().count(), 50);
-        assert!(lock.history_for_token("tok-9").is_none());
-        assert_eq!(lock.history_for_token("tok-10").unwrap().at, 10);
-        assert_eq!(lock.history_for_token("tok-59").unwrap().at, 59);
-        assert!(lock.history_for_token("nope").is_none());
+        assert!(lock.history_for_token("tok-9").unwrap().is_none());
+        assert_eq!(lock.history_for_token("tok-10").unwrap().unwrap().at, 10);
+        assert_eq!(lock.history_for_token("tok-59").unwrap().unwrap().at, 59);
+        assert!(lock.history_for_token("nope").unwrap().is_none());
+    }
+
+    #[test]
+    fn history_accepts_missing_file_blank_lines_and_legacy_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let lock = Store::at(dir.path().to_path_buf()).lock().unwrap();
+        assert!(lock.last_history().unwrap().is_none());
+        let legacy = r#"{"at":1,"previous_owner":"a","previous_token":"t","how":"expired","cleanup_errors":[]}"#;
+        std::fs::write(lock.history_path(), format!("\n \t\r\n{legacy}\r\n\n")).unwrap();
+        lock.append_history(&entry(2, "new-token")).unwrap();
+        let previous = lock.history_for_token("t").unwrap().unwrap();
+        assert_eq!(previous.at, 1);
+        assert!(previous.resolution.is_none());
+        assert_eq!(lock.last_history().unwrap().unwrap().at, 2);
+    }
+
+    #[test]
+    fn appending_preserves_retained_history_bytes_and_future_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        let lock = Store::at(dir.path().to_path_buf()).lock().unwrap();
+        let mut original = Vec::new();
+        for i in 0..49 {
+            serde_json::to_writer(&mut original, &entry(i, "older")).unwrap();
+            original.push(b'\n');
+        }
+        let retained = concat!(
+            "  ",
+            r#"{"future": [1, {"more":"fields"}], "at":49,"previous_owner":"a","previous_token":"v2","how":"changed","cleanup_errors":[]}"#,
+            " \r\n",
+            r#"{"at":50,"previous_owner":"a","previous_token":"t","how":"expired","cleanup_errors":[]}"#,
+        );
+        original.extend_from_slice(retained.as_bytes());
+        std::fs::write(lock.history_path(), &original).unwrap();
+
+        let new = entry(51, "new");
+        lock.append_history(&new).unwrap();
+        let output = std::fs::read_to_string(lock.history_path()).unwrap();
+        assert_eq!(output.lines().count(), HISTORY_KEEP);
+        assert_eq!(
+            output.lines().next(),
+            Some(serde_json::to_string(&entry(2, "older")).unwrap().as_str())
+        );
+        let suffix = format!("{retained}\n{}\n", serde_json::to_string(&new).unwrap());
+        let actual: String = output
+            .split_inclusive('\n')
+            .skip(HISTORY_KEEP - 3)
+            .collect();
+        assert_eq!(actual, suffix);
+    }
+
+    #[test]
+    fn a_bad_old_history_row_prevents_pruning_and_append() {
+        let dir = tempfile::tempdir().unwrap();
+        let lock = Store::at(dir.path().to_path_buf()).lock().unwrap();
+        let valid = serde_json::to_string(&entry(1, "valid")).unwrap();
+        let original = format!(
+            "{{incomplete\n{}",
+            format!("{valid}\n").repeat(HISTORY_KEEP)
+        );
+        std::fs::write(lock.history_path(), &original).unwrap();
+        let err = lock.append_history(&entry(2, "new")).unwrap_err();
+        assert!(err.to_string().contains("line 1"));
+        assert_eq!(
+            std::fs::read_to_string(lock.history_path()).unwrap(),
+            original
+        );
+    }
+
+    #[test]
+    fn history_rejects_invalid_utf8_without_replacing_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let lock = Store::at(dir.path().to_path_buf()).lock().unwrap();
+        let original = b"\xff";
+        std::fs::write(lock.history_path(), original).unwrap();
+        let err = lock.append_history(&entry(2, "tok")).unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::InvalidData);
+        assert_eq!(std::fs::read(lock.history_path()).unwrap(), original);
     }
 }
