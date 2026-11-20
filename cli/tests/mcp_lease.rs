@@ -40,11 +40,18 @@ fn mcp(dir: &Path, calls: &[serde_json::Value]) -> Vec<serde_json::Value> {
     }
     drop(stdin);
     let out: Output = child.wait_with_output().unwrap();
-    String::from_utf8(out.stdout)
+    assert!(
+        out.status.success(),
+        "MCP server exited with {}",
+        out.status
+    );
+    let replies: Vec<_> = String::from_utf8(out.stdout)
         .unwrap()
         .lines()
         .map(|l| serde_json::from_str(l).unwrap())
-        .collect()
+        .collect();
+    assert_eq!(replies.len(), calls.len());
+    replies
 }
 
 #[test]
@@ -101,4 +108,42 @@ fn mcp_reports_a_cleanup_blocked_target_with_exit_24() {
     assert_eq!(r[1]["result"]["isError"], false, "{}", r[1]);
     let status = r[1]["result"]["content"][0]["text"].as_str().unwrap();
     assert!(status.contains("\"state\":\"blocked\""), "{status}");
+}
+
+#[test]
+fn releasing_one_target_preserves_the_other_targets_lease() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("home")).unwrap();
+    std::fs::create_dir(dir.path().join("run")).unwrap();
+    std::fs::write(dir.path().join("lab.toml"), "[targets.a]\n[targets.b]\n").unwrap();
+    let call = |name, target| serde_json::json!({"name": name, "arguments": {"target": target}});
+    let replies = mcp(
+        dir.path(),
+        &[
+            call("lease_acquire", "a"),
+            call("lease_acquire", "b"),
+            call("lease_release", "a"),
+            call("lease_renew", "b"),
+            call("lease_status", "a"),
+            call("lease_status", "b"),
+        ],
+    );
+    for reply in &replies {
+        assert_eq!(reply["result"]["isError"], false, "{reply}");
+    }
+    for (reply, target, held) in [(&replies[4], "a", false), (&replies[5], "b", true)] {
+        let text = reply["result"]["content"][0]["text"].as_str().unwrap();
+        let status: serde_json::Value = serde_json::from_str(text).unwrap();
+        assert_eq!(status["target"], target);
+        assert_eq!(status["held"], held);
+    }
+    // Compare with the actual live credential so a changed output format
+    // cannot quietly disclose it in an otherwise successful tool response.
+    let record = std::fs::read(dir.path().join("home/.local/share/panio/b/lease.json")).unwrap();
+    let record: serde_json::Value = serde_json::from_slice(&record).unwrap();
+    let token = record["token"].as_str().unwrap();
+    assert!(!token.is_empty());
+    assert!(replies
+        .iter()
+        .all(|reply| !reply.to_string().contains(token)));
 }
