@@ -470,6 +470,44 @@ fn a_missing_power_hook_is_not_configured() {
     assert_eq!(e["child_exit"], 127);
 }
 
+#[cfg(unix)]
+#[test]
+fn guarded_action_runs_only_after_a_successful_matching_power_read() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("run")).unwrap();
+    let marker = dir.path().join("action-ran");
+    for (state_cmd, exit_code, refusal) in [
+        ("echo on", 2, Some(("usage", "actions"))),
+        ("echo off; exit 7", 101, Some(("helper_failed", "power"))),
+        ("echo off", 0, None),
+    ] {
+        let lab = format!(
+            r#"[targets.dut.power]
+state_cmd = "{state_cmd}"
+[targets.dut.actions.boot-usb]
+requires_power = "off"
+cmd = 'echo ran >> "$HOME/action-ran"'
+"#
+        );
+        std::fs::write(dir.path().join("lab.toml"), lab).unwrap();
+        let out = panio_env(
+            dir.path(),
+            true,
+            &["action", "run", "-t", "dut", "boot-usb"],
+            &[("HOME", dir.path().display().to_string())],
+        );
+        assert_eq!(out.status.code(), Some(exit_code), "{state_cmd}: {out:?}");
+        if let Some((kind, channel)) = refusal {
+            assert!(!marker.exists(), "action ran after {state_cmd}");
+            let error = error_object(&out);
+            assert_eq!(error["kind"], kind);
+            assert_eq!(error["channel"], channel);
+        } else {
+            assert_eq!(std::fs::read_to_string(&marker).unwrap(), "ran\n");
+        }
+    }
+}
+
 /// `cmd.exe /C` exits 1 for an unknown command (9009 is only `%ERRORLEVEL%`
 /// inside a batch file), indistinguishable from a failing script, so on
 /// Windows a missing hook is `helper_failed` (documented in docs/errors.md).
