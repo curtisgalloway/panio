@@ -753,12 +753,19 @@ mod tests {
     }
 
     #[test]
-    fn open_failure_is_reported() {
+    fn open_failure_stops_switching_and_reports_that_the_button_may_be_held() {
         let mut r = FakeRunner::default();
         r.fail_button.push("open".into());
         let mut c = FakeClock::default();
-        let e = press(&cfg(), &mut r, &mut c).unwrap_err();
-        assert!(format!("{e:#}").contains("--open-cmd failed"), "{e:#}");
+        let mut p = FakeProbe::new(&[true, false]);
+        let e = switch_to(Side::Target, &cfg(), &mut r, &mut p, &mut c).unwrap_err();
+        assert!(
+            e.to_string()
+                .contains("--open-cmd failed; the button may be left held"),
+            "{e}"
+        );
+        assert_eq!(r.log, ["button:close", "button:open"]);
+        assert_eq!(p.reads, 1, "an open failure must stop verification");
     }
 
     #[test]
@@ -816,6 +823,52 @@ mod tests {
                 inferred: false
             }
         );
+    }
+
+    #[test]
+    fn a_failed_host_probe_does_not_choose_a_side_or_press() {
+        struct FailedProbe;
+        impl Probe for FailedProbe {
+            fn present(&mut self, _: Duration) -> Result<bool> {
+                bail!("cannot list USB devices")
+            }
+        }
+
+        let mut cfg = cfg();
+        cfg.target_check = Some("check".into());
+        let (mut r, mut c) = (FakeRunner::default(), FakeClock::default());
+        for side in [Side::Host, Side::Target] {
+            let e = switch_to(side, &cfg, &mut r, &mut FailedProbe, &mut c).unwrap_err();
+            assert!(e.to_string().contains("cannot list USB devices"), "{e}");
+        }
+        assert!(r.log.is_empty(), "{:?}", r.log);
+    }
+
+    #[test]
+    fn disappearance_after_press_does_not_pass_a_failing_target_check() {
+        let mut cfg = cfg();
+        cfg.target_check = Some("check".into());
+        cfg.require_verified = true;
+        cfg.settle = Duration::from_millis(120);
+        let (mut r, mut c) = (FakeRunner::default(), FakeClock::default());
+        r.captures.push((
+            "check".into(),
+            Captured {
+                code: Some(1),
+                stdout: String::new(),
+            },
+        ));
+        let mut p = FakeProbe::new(&[true, false]);
+        let e = switch_to(Side::Target, &cfg, &mut r, &mut p, &mut c).unwrap_err();
+        let msg = e.to_string();
+        assert!(msg.contains("timed out after 120 ms"), "{msg}");
+        assert!(
+            msg.contains("last observed: the device is seen on neither side"),
+            "{msg}"
+        );
+        assert_eq!(&r.log[..2], ["button:close", "button:open"]);
+        let checks = &r.log[2..];
+        assert!(!checks.is_empty() && checks.iter().all(|cmd| cmd == "capture:check"));
     }
 
     #[test]
@@ -879,12 +932,19 @@ mod tests {
 
     #[test]
     fn missing_button_commands_refuse_before_any_press() {
-        let mut cfg = cfg();
-        cfg.close_cmd = None;
-        let (mut r, mut c) = (FakeRunner::default(), FakeClock::default());
-        let mut p = FakeProbe::new(&[false]);
-        let e = switch_to(Side::Host, &cfg, &mut r, &mut p, &mut c).unwrap_err();
-        assert!(e.to_string().contains("--close-cmd"), "{e}");
-        assert!(r.log.is_empty());
+        let mut missing_close = cfg();
+        missing_close.close_cmd = None;
+        let mut missing_open = cfg();
+        missing_open.open_cmd = None;
+        for (missing_flag, cfg) in [("--close-cmd", missing_close), ("--open-cmd", missing_open)] {
+            let (mut r, mut c) = (FakeRunner::default(), FakeClock::default());
+            let mut p = FakeProbe::new(&[false]);
+            let e = switch_to(Side::Host, &cfg, &mut r, &mut p, &mut c).unwrap_err();
+            assert!(e.to_string().contains(missing_flag), "{e}");
+            let e = press(&cfg, &mut r, &mut c).unwrap_err();
+            assert!(e.to_string().contains(missing_flag), "{e}");
+            assert!(r.log.is_empty());
+            assert_eq!(p.reads, 0);
+        }
     }
 }
