@@ -927,6 +927,8 @@ panio action run -t <target> <name>    # run one; -t only, the positional is the
 panio action set -t <target> <name> --cmd <cmd> [--description <text>] \
     [--requires-power on|off|none] [--host <labhost>]
 panio action rm -t <target> <name>
+panio action guard-status -t <target> [--power-host <host>]
+panio action recover -t <target> --id <operation-id> [--power-host <host>] [--confirm-stopped]
 ```
 
 - **Check `action list` before a power cycle.** If the target defines
@@ -936,8 +938,18 @@ panio action rm -t <target> <name>
 - An action marked `requires_power off` is refused (exit 2, `usage`) while the
   target is on. Run `panio power off` first; never edit the lab to drop the
   requirement.
-- Action and power hooks for one target run one at a time; a hook that waits
-  more than 120 s for another fails with `timeout` (exit 22, outcome unknown).
+- On a control host, action hooks, power hooks, and `serial dtr` / `serial reset`
+  for a target run one at a time. A guarded action holds that lock from the
+  power-state check until its hook exits. Waiting longer than 120 s for a lock
+  fails with `timeout` (exit 22, outcome unknown).
+- Across hosts, guarded actions reserve each power control before checking the state.
+  After a disconnect, run `action guard-status` from the original lab. Recover a
+  `ready` or `finished` operation by ID. For `running`, verify on the action host
+  that the hook and its children have stopped before passing `--confirm-stopped`.
+  Check the target's actual state before retrying an interrupted action.
+- For an interrupted power command, inspect its control host with
+  `action guard-status --power-host HOST`. Supply the same host and ID
+  to `action recover` after verifying that its hardware operation has stopped.
 - Actions take no extra arguments. Each variant is its own action.
 
 Guide: `docs/actions.md`.

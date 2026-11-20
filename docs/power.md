@@ -275,6 +275,12 @@ panio power-state [target]      # state_cmd if set; else serial sense-line
 sequence. A script may return before the cycle ends (a relay board that times
 the off period itself), so when `state_cmd` is set, `power-cycle` then reads it
 every 500 ms until it reports `on` and only then prints `Power cycle complete`.
+It holds the target's hook lock through the state confirmation.
+An interrupted power command may leave a hardware transition in progress.
+Use `action guard-status --power-host HOST` to inspect the operation and
+[recover it](actions.md#recovering-an-interrupted-action) once it has stopped.
+A hook without a state callback must finish its hardware transition before
+returning if a later guarded action depends on that transition.
 If it still reports `off` after 30 s, panio exits 22 (`timeout`, outcome
 unknown). Without `state_cmd` it cannot check, and prints `Power cycle
 requested` instead. A failing script makes panio exit 101 (`helper_failed`), with the

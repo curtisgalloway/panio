@@ -63,9 +63,9 @@ place.
 - `--cmd` is required for a new action and optional when updating one.
 - `--host` binds **all** of the target's actions to one control host, like any
   channel's `host`. Unset, they run on the target's default host.
-- `--requires-power on|off` makes panio check `power-state` first and refuse
-  the action in the other state. Use it for strap changes, which must not hit a
-  running board. `--requires-power none` clears it.
+- `--requires-power on|off` makes panio check the default power state under
+  the target's hook lock and refuse the action in the other state. Use it for
+  strap changes that need the board powered off. `--requires-power none` clears it.
 - Names follow the usual rule (letters, digits, `.`, `_`, `-`, no leading
   `-`). `host` is reserved, since it is the table's host key.
 
@@ -109,24 +109,62 @@ The contract is the [power hooks'](power.md) one:
 - When the actions live on another control host, panio re-runs the command
   there over SSH.
 
-**One hook at a time per target.** Action hooks and power hooks for a target
-share one lock, because they often drive the same exclusive device (a
-board-control microcontroller's serial port). A second hook waits up to 120 s
-for the first to finish, then fails with `timeout` (exit 22). A hook that calls
-back into panio for the same target (an action script running
-`panio power-state`) does not wait on its own lock: panio sets
-`PANIO_HOOK_LOCK` to the target name for the hook it runs.
+**One hook at a time per target.** On a control host, action hooks, power
+hooks, and `serial dtr` / `serial reset` for a target share one lock. A second
+command waits up to 120 s for the first to finish, then fails with
+`timeout` (exit 22). A hook can call panio synchronously for the same target,
+for example to read `panio power-state`, using the lock the parent command
+already holds. Keep any nested calls in the foreground and wait for them
+before the hook exits.
 
-**`requires_power`.** panio reads the power state wherever the power channel
-is, before taking the lock (reading the state takes that same lock). A refusal
-is `usage` (exit 2), since only the caller can fix it:
+**`requires_power`.** When the action and power controls share a host, panio
+takes the lock before reading the default power state and holds it until
+the action hook finishes. A wrong power state is `usage` (exit 2):
 
 ```text
 action 'boot-usb' requires power off, but 'target-machine' is on (panio power off target-machine, then retry)
 ```
 
-A target whose action sets `requires_power` needs a power channel that can
-report state (`state_cmd`, or a serial sense line).
+A guarded action needs a power channel that can report state using
+`state_cmd` or a serial sense line. For serial sense, the configured interface
+must be on the power host. The guard coordinates panio power commands.
+Physical buttons and other software can change power independently.
+
+### Actions with power controls on another host
+
+Run the action from the machine with the full lab configuration. Panio
+reserves the power host and each host with a serial power button before it
+checks the default power state. It records the operation on the action host
+before starting the hook. A competing power command on a reserved host fails
+with the operation ID. Use current Panio binaries on every host that can
+change the target's power. All Panio clients on a control host must use the
+same OS account, data directory, and runtime directory for that target.
+
+### Recovering an interrupted action
+
+From the full lab configuration, run `panio action guard-status -t target-machine`.
+It prints the operation ID, phase, and power hosts as JSON, or `null` when
+the action host has no outstanding operation. Keep the original host
+bindings and target name until recovery finishes.
+
+- For `ready` or `finished`, run `panio action recover -t target-machine --id ID`
+  with the ID from the status output. This prevents a late execution request
+  from starting the action and releases its reservations.
+- For `running`, first check the action host and verify that the hook and
+  any subprocess it started have stopped touching the target. Then run
+  `panio action recover -t target-machine --id ID --confirm-stopped`.
+  Verify the hardware state before deciding whether to run the action again.
+- If a participant is offline, reconnect it and repeat recovery with the
+  same ID. Reservations survive process restarts and have no timeout.
+  Keep the state files intact. A power-off requested through Panio also waits for
+  recovery while a reservation is outstanding.
+
+An interrupted ordinary power command can also leave a hook or serial pulse
+in progress. To inspect it, run `panio action guard-status -t target-machine
+--power-host HOST` with the power or serial host's name from the lab. Once
+you have verified that its hook, children, and hardware transition have all
+stopped, use `panio action recover -t target-machine --power-host HOST --id ID
+--confirm-stopped`. When operating directly on that host, use `local`.
 
 ## Diagnostics and agents
 

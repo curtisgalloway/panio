@@ -20,19 +20,17 @@
 //! under the power-hook contract (`sh -c`, helper dirs on PATH, the helper
 //! state/runtime dirs) and defines no semantics for it.
 //!
-//! Action and power hooks for one target often talk to the same exclusive
-//! device (a board-control MCU's serial port), so each one runs holding a
-//! per-target lock file. A hook that itself calls back into panio for the
-//! same target (an action script running `panio power-state`) must not wait
-//! on the lock its parent holds: the holder exports [`LOCK_HELD_ENV`], and a
-//! process that sees its own target there skips the lock.
+//! Action hooks, power hooks, and DTR power-button commands share a per-target
+//! lock file on a control host. A hook that calls panio synchronously for the
+//! same target (for example to read `panio power-state`) uses its parent's lock.
+//! The holder exports [`LOCK_HELD_ENV`] for that purpose.
 
 use std::fs::File;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
 
-use crate::{daemons, error, model, platform};
+use crate::{action_guard_store::Store, daemons, error, model, platform};
 
 /// Set, in a hook's environment, to the target whose hook lock the parent
 /// holds.
@@ -48,7 +46,7 @@ const LOCK_POLL: Duration = Duration::from_millis(100);
 /// with the file). `file` is `None` when the parent process already holds it.
 pub struct HookLock {
     target: String,
-    _file: Option<File>,
+    file: Option<File>,
 }
 
 impl HookLock {
@@ -56,6 +54,10 @@ impl HookLock {
     /// call for the same target does not wait on it.
     pub fn env(&self) -> (&'static str, &str) {
         (LOCK_HELD_ENV, &self.target)
+    }
+
+    pub fn inherited(&self) -> bool {
+        self.file.is_none()
     }
 }
 
@@ -67,9 +69,28 @@ pub fn hook_lock(target: &str, wait: Duration) -> Result<HookLock> {
     if lock_inherited(held.as_deref(), target) {
         return Ok(HookLock {
             target: target.to_string(),
-            _file: None,
+            file: None,
         });
     }
+    take_hook_lock(target, wait)
+}
+
+/// Durable guard records must be changed under a lock this process owns.
+pub fn guard_protocol_lock(target: &str) -> Result<HookLock> {
+    let held = std::env::var(LOCK_HELD_ENV).ok();
+    if lock_inherited(held.as_deref(), target) {
+        return Err(error::PanioError::new(
+            error::Kind::Usage,
+            format!("cannot coordinate a guarded action from a hook for '{target}'"),
+        )
+        .target(target)
+        .channel("actions")
+        .into());
+    }
+    take_hook_lock(target, LOCK_WAIT)
+}
+
+fn take_hook_lock(target: &str, wait: Duration) -> Result<HookLock> {
     let dir = daemons::ensure_runtime_dir("hooks", Some(target))?;
     let file = File::options()
         .create(true)
@@ -82,7 +103,7 @@ pub fn hook_lock(target: &str, wait: Duration) -> Result<HookLock> {
             Ok(()) => {
                 return Ok(HookLock {
                     target: target.to_string(),
-                    _file: Some(file),
+                    file: Some(file),
                 })
             }
             Err(std::fs::TryLockError::WouldBlock) if start.elapsed() < wait => {
@@ -171,6 +192,74 @@ pub fn find<'a>(lab: &'a model::Lab, target: &str, name: &str) -> Result<&'a mod
     })
 }
 
+/// Keep one lock across the state read and the hook on this host. The durable
+/// reservation covers a hook that survives this process, and prevents nested
+/// power commands from changing the guarded state while the hook runs.
+pub fn run_guarded(
+    lab: &model::Lab,
+    target: &str,
+    name: &str,
+    action: &model::Action,
+    requires: &str,
+    host: &str,
+) -> Result<()> {
+    let lock = guard_protocol_lock(target)?;
+    let store = Store::for_target_on_host(target, host);
+    store.power_available()?;
+    let peer = store.participant(host)?;
+    let ticket = store.begin(name, requires, std::slice::from_ref(&peer))?;
+    let id = &ticket.id;
+
+    let effect = (|| -> Result<()> {
+        store.reserve(id, &peer)?;
+        let is_on = crate::local_power_is_on_locked(lab, target, &lock)?;
+        if let Some(refusal) = power_refusal(target, name, requires, is_on) {
+            return Err(refusal.into());
+        }
+        run_reserved_hook(&store, id, &lock, target, name, &action.cmd)
+    })();
+
+    let cleanup = (|| -> Result<()> {
+        store.seal(id, false)?;
+        store.release(id, &peer)?;
+        store.forget(id)
+    })();
+    if let Err(cleanup) = cleanup {
+        let original = effect.err().map(|e| format!("{e:#}. ")).unwrap_or_default();
+        return Err(cleanup.context(format!(
+            "{original}guard recovery incomplete for action '{name}'"
+        )));
+    }
+    effect
+}
+
+/// A shell can translate a signal that killed its helper into 128+signal.
+pub fn conclusive_hook_exit(code: Option<i32>) -> bool {
+    code.is_some_and(|code| code >= 0 && (!cfg!(unix) || code <= 128))
+}
+
+pub fn run_reserved_hook(
+    store: &Store,
+    id: &str,
+    lock: &HookLock,
+    target: &str,
+    name: &str,
+    cmd: &str,
+) -> Result<()> {
+    store.start(id)?;
+    let result = run_hook(lock, target, name, cmd);
+    let stopped = match &result {
+        Ok(()) => true,
+        Err(e) => e
+            .downcast_ref::<error::PanioError>()
+            .is_some_and(|e| conclusive_hook_exit(e.child_exit)),
+    };
+    if stopped {
+        store.finish(id)?;
+    }
+    result
+}
+
 /// Run an action's hook command on this host under `lock`, propagating a
 /// failure as `hook_failed` (its exit code kept in the error).
 pub fn run_hook(lock: &HookLock, target: &str, name: &str, cmd: &str) -> Result<()> {
@@ -183,6 +272,7 @@ pub fn run_hook(lock: &HookLock, target: &str, name: &str, cmd: &str) -> Result<
         .env("PATH", daemons::hook_path())
         .envs(envs)
         .env(k, v)
+        .env_remove(crate::power::MUTATION_ENV)
         .status()?;
     if status.success() {
         return Ok(());

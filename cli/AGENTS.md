@@ -228,7 +228,12 @@ cli/src/
                 via search_path), install_bundled() for setup.rs
   actions.rs    named target actions (#299): find, run_hook, the requires_power
                 refusal, and the per-target hook lock (std File::try_lock, 120 s
-                wait) that power hooks take too
+                wait) shared by power hooks and DTR pulses. On one host,
+                action run holds it across state read and hook execution.
+  action_guard.rs coordinates guarded actions over the existing dispatch transport.
+                The action host seals execution before recovery releases any power host.
+  action_guard_store.rs persists the action receipt and per-target power reservation.
+                A release advances its generation so delayed requests cannot reacquire it.
   lease.rs      target leases (#360): lease.json store under an exclusive file
                 lock, the pure `decide` table, `enforce` (the central check:
                 reads allowed, mutating needs PANIO_LEASE, ended tokens refuse
