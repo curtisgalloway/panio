@@ -44,6 +44,15 @@ Milestone 1 covers keyboard and mouse injection; milestone 2 adds video (see
    `ping`, `getUSBState`, `getVideoState`, `getKeyboardLedState`. One-shot
    commands negotiate no media. The `serve` daemon also offers a receive-only
    H.264 video track (see below).
+4. **Scrolling depends on the firmware.** Firmware up to 0.5.10 takes
+   `wheelReport` over JSON-RPC. Later firmware (from 0.5.11-dev, upstream
+   [jetkvm/kvm#1462](https://github.com/jetkvm/kvm/pull/1462)) removed that
+   method and takes the wheel only as a binary HID-RPC frame
+   `[0x04, deltaY, deltaX]` on a second, reliable data channel labeled
+   `hidrpc`, after a handshake. Each session tries JSON-RPC first; when the
+   device answers "method not found", it opens `hidrpc`, handshakes, and sends
+   the rest of that session's scrolling there. A reconnect probes again. Older
+   firmware never sees the `hidrpc` channel.
 
 ## The one-session rule
 

@@ -104,6 +104,13 @@ even when the target has not enumerated the USB device. Run
 `panio hid send -t target-machine info` to read the USB state, video state
 and keyboard LEDs before trusting a silent run.
 
+**Firmware.** Tested against JetKVM firmware 0.5.9. Firmware after 0.5.10
+(upstream [jetkvm/kvm#1462](https://github.com/jetkvm/kvm/pull/1462)) dropped
+the JSON-RPC call that scrolling used; the helper notices and switches that
+session's `scroll` to the firmware's binary HID channel, so both work. The
+newer path is covered by tests against a simulated device, not yet by a real
+one.
+
 Pointer clicks (`click`, `mdown`, `mup`) happen wherever the pointer already
 is, so follow a `moveabs` with the click. `panio console` works as a KVM
 through the helper's daemon exactly as it does for `ch9329`.

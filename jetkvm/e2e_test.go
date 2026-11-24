@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -45,6 +46,12 @@ type fakeDevice struct {
 	calls    []string // "method {json params}", in arrival order
 	sessions []*fakeSession
 	logins   int
+
+	// noJSONWheel makes the fake behave like firmware after jetkvm/kvm#1462:
+	// wheelReport over JSON-RPC is "method not found" and the wheel is taken
+	// only as a binary frame on a handshaken "hidrpc" channel.
+	noJSONWheel bool
+	hidLabels   []string // labels of every non-"rpc" data channel opened
 
 	offers  []string // SDP of every offer received
 	videoAU [][]byte // when set, answer with an H.264 track playing these access units
@@ -154,6 +161,13 @@ func (d *fakeDevice) signaling(w http.ResponseWriter, r *http.Request) {
 	d.sessions = append(d.sessions, sess)
 	d.mu.Unlock()
 	pc.OnDataChannel(func(dc *webrtc.DataChannel) {
+		if dc.Label() == hidRPCLabel {
+			d.mu.Lock()
+			d.hidLabels = append(d.hidLabels, dc.Label())
+			d.mu.Unlock()
+			dc.OnMessage(func(m webrtc.DataChannelMessage) { d.handleHID(dc, m.Data) })
+			return
+		}
 		if dc.Label() != "rpc" {
 			return
 		}
@@ -258,13 +272,53 @@ func (d *fakeDevice) handle(dc *webrtc.DataChannel, data []byte) {
 		resp["result"] = map[string]any{"ready": true, "width": 1920}
 	case "getKeyboardLedState":
 		resp["result"] = map[string]any{"num_lock": true}
-	case "keyboardReport", "absMouseReport", "relMouseReport", "wheelReport":
+	case "wheelReport":
+		d.mu.Lock()
+		noJSONWheel := d.noJSONWheel
+		d.mu.Unlock()
+		if noJSONWheel {
+			resp["error"] = map[string]any{"code": -32601, "message": "method not found"}
+		} else {
+			resp["result"] = nil
+		}
+	case "keyboardReport", "absMouseReport", "relMouseReport":
 		resp["result"] = nil
 	default:
 		resp["error"] = map[string]any{"code": -32601, "message": "method not found"}
 	}
 	b, _ := json.Marshal(resp)
 	_ = dc.SendText(string(b))
+}
+
+// handleHID records binary HID-RPC frames the way upstream decodes them. The
+// handshake is answered only by new firmware; old firmware drops wheel frames
+// (it has no case for them), which the fake records as such.
+func (d *fakeDevice) handleHID(dc *webrtc.DataChannel, data []byte) {
+	if len(data) == 0 {
+		return
+	}
+	d.mu.Lock()
+	newFirmware := d.noJSONWheel
+	d.mu.Unlock()
+	var line string
+	switch data[0] {
+	case hidTypeHandshake:
+		line = "hidrpc handshake"
+		_ = dc.Send([]byte{hidTypeHandshake, hidRPCVersion})
+	case hidTypeWheel:
+		if len(data) != 3 {
+			line = fmt.Sprintf("hidrpc malformed wheel % x", data)
+		} else if !newFirmware {
+			line = "hidrpc wheel dropped"
+		} else {
+			line = fmt.Sprintf(`hidrpc wheel {"wheelX":%d,"wheelY":%d}`, int8(data[2]), int8(data[1]))
+		}
+	default:
+		line = fmt.Sprintf("hidrpc unknown % x", data)
+	}
+	d.mu.Lock()
+	d.calls = append(d.calls, line)
+	d.mu.Unlock()
 }
 
 func (d *fakeDevice) recorded() []string {

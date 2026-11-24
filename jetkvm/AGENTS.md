@@ -18,6 +18,10 @@ jetkvm/          Go module (the one non-Rust helper besides zigplug): hid
                  started by panio as `<cmd> serve --port 0` like the other hid helpers, with no jetkvm code in cli/ (cli/ knows only that a hid channel can host a feed). One flat `package main`:
   rpc.go           login -> signaling WebSocket -> "rpc" data channel,
                    JSON-RPC, `Link`
+  wheel.go         the wheel's two transports: JSON-RPC `wheelReport` (firmware
+                   <= 0.5.10), else binary `[0x04, y, x]` on a handshaken
+                   reliable "hidrpc" channel (jetkvm/kvm#1462), chosen per
+                   session on a -32601 reply; `Link.Call` routes wheelReport here
   hid.go           `Session`: keyboardReport/absMouseReport/relMouseReport/
                    wheelReport, `executeLine`, `parseSequence`; vocabulary and
                    bounds ported from ch9329
