@@ -16,22 +16,32 @@ limitations under the License.
 
 # Hardware-in-the-loop CI for panio (design)
 
-> **Status:** design, not implemented. Nothing in this document runs yet.
+> **Status:** design, revision 2. Nothing in this document runs yet, and nothing
+> in it authorizes deploying a runner. Acceptance gates are proposed, not
+> executed. The real network layout, hook behavior and release credentials
+> still have to be checked on the bench.
 >
 > **Scope:** panio's *own* CI, testing panio against real KVMs, muxes and relays.
 > This is different from [ci-integration/](ci-integration/design.md), which is about
 > letting other CI systems (LAVA, botanist) drive boards through panio.
+>
+> **Revision 2** applies the security design review on PR #429 (findings
+> SEC-01 to SEC-10). The main change: the runner belongs to a **separate private
+> repository**, and public panio supplies reviewed source at a fixed commit, not
+> workflow authority. [§12](#12-review-findings-and-where-they-are-addressed)
+> maps each finding to the section that addresses it.
 
-## Start here: the first step (about 5 minutes, today)
+## Start here: the first step (about 10 minutes, today)
 
-Do this before anything else, because it has to be in place before a runner exists:
+This step registers no runner and touches no hardware:
 
-1. Open the repo's **Settings → Actions → General**.
-2. Under **Approval for running fork pull request workflows from contributors**,
-   choose **Require approval for all external contributors**.
-3. Save.
+1. Create a **private** repository named `panio-hardware-ci` under your
+   account (**github.com/new**, Private, add a README).
+2. In its **Settings → Actions → General**, leave Actions enabled. Under
+   **Workflow permissions**, choose **Read repository contents and packages
+   permissions**. Save.
 
-That is the whole first step. The rest of phase 1 is in [§9](#9-phased-rollout).
+That's the whole first step. Phase 1 continues in [§10](#10-phased-rollout).
 
 ---
 
@@ -52,71 +62,93 @@ from an independent vantage point catches both.
 ## 2. Can this run on the free GitHub plan?
 
 **Yes.** Self-hosted runners are free on every plan, including Free, for public
-and private repositories. GitHub does not bill minutes for jobs on your own
-machine. Two things the free personal plan does *not* give you, and why they
-don't matter here:
+and private repositories, and GitHub doesn't bill minutes for jobs on your own
+machine. Hosted jobs (the watchdog and reporter in phase 2) and artifact
+storage in a *private* repository count against the Free plan's monthly
+allowance (2,000 minutes and 500 MB at the time of writing). The small jobs in
+this design use a few minutes a day.
 
-- **Runner groups** (restricting which repos may use a runner) are an
-  organization feature. A runner registered to a single repository is only
-  usable by that repository anyway.
-- **Required reviewers on environments** for private repos need a paid plan.
-  This repo is public, so environments with branch rules are available, but
-  this design doesn't depend on them (see [§5](#5-triggers-and-security)).
+What the Free plan doesn't give a personal account, and why it doesn't matter
+here:
 
-The real constraint isn't billing, it is that **the repo is public**. GitHub's
-own guidance is that self-hosted runners on public repos are dangerous, because
-a fork pull request can run arbitrary code on them. [§5](#5-triggers-and-security)
-is about making that impossible rather than merely unlikely.
+- **Runner groups** are an organization feature. A runner registered to one
+  repository is only offered that repository's jobs.
+- **Environments with protection rules** aren't available for private repos on
+  Free. Nothing here depends on them.
 
-## 3. Shape of the system
+The constraint that shapes the design isn't billing. A self-hosted runner
+attached to a **public** repository can be reached by workflows from fork pull
+requests, and fork approval, runner labels and a workflow lint are not
+authorization boundaries (an approved fork workflow can still ask for any
+label). So **public panio gets no self-hosted runner at all.**
+
+## 3. Architecture
 
 ```
-                 GitHub (schedule / workflow_dispatch / push to main or v* tag)
-                                     │
-                                     ▼
-┌──────────────────────────── lab LAN (isolated) ────────────────────────────┐
-│                                                                            │
-│  bench1 (runner + control host)                                            │
-│   ├─ actions-runner (user panio-ci, label panio-hw)                        │
-│   ├─ job-started hook  ← refuses any job that isn't ours (§5.3)            │
-│   ├─ panio + helpers, built from the commit under test                     │
-│   └─ lab config outside the repo (~panio-ci/lab/)                          │
-│        │USB            │USB/LAN           │USB             │LAN            │
-│        ▼               ▼                  ▼                ▼               │
-│   USB mux (KVM-Go,  JetKVM            relay board     smart plug          │
-│   Mini-KVM, or      (HID, video)      (target power)  (KVM power,         │
-│   usbtoggle)            │                  │           for recovery)       │
-│        │ switched USB   │ HID + HDMI       │ power                        │
-│        ▼                ▼                  ▼                              │
-│   target-machine ("witness": a small Linux box)                            │
-│        ▲                                                                   │
-│        └──── SSH over wired LAN: the independent check channel ────────────│
-└────────────────────────────────────────────────────────────────────────────┘
+ public: curtisgalloway/panio                private: panio-hardware-ci
+ ┌──────────────────────────┐               ┌─────────────────────────────────┐
+ │ source code only         │  reviewed SHA │ hardware.yml (schedule/dispatch)│
+ │ no self-hosted runner    │──────────────▶│ harness + verdict logic         │
+ │ no hardware workflow     │  (read-only   │ admission policy (reviewed)     │
+ └──────────────────────────┘   clone)      │ maintainer: Curtis only         │
+                                            └───────────────┬─────────────────┘
+                                                            │ jobs for label panio-hw
+┌─────────────────────── isolated bench network ────────────▼──────────────────┐
+│ bench1                                                                       │
+│  ├─ systemd unit (root-owned): ExecStartPre safety checks, then the listener  │
+│  ├─ job-started hook (root-owned, hash-pinned): admission policy (§5.3)      │
+│  ├─ runner user panio-ci: no sudo except one quarantine command               │
+│  └─ builds panio from the approved SHA; runs the harness from the private repo│
+│     │USB             │USB/LAN          │USB            │LAN                  │
+│  USB mux          JetKVM (phase 2)   relay board     smart plug (phase 2)    │
+│     │switched USB    │HID + HDMI       │power                                │
+│     ▼                ▼                 ▼                                     │
+│  target-machine ("witness"): answers a fixed set of SSH commands only        │
+│     ▲                                                                        │
+│     └──── wired LAN link, not through any device under test ─────────────────│
+│                                                                              │
+│  Blocked: home LAN and management addresses (IPv4 and IPv6).                 │
+│  Allowed out: HTTPS to the internet only.                                    │
+└──────────────────────────────────────────────────────────────────────────────┘
 ```
 
-The key idea is the **witness**: the target is a Linux machine that bench1 can
-reach over SSH on a plain wired link that **does not pass through any device
-under test**. Every test acts through panio, then asks the witness what really
-happened.
+Ideas that carry over from revision 1:
+
+- **The witness.** The target is a small Linux machine that bench1 reaches
+  over SSH on a plain wired link that doesn't pass through any device under
+  test. Every test acts through panio, then asks the witness what really
+  happened.
+- **Outcome checks in both directions** with a fresh nonce each run.
+- **A low-cost first phase** on hardware you already have.
+
+What changed:
+
+- **Workflow authority moves to the private repo.** Its workflows, harness
+  and admission policy are trusted code that only you maintain. Public panio
+  is just a source of commits.
+- **Phase 1 runs only reviewed `main` commits.** Testing a PR branch before it
+  merges (PR #428's case) and running on release tags are deferred until
+  explicit admission for them is designed ([§11](#11-decisions-and-open-questions)).
+- **Isolation, the protected hook, leases and cleanup are all in phase 1,
+  before any job runs.**
 
 ## 4. Hardware list and rough costs
 
-Prices are rough US street prices as of November 2026. Check before buying.
-"Have it?" is for you to fill in; phase 1 is designed to need as little new
-hardware as possible.
+Prices are rough US street prices as of November 2026; check before buying.
 
 ### Phase 1 (minimum)
 
-| Item | Role | Rough cost | Have it? |
-|---|---|---|---|
-| Runner box: Raspberry Pi 5 (4–8 GB) with PSU, case, 64 GB+ storage | Runs the Actions runner and panio | $100–130 | |
-| *or* a used/low-end x86 mini PC (Intel N100 class) | Same; faster Rust builds | $150–200 | |
-| Witness target: any spare Pi 4/5 or old PC running Linux | Reports outcomes over SSH | $0–80 | |
-| One USB mux panio already supports: Openterface **KVM-Go** (hardware-verified) or a USB sharing switch + DSD relay (`usbtoggle`) | Device under test for the USB round trip | $0 if owned; $30–120 | |
-| Small USB flash drive, dedicated to CI | Payload that moves between host and target | $8 | |
-| Ethernet cables, a 5-port switch | Lab LAN and witness link | $0–25 | |
+| Item | Role | Rough cost |
+|---|---|---|
+| Runner box: Raspberry Pi 5 (4–8 GB) with PSU, case, 64 GB+ storage, *or* a low-end x86 mini PC (Intel N100 class) | Runs the listener, builds panio, runs the harness. Dedicated to the bench | $0 if owned; $100–200 |
+| Witness target: any spare Pi 4/5 or old PC running Linux | Reports outcomes over restricted SSH | $0–80 |
+| One USB mux panio already supports: Openterface **KVM-Go** (hardware-verified) or a USB sharing switch with a DSD relay (`usbtoggle`) | Device under test for the USB round trip | $0 if owned |
+| Small USB flash drive, CI only | Payload that moves between host and witness | $8 |
+| Isolated network segment: a VLAN on gear you have, **or** a small travel router that puts the bench behind its own NAT and firewall | Network containment ([§5.5](#55-network-containment)) | $0 with a VLAN-capable router; $30–40 otherwise |
 
-**Phase 1 total: $0 if you reuse what you have; about $150–300 buying new.**
+**Phase 1 total: $0–25 if you already have a box, witness, mux and a way to
+isolate the bench; add $30–40 for a travel router if not.** Without isolation,
+don't register a runner: run the harness by hand on the bench instead.
 
 ### Phase 2 additions
 
@@ -124,96 +156,207 @@ hardware as possible.
 |---|---|---|
 | JetKVM (on **stable** firmware) | HID and video tests; would have caught #415 | $70–90 |
 | Openterface Mini-KVM | Covers #417 once a helper exists; until then, a test that proves `usb` refuses it | $100–140 |
-| DSD Tech SH-UR04A 4-channel USB relay | Target power on/off test | $15–20 |
+| DSD Tech SH-UR04A 4-channel USB relay | Target power test | $15–20 |
 | Wi-Fi/LAN smart plug (Shelly or Kasa, both panio-supported) | Power-cycle a wedged KVM during recovery | $15–25 |
+| Second boot medium for bench1 (or a second SD card) | Disposable, re-imaged execution environment ([§5.6](#56-execution-state)) | $10–20 |
 
 ### Phase 3 additions
 
 | Item | Role | Rough cost |
 |---|---|---|
-| A second JetKVM, on the **dev** firmware channel | Early warning for upstream firmware changes ([§8](#8-firmware-channels)) | $70–90 |
+| A second JetKVM, on the **dev** firmware channel | Early warning for upstream firmware changes ([§9](#9-firmware-channels)) | $70–90 |
 | Cheap USB HDMI capture dongle (optional) | Second opinion on video tests | $15 |
 
-## 5. Triggers and security
+## 5. Security design
 
-### 5.1 Threat
+### 5.1 Threats
 
-On a public repo, any GitHub user can open a fork PR that edits a workflow to
-say `runs-on: [self-hosted, panio-hw]`. For a `pull_request` event, GitHub runs
-the workflow file *from the PR*. Without controls, that is arbitrary code on a
-machine sitting on your LAN with USB access to KVMs.
+1. **Untrusted workflows reaching the bench.** On a public repo, a fork PR
+   can ask for a self-hosted runner label. Addressed by putting the runner on
+   a private repo that only you maintain (§5.2).
+2. **Bypassing admission on the box.** A job runs as the runner user. Anything
+   that user can write (hook script, runner `.env`, service files, the runner
+   binary itself), a job can change for the *next* job (§5.4).
+3. **Reaching the home network from the bench.** Code on bench1 is LAN-adjacent
+   to everything else you own (§5.5).
+4. **Untrusted code inside a trusted workflow.** Even a reviewed `main` commit
+   runs build scripts (`build.rs`), dependencies and freshly built binaries
+   that nobody has audited line by line. A trusted workflow doesn't make them
+   trustworthy (§5.7).
+5. **Leaking lab details.** Logs, artifacts and issues can expose device
+   paths, serials and addresses ([AGENTS.md: never commit private
+   infrastructure](https://github.com/curtisgalloway/panio/blob/main/AGENTS.md#never-commit-private-infrastructure)) (§5.8).
 
-### 5.2 Triggers the hardware workflow accepts
+### 5.2 Where authority lives
 
-`.github/workflows/hardware.yml` (the only workflow that may name the runner
-label) uses exactly these triggers, and never `pull_request` or
-`pull_request_target`:
-
-| Trigger | When | Who can cause it |
+| | Public `panio` | Private `panio-hardware-ci` |
 |---|---|---|
-| `schedule` | Nightly, for example 03:17 Pacific | Runs the workflow from `main` only |
-| `workflow_dispatch` | On demand, on `main` or any branch **in this repo** (for example a PR branch like #428's, before merging) | Only users with write access; forks cannot dispatch here |
-| `push` to tags `v*` | When a release tag is created by `cut-release.yml` | Write access only |
+| Self-hosted runner | **None.** Nothing to target | Registered here only, label `panio-hw` |
+| Hardware workflows | None | `hardware.yml` (bench), later `reporter.yml` and `watchdog.yml` (hosted) |
+| Triggers | n/a | `schedule` (nightly) and `workflow_dispatch`. **No** `push`, `pull_request`, `pull_request_target`, `workflow_run` on the bench workflow |
+| Who can change workflows or policy | n/a | You only; no other collaborators |
+| What it takes from the other repo | n/a | A read-only clone of public panio at one approved commit |
+| Credentials | Unchanged | Bench jobs get `GITHUB_TOKEN` with `contents: read` on the **private** repo only. No token that can touch public panio ever reaches the bench |
 
-A fork PR can never trigger any of these. Testing a PR on hardware is a
-deliberate act: dispatch the workflow on that PR's branch.
+**Approved source commit.** In phase 1 a candidate is a 40-hex commit that is
+reachable from public `main` (`git merge-base --is-ancestor <sha>
+origin/main` in a fresh clone). The nightly run uses `main`'s current head;
+a manual dispatch takes `sha` as an input and is held to the same rule. So
+only code that has already gone through review on public panio runs on the
+bench.
 
-One gotcha: GitHub only offers **Run workflow** for a workflow that already
-exists on the default branch, so `hardware.yml` has to merge to `main` before
-it can be dispatched on a PR branch.
+**Release tags (SEC-10).** Revision 1 mixed a tag-only `push` trigger with a
+hook that also allowed `main` pushes. Both are gone: the bench workflow has no
+`push` trigger. For later: tags here come from `cut-release.yml`, which pushes
+with the `RELEASE_TAG_DEPLOY_KEY` deploy key. A deploy-key push *does* trigger
+workflows, unlike a push made with the ordinary `GITHUB_TOKEN`, which doesn't.
+That only matters inside public panio, though; tags can't trigger anything in
+the private repo. A tag-driven hardware run would be designed as "the private
+repo's nightly also tests the newest `v*` tag", with the same ancestry rule,
+and only after phase 3 ([§11](#11-decisions-and-open-questions)).
 
-### 5.3 Layers of defense
+### 5.3 Admission policy (job-started hook)
 
-Each layer alone would stop the common case. Together, a fork PR has to defeat
-all of them, and the last two live where a PR cannot reach.
+The runner runs the script named by `ACTIONS_RUNNER_HOOK_JOB_STARTED` before
+every job, and a non-zero exit fails the job before any workflow step runs.
+The hook **denies by default**. A missing or malformed variable is a refusal.
+It admits a job only if all of the following hold:
 
-1. **Fork PR approval setting** (the first step above). Fork PR workflows
-   don't run until you click approve. Rule for yourself: never approve a fork
-   run whose diff touches `.github/`.
-2. **Unique runner label.** The runner carries the label `panio-hw`. Jobs
-   asking for `ubuntu-latest` can never land on it.
-3. **A lint in regular CI** (`scripts/ci-hw-guard.sh`, run by an always-run
-   job in `ci.yml`). It fails if any workflow other than `hardware.yml`
-   mentions `self-hosted` or `panio-hw`, or if `hardware.yml` has any trigger
-   besides the three above. This catches *our own* mistakes, such as a future
-   edit adding `pull_request`.
-4. **Job-started hook on the runner box** (the real backstop). The Actions
-   runner runs the script named by `ACTIONS_RUNNER_HOOK_JOB_STARTED` before
-   every job; a non-zero exit fails the job before any workflow step runs. The
-   script lives on bench1, outside the repo, so no PR can change it. It
-   refuses the job unless **all** of these hold:
-   - `GITHUB_REPOSITORY` is `curtisgalloway/panio`
-   - `GITHUB_EVENT_NAME` is `schedule`, `workflow_dispatch`, or `push`
-   - for `push`: `GITHUB_REF` is `refs/heads/main` or `refs/tags/v*`
-   - for `workflow_dispatch`: `GITHUB_TRIGGERING_ACTOR` is `curtisgalloway`
-   - `GITHUB_WORKFLOW_REF` names `.github/workflows/hardware.yml`
+| Check | Required value |
+|---|---|
+| `GITHUB_REPOSITORY` | `curtisgalloway/panio-hardware-ci` |
+| `GITHUB_WORKFLOW_REF` | `curtisgalloway/panio-hardware-ci/.github/workflows/hardware.yml@refs/heads/main` (exact) |
+| `GITHUB_EVENT_NAME` | `schedule` or `workflow_dispatch` |
+| `GITHUB_REF` | `refs/heads/main` |
+| `GITHUB_ACTOR` and `GITHUB_TRIGGERING_ACTOR` | both `curtisgalloway`. This covers re-runs, where the triggering actor is whoever clicked **Re-run** |
+| `GITHUB_SHA` (the private repo's workflow commit) | on the policy's list of reviewed workflow commits, or reachable from the private `main` |
+| Candidate SHA (from `inputs.sha` in `$GITHUB_EVENT_PATH`, or public `main` for `schedule`) | 40 hex characters and an ancestor of public `main`, checked in a fresh clone the hook makes itself |
+| Quarantine flag | absent ([§5.6](#56-execution-state)) |
+| Lease | the bench lease is free and acquired by the hook ([§7](#7-leases-cancellation-and-cleanup)) |
 
-   It logs each refusal to a local file so a probe is visible.
-5. **Least privilege on the box.**
-   - The runner runs as an unprivileged `panio-ci` user with no sudo. USB
-     access comes from udev rules and the `dialout`/`plugdev` groups, not root.
-   - `hardware.yml` sets `permissions: contents: read`. No repository secrets
-     are used; device credentials (the JetKVM password) live in a file on
-     bench1 readable only by `panio-ci`.
-   - bench1 sits on its own LAN segment or VLAN. Its firewall allows outbound
-     HTTPS (GitHub) and the lab devices, and nothing else on the home network.
-   - The runner is configured `--ephemeral` and re-registered by a small
-     systemd service after each job, so no workspace state survives between
-     jobs. (Phase 2. In phase 1, a plain persistent runner is fine.)
+Each refusal goes to a root-owned log (via the quarantine helper, below), so
+probes leave a trace the job can't erase.
 
-### 5.4 Public logs
+### 5.4 Protecting the hook and the service (fail closed)
 
-Workflow logs and artifacts on a public repo are public. The
-[Never commit private infrastructure](https://github.com/curtisgalloway/panio/blob/main/AGENTS.md#never-commit-private-infrastructure)
-rule applies to everything a hardware job prints:
+A hook that merely lives outside the checkout isn't protected: the runner user
+could rewrite it, or drop the variable that names it, between jobs. So:
 
-- The lab's real device paths, serials, addresses and hostnames stay in the
-  config under `~panio-ci/lab/` and are referred to by role (`jetkvm-stable`,
-  `mux`, `witness`).
-- Test scripts print roles, never raw paths, and register any value read
-  from config with `::add-mask::` before using it.
-- Screenshots are only uploaded when they show the witness's test pattern,
-  which contains nothing but a nonce.
+- **Ownership.** The hook, its policy file, and every parent directory are
+  owned by `root` and not writable by `panio-ci`. So are the runner's install
+  directory and its config files, except the `_work` and `_diag` directories
+  the listener needs to write.
+- **No self-update.** Register with `--disableupdate`, so the runner never
+  rewrites its own binaries. Upgrades are a manual step you do as root.
+- **Environment from systemd, not `.env`.** `ACTIONS_RUNNER_HOOK_JOB_STARTED`
+  and `ACTIONS_RUNNER_HOOK_JOB_COMPLETED` are set with `Environment=` in a
+  root-owned systemd unit. The runner's own `.env` file is root-owned and
+  empty.
+- **Startup checks.** The unit's `ExecStartPre=+/usr/local/sbin/bench-precheck`
+  runs as root before the listener starts and refuses to start it unless:
+  the hook and policy match SHA-256 hashes pinned in a root-owned file; the
+  ownership and modes above hold; the quarantine flag is absent; and the
+  isolation probes in §5.5 fail as they should. A missing or altered hook
+  therefore means no listener, not a listener without a hook.
+- **One root command.** `panio-ci` has no general sudo. One sudoers line lets
+  it run `/usr/local/sbin/bench-quarantine <reason>`, which only writes the
+  root-owned quarantine flag and log, and stops the runner service. Only you
+  clear the flag, by hand.
+
+**Residual risk:** the listener's registration credentials (`.credentials`,
+`.runner`) have to be readable by `panio-ci`, so a malicious job could copy
+them. With a private repo that only lets someone receive *this repo's* jobs,
+which carry no secrets. Phase 2's just-in-time, single-use registration
+removes even that ([§5.6](#56-execution-state)).
+
+### 5.5 Network containment
+
+Containment is in phase 1 and comes **before** registration:
+
+- bench1, the witness and the lab devices sit on their own segment: a VLAN, or
+  behind a travel router with its own NAT and firewall.
+- **Upstream (router) rules:** the segment can't open connections to the home
+  LAN or to any device's management interface, over IPv4 or IPv6. The simplest
+  dependable choice is turning IPv6 off on the segment; if it stays on, block
+  ULA (`fc00::/7`) and the home prefix too.
+- **Host rules on bench1 (nftables, root-owned):** outbound is allowed only to
+  the lab subnet, DNS to the segment's resolver, and TCP 443 to addresses that
+  aren't private, link-local or ULA. Everything else is dropped in both IPv4
+  and IPv6. The GitHub Actions runner only needs HTTPS out.
+- **Probes:** `bench-precheck` tries a short TCP connect to a configured
+  trusted-LAN address over IPv4 and over IPv6, plus the home router's
+  management port. Any success blocks the listener from starting.
+
+If this isolation isn't available, **don't register a runner.** Run the
+harness by hand on the bench instead; it's the same code without GitHub in the
+loop.
+
+### 5.6 Execution state
+
+"Ephemeral" registration means one job per registration, not a wiped machine.
+The design doesn't claim isolation it doesn't have:
+
+- **Phase 1 (persistent, reviewed code only).** One long-lived registration on
+  a dedicated, contained bench. The job-completed hook removes the workspace,
+  kills leftover `panio-ci` processes, and returns hardware to a known state
+  ([§7](#7-leases-cancellation-and-cleanup)). The job-started hook then checks
+  for *unexpected* state: files in `panio-ci`'s home outside an allowlist,
+  surviving processes, new cron/systemd user units, changed `authorized_keys`,
+  a non-empty workspace. Any of these runs `bench-quarantine`, so the next job
+  can't run. This is acceptable only because phase 1 runs nothing but commits
+  already reviewed on public `main`.
+- **Phase 2 (disposable).** Each job gets genuinely fresh execution state: a
+  just-in-time, single-use runner registration inside a throwaway VM or
+  container whose root filesystem is recreated from a known image for every
+  job (or, on a Pi, an overlay root that is discarded on reboot). USB devices
+  are passed through per job. Only then does the doc call the runner
+  ephemeral.
+
+### 5.7 Trusted harness, untrusted candidate
+
+- **The harness and verdict logic live in the private repo** (trusted control
+  plane): test sequencing, nonce generation, witness queries, pass/fail rules
+  and summaries. Nothing from the candidate checkout (scripts, test fixtures,
+  `scripts/hw/` in public panio) decides a verdict.
+- **The candidate only supplies binaries.** The workflow builds panio and the
+  needed helpers from the approved SHA with `cargo build --locked`, as
+  `panio-ci`, and the harness invokes those binaries as the thing under test.
+- **Witness SSH is narrow.** The witness's `authorized_keys` entry for bench1
+  uses `restrict,command="/usr/local/bin/witness-agent"`. The agent accepts a
+  fixed set of verbs (`drive-list`, `nonce-read`, `nonce-write <hex>`,
+  `drive-flush`, later `evdev-capture <seconds>`), validates their arguments,
+  and does nothing else. No shell, no forwarding.
+
+**Residual risk, stated plainly:** the candidate's build scripts and binaries
+run on the same host, as the same user, as the harness. A malicious candidate
+could tamper with the harness's process or results while the job runs.
+Independent *physical* observation (the witness) protects against panio being
+**wrong**. It doesn't protect against panio being **hostile**. Phase 1
+accepts this because candidates are reviewed `main` commits. Phase 2's
+disposable environment limits how long such tampering can persist, not whether
+it can happen in that job. Fully separating them (harness on a second machine
+that drives a candidate-only box) is noted in [§11](#11-decisions-and-open-questions)
+and not planned.
+
+### 5.8 Results, logs and publication
+
+- **Masking isn't a confidentiality boundary.** Raw logs and artifacts stay in
+  the private repository, visible only to you.
+- **Phase 1: publishing is manual.** The run summary is a short structured
+  table (test, verdict, device role, firmware version) with no paths, serials
+  or addresses. You decide what, if anything, goes to public panio.
+- **Phase 2: a separate hosted reporter.** `reporter.yml` runs on
+  `ubuntu-latest` in the private repo after a bench run completes. It reads
+  only the sanitized summary artifact, validates it against a fixed JSON
+  schema (bounded size, enumerated test names and verdicts, no free-text
+  fields), and files or updates issues on public panio using **fixed
+  templates**, with deduplication by a stable key and a rate limit (for
+  example at most three issue writes per run).
+  - It authenticates as a **GitHub App** installed only on public panio with
+    **Issues: write** and nothing else (no contents, workflows or
+    administration). Its private key is a secret in the private repo,
+    referenced only by `reporter.yml`, which never runs on the self-hosted
+    runner. The bench never sees it.
 
 ## 6. How each test verifies the outcome
 
@@ -221,156 +364,241 @@ Rules every test follows:
 
 - **Act through panio, check through the witness.** Never use panio to check
   panio's own work.
-- **Use a fresh nonce per run** (a random 16-hex string), so a stale result
-  from an earlier run can't pass.
-- **Check both directions** where there are two (attach-target *and*
-  attach-host).
-- **One test, one script** under `scripts/hw/`, exit 0 for pass, 1 for product
-  failure, 77 for "device not available" (the automake skip convention, see
-  [§7](#7-flaky-and-offline-devices)).
+- **Fresh nonce per run** (128 random bits, hex), so a stale result from an
+  earlier run can't pass.
+- **Both directions** wherever there are two.
+- **Four outcomes:** `pass`, `fail` (product failure), `infra-error` (bench or
+  harness problem), and `skip` (device not available). Results are reported
+  per test, in the harness's own structured output.
 
-| Test | Phase | Action through panio | Independent check | Would it catch |
+### Phase 1: USB round trip (would have caught #417)
+
+1. **Setup.** Lease held. Mux on the host side (verified as in step 4). The CI
+   drive (filesystem label `PANIOCI`) is visible on bench1 and not on the
+   witness.
+2. bench1 writes `nonce1` to a file on the drive, then **flushes and
+   unmounts** it (`sync`, `umount`) before switching.
+3. `panio usb attach-target`. Record its exit code and output.
+4. **Independent checks:**
+   - the drive **disappears** from bench1 (`lsblk` by label) within 10 s;
+   - the drive **appears** on the witness (`witness-agent drive-list`) within
+     15 s;
+   - `witness-agent nonce-read` returns exactly `nonce1`;
+   - `panio usb state` reads `target`.
+5. The witness writes `nonce2` and flushes (`nonce-write`, `drive-flush`).
+6. `panio usb attach-host`, then the mirror image of step 4: gone from the
+   witness, present on bench1, file holds exactly `nonce2`, `usb state` reads
+   `host`.
+
+Verdict rules:
+
+| Situation | Verdict |
+|---|---|
+| Every check in both directions holds | pass |
+| panio exits 0 but the drive didn't move, or `usb state` disagrees with the witness (N07) | **fail**, even though every command "succeeded" |
+| Old nonce, missing file, or only one direction completed (N08) | fail; never pass |
+| Witness unreachable, or the drive isn't visible anywhere at setup | infra-error, not pass |
+
+### Later tests
+
+| Test | Phase | Action through panio | Independent check | Would catch |
 |---|---|---|---|---|
-| **USB round trip** | 1 | Write `nonce` to a file on the CI drive while it's host-side; `usb attach-target` | Witness: the drive appears in `lsblk` by its label within 15 s, and the file holds `nonce`. bench1: the drive is **gone** from its own `lsblk`. Then the witness writes `nonce2`; `usb attach-host`; bench1 reads `nonce2` and the witness no longer sees the drive | #417 |
-| **USB state readback** | 1 | `usb state` after each switch | Must agree with what the witness saw; a disagreement is a failure even if both commands exited 0 | #417 |
-| **Unsupported device refuses** | 2 | `usb attach-target` on the Mini-KVM, while no helper supports it | Must exit non-zero with an "unsupported" error; exit 0 fails the test. Replaced by the round trip once a helper lands | #417 |
-| **Keyboard** | 2 | `hid send type <nonce>` via JetKVM | Witness runs a small evdev logger (python-evdev, as a systemd unit) on the KVM's HID gadget and reports the key sequence; it must spell `nonce` | — |
-| **Mouse move** | 2 | `hid send move` and `hid send moveabs` | Witness evdev log shows `REL_X`/`REL_Y` (or `ABS_*`) events with the right signs | — |
-| **Scroll** | 2 | `hid send scroll -200`, `scroll 3`, `scroll 0` | Witness evdev log shows `REL_WHEEL` events with the right sign and the right total, and nothing for 0 | #415 |
-| **Power** | 2 | Relay off, then on | Witness stops answering ping within 10 s of off; SSH answers within a set boot budget (for example 90 s) after on | — |
-| **Video** | 3 | `video` capture plus OCR | Witness shows `nonce` in a large font on its console (`setfont` + `tty1`); OCR of the capture must find it | — |
-| **Firmware version recorded** | 2 | `panio … doctor` / JetKVM `/version` | Not a pass/fail check; written to the run summary ([§8](#8-firmware-channels)) | — |
+| **Unsupported device refuses** | 2 | `usb attach-target` on the Mini-KVM while no helper supports it | Must exit non-zero with an "unsupported" error. Exit 0 is a fail. Replaced by the round trip once a helper lands | #417 |
+| **Keyboard** | 2 | `hid send type <nonce>` via JetKVM | `witness-agent evdev-capture` on the KVM's HID gadget; key sequence must spell `nonce` | — |
+| **Mouse move** | 2 | `hid send move` and `hid send moveabs` | evdev shows `REL_X`/`REL_Y` (or `ABS_*`) with the right signs | — |
+| **Scroll** | 2 | `hid send scroll -200`, `scroll 3`, `scroll 0` | evdev shows `REL_WHEEL` with the right sign and total, and nothing for 0 | #415 |
+| **Power** | 2 | Relay off, then on | Requires **two** signals, because ping loss alone isn't proof of power loss: the witness stops answering **and** a hardware signal agrees (the relay helper's readback, plus the witness's USB gadget or HDMI signal dropping on the KVM). After power-on, the witness's `/proc/sys/kernel/random/boot_id` must have changed | — |
+| **Video** | 3 | `video` capture plus OCR | Witness shows `nonce` in a large font on `tty1`; OCR of the capture must find it | — |
+| **Firmware recorded** | 2 | `doctor` / JetKVM `/version` | Not a verdict; written to the summary ([§9](#9-firmware-channels)) | — |
 
-Each job takes a [panio lease](../leases.md) on the target first, so a nightly
-run can't collide with you using the bench by hand, and a hand session can't
-corrupt a run. If the lease is held, the job reports "bench busy" (exit 77)
-instead of failing.
+## 7. Leases, cancellation and cleanup
 
-## 7. Flaky and offline devices
+All phase 1.
+
+- **Exclusive lease.** The job-started hook acquires a [panio
+  lease](../leases.md) on the bench target before admitting the job, and
+  every actuation the harness performs carries the lease token. If the lease
+  is held (you are using the bench by hand), the job is refused with "bench
+  busy" and nothing is actuated (N10).
+- **Cleanup on every exit**, including cancellation and timeout: a workflow
+  step with `if: always()` and, as a backstop, the job-completed hook. Both run
+  the same idempotent cleanup:
+  1. flush and unmount the CI drive wherever it is mounted;
+  2. return the mux to the host side;
+  3. (phase 2) restore target power to on and release any held HID keys;
+  4. **verify** the result with the same independent checks as the test;
+  5. release the lease.
+
+  If verification fails or can't run, cleanup runs `bench-quarantine`. The
+  bench then accepts no further jobs until you inspect it (N11).
+- **Timeouts.** Each test step has a hard timeout (default 120 s), and the job
+  has `timeout-minutes: 30`.
+
+## 8. Flaky and offline devices
 
 The goal is that a red result always means "panio is broken" and never "a cable
-wiggled".
+wiggled", and that a silent bench never looks green.
 
-**Three outcomes, not two.** Each test script returns pass (0), fail (1) or
-skip (77). The job summary shows a table per device, with skips listed in
-their own column so they can't hide.
+- **Preflight.** The first step checks the witness and every device (`panio
+  doctor`, reachability). An unavailable device marks its tests `skip`.
+- **All-skipped is not green.** A run where every test for a device (or the
+  whole run) was skipped, or where the witness was absent, is reported as
+  **missing coverage** and fails the workflow (N09).
+- **Bounded recovery (phase 2).** On a failure or a non-responsive device:
+  power-cycle that device once with its smart plug or relay, wait up to 90 s,
+  and rerun that one test once. A pass on the retry is reported as
+  **flaky**, never as pass. A second failure is a fail. There are no further
+  retries.
+- **Escalation (phase 2, through the reporter):** a device skipped on 2
+  consecutive nightly runs → issue `lab: <role> offline`; a test flaky 3 times
+  in 7 days → issue `lab: <test> flaky`. Phase 1 shows these in the summary
+  only.
+- **Runner offline or stuck (phase 2).** `watchdog.yml` runs on
+  `ubuntu-latest` in the private repo every 12 hours. It uses `gh run list
+  --workflow hardware.yml` and fails (which emails you) if there's been no
+  **successful, not-all-skipped** run in 36 hours. That covers an offline
+  runner, a job stuck in the queue (GitHub cancels queued jobs after 24 h),
+  cancelled runs and quarantine (N17). Separately, GitHub removes a
+  persistent self-hosted runner that has been offline for 14 days.
 
-**Preflight.** The first step pings every device and runs `panio doctor`. A
-device that is offline marks its tests skip, not fail, and the run continues
-with what's left.
+## 9. Firmware channels
 
-**One recovery, one retry.** If a test fails or a device doesn't respond:
+Panio has to work with firmware that has already shipped *and* get early
+warning about firmware that's coming. #415 was the second kind.
 
-1. Power-cycle that device with its smart plug (KVMs) or relay (target), and
-   wait for it to come back (up to 90 s).
-2. Rerun that one test once.
-3. If it now passes, it's reported as **flaky**, not pass. If it fails again,
-   it's a fail.
-
-**Escalation, so problems don't rot.**
-
-- A device skipped on **2 consecutive nightly runs** → the workflow opens (or
-  updates) an issue titled `lab: <role> offline`, labelled `lab`.
-- A test reported flaky **3 times in 7 days** → an issue `lab: <test> flaky`.
-- Neither blocks anything; they show up in the weekly triage.
-
-**Runner offline.** If bench1 is down, the nightly job just sits queued (and
-GitHub cancels it after 24 h). A tiny watchdog job on `ubuntu-latest`, on its
-own schedule, runs `gh run list --workflow hardware.yml` and fails if there's
-been no completed hardware run in 36 h, which emails you. Separately, GitHub
-removes a self-hosted runner that has been offline for 14 days; if that
-happens, re-register it.
-
-**Timeouts.** Every test has a hard timeout (default 120 s) and the job has
-`timeout-minutes: 30`, so a wedged USB device can't hold the runner forever.
-
-## 8. Firmware channels
-
-Panio has to work with firmware that's already shipped *and* get early warning
-about firmware that's coming. #415 was exactly that: a dev-channel change
-that hadn't shipped yet.
-
-| Device | Channel | Policy | Failure means |
+| Device | Channel | Policy | A failure means |
 |---|---|---|---|
-| `jetkvm-stable` | Latest stable release, updated by hand after reading the release notes | Blocking for releases | A real regression in panio, or a stable firmware break that needs a fix before the next release |
-| `jetkvm-dev` (phase 3) | JetKVM's dev update channel, auto-updating | Non-blocking: shows as a warning in the summary | An upcoming break. The workflow opens an issue labelled `firmware-dev`, with the old and new firmware versions |
-| Openterface KVM-Go / Mini-KVM | Pinned at whatever version is installed; updated by hand | Blocking | Panio regression (firmware is pinned) |
+| `jetkvm-stable` | Latest stable release, updated by hand after reading the release notes | Counts toward the advisory release check | A panio regression, or a stable firmware break that needs a fix before the next release |
+| `jetkvm-dev` (phase 3) | JetKVM's dev update channel, auto-updating | Non-blocking; a warning in the summary | An upcoming break; the reporter files `firmware-dev` with old and new versions |
+| Openterface KVM-Go / Mini-KVM | Pinned at the installed version; updated by hand | Counts toward the advisory release check | A panio regression (firmware is pinned) |
 
-Every run writes the firmware version of every device into its summary. When a
-test goes from pass to fail, the summary shows whether firmware changed since
-the last pass, which tells you immediately whether to look at panio's diff or
-the device's changelog.
+Every run records every device's firmware version. When a test goes from pass
+to fail, the summary says whether firmware changed since the last pass, which
+tells you whether to look at panio's diff or the device's changelog.
 
-Until there's a second JetKVM, the one unit stays on stable. Upstream firmware
-changes keep being caught the way #415 was, by reading upstream changes during
-the weekly triage.
+## 10. Phased rollout
 
-## 9. Phased rollout
+Estimates are your hands-on time. "Claude" steps are ones a cloud session can
+write as a PR for you to review; the review is included in the estimate. Each
+step lists the acceptance gates ([§13](#13-negative-acceptance-gates)) it must
+pass before the next step starts.
 
-Estimates are hands-on time for you. "Claude" steps are ones a cloud session
-can write as a PR for you to review (review time is included in the estimate).
+### Phase 1: one real test, contained (about 4–8 hours, provisional; $0–25)
 
-### Phase 1: one real test, on hardware you have (about 3 hours, $0–25)
+The range is wide because network isolation depends on what your router can
+do.
 
-Goal: the USB round trip test runs nightly and on demand, and the runner can't
-be used by a fork.
+| # | Step | Who | Time | Gates |
+|---|---|---|---|---|
+| 1.1 | Create private `panio-hardware-ci`; set read-only workflow permissions (the [first step](#start-here-the-first-step-about-10-minutes-today)). No runner | You | 10 min | — |
+| 1.2 | Add `hardware.yml` (dispatch + schedule, **schedule commented out**), the harness, the admission policy file and the source-commit rule to the private repo | Claude drafts; you review and commit | 45 min | — |
+| 1.3 | Isolate the bench network: VLAN or travel router; upstream rules; IPv6 off or blocked | You | 1–3 h | N06 |
+| 1.4 | On bench1: create `panio-ci` (no sudo), udev rules for just the mux and drive, nftables egress rules | You (Claude drafts the files) | 45 min | N06 |
+| 1.5 | Witness: `witness-agent` behind a forced-command SSH key; CI drive labelled `PANIOCI` | You (Claude drafts the agent) | 30 min | — |
+| 1.6 | Install the root-owned hook, `bench-precheck`, `bench-quarantine`, the systemd unit and lease/cleanup scripts. With the **listener stopped**, run the refusal tests locally by feeding the hook crafted environments and event files | You (Claude drafts all scripts and a local test runner) | 1 h | N02, N03, N04, N05, N14 |
+| 1.7 | Register the runner to the **private repo only** with `--disableupdate` and label `panio-hw`; start it while you watch. Run the negative admission tests from GitHub (wrong workflow, wrong actor on re-run, non-`main` SHA) before any candidate code | You | 45 min | N01, N03, N04 |
+| 1.8 | First real dispatch on a recent `main` commit; read the summary. Then the negative outcome tests: run once with the mux helper replaced by a stub that exits 0 without switching, once with the witness unplugged, once with the lease held, and once cancelled mid-switch | You | 1 h | N07, N08, N09, N10, N11, N13 |
+| 1.9 | Uncomment the nightly schedule, only once every gate above passed | You | 5 min | all phase 1 gates |
 
-| # | Step | Who | Time |
-|---|---|---|---|
-| 1.1 | Set fork PR approval to **all external contributors** (the [first step](#start-here-the-first-step-about-5-minutes-today)) | You | 5 min |
-| 1.2 | Pick the runner box (an existing Linux machine or Pi is fine) and the witness (any spare Linux box), and cable the USB mux and witness LAN link | You | 30 min |
-| 1.3 | On the runner box: create user `panio-ci`, install the Actions runner (**Settings → Actions → Runners → New self-hosted runner**), give it the label `panio-hw`, install it as a service | You | 20 min |
-| 1.4 | Install the job-started hook from [§5.3](#53-layers-of-defense) and test that it refuses: dispatch a throwaway workflow from a different workflow file and confirm the hook rejects it | Claude writes the script; you install it | 25 min |
-| 1.5 | Witness setup: SSH key from `panio-ci@bench1`, a CI-only flash drive labelled `PANIOCI` | You | 20 min |
-| 1.6 | `scripts/hw/usb-roundtrip.sh` and `scripts/hw/lib.sh` (nonce, witness SSH, skip/fail codes) | Claude | 20 min review |
-| 1.7 | `.github/workflows/hardware.yml` (dispatch + nightly; builds `cli` and the mux helper from the commit under test) and `scripts/ci-hw-guard.sh` with its `ci.yml` job | Claude | 20 min review |
-| 1.8 | Merge, then **Run workflow** by hand once and read the summary | You | 15 min |
-| 1.9 | Deliberately break it: unplug the mux and confirm the run reports skip, not pass | You | 10 min |
+**Stop rule:** any failed security gate, or uncertain hardware state after
+cleanup, means stop the listener and quarantine until it's understood.
 
-**Done when:** a manual run passes, an unplugged mux shows as skip, and a test
-dispatch from a non-hardware workflow is refused by the hook.
+**Done when:** a manual run on `main` passes, every phase 1 gate has been
+exercised and recorded, and the nightly schedule is on.
 
-### Phase 2: JetKVM, power, and reliability (about 6–8 hours over a week, $100–250)
+### Phase 2: JetKVM, power, reporting, disposable execution (about 8–12 hours over two weeks, $110–270)
 
-| # | Step | Who | Time |
-|---|---|---|---|
-| 2.1 | Buy and cable a JetKVM (stable firmware), relay, and smart plug | You | 1 h |
-| 2.2 | Witness evdev logger as a systemd unit, plus its install script | Claude | 30 min review, 20 min install |
-| 2.3 | Keyboard, mouse and scroll tests | Claude | 30 min review |
-| 2.4 | Power test | Claude | 15 min review |
-| 2.5 | Preflight, recovery-and-retry, flaky reporting, firmware versions in the summary | Claude | 45 min review |
-| 2.6 | Auto-filed `lab:` issues and the hosted watchdog job | Claude | 30 min review |
-| 2.7 | Lease around each run | Claude | 15 min review |
-| 2.8 | Ephemeral runner + re-register service; firewall/VLAN for bench1 | You (Claude drafts the unit file and rules) | 1.5 h |
-| 2.9 | Mini-KVM "refuses cleanly" test (while #417 is open) | Claude | 15 min review |
-| 2.10 | Run PR #428's branch on the real JetKVM via dispatch (stable firmware exercises the old JSON-RPC path, so this proves no regression; phase 3.5 tests the new path) | You | 15 min |
+| # | Step | Who | Time | Gates |
+|---|---|---|---|---|
+| 2.1 | Buy and cable a JetKVM (stable), relay and smart plug; extend udev rules and the lab config | You | 1 h | — |
+| 2.2 | `witness-agent evdev-capture`; keyboard, mouse and scroll tests | Claude | 45 min review, 20 min install | — |
+| 2.3 | Power test with two independent signals | Claude | 20 min review | — |
+| 2.4 | Bounded recovery, flaky verdict, firmware versions in the summary | Claude | 30 min review | — |
+| 2.5 | Disposable execution: just-in-time registration in a VM/container (or overlay root) rebuilt per job | You (Claude drafts) | 2–4 h | N14, N18 |
+| 2.6 | GitHub App (Issues: write, public panio only); `reporter.yml` with schema validation, templates, dedupe and rate limit | You create the App (20 min); Claude writes the workflow | 1 h | N12, N15, N16 |
+| 2.7 | `watchdog.yml` | Claude | 15 min review | N17 |
+| 2.8 | Mini-KVM "refuses cleanly" test while #417 is open | Claude | 15 min review | — |
 
-**Done when:** a week of nightly runs is green or every red is a real bug, and
-#428 has been run on a real JetKVM.
-
-### Phase 3: firmware channels and release check (about 4–5 hours, $70–110)
+### Phase 3: firmware channels, video, advisory release check (about 4–5 hours, $70–110)
 
 | # | Step | Who | Time |
 |---|---|---|---|
 | 3.1 | Second JetKVM on the dev channel | You | 45 min |
-| 3.2 | Device matrix in `hardware.yml` with blocking/non-blocking per channel; `firmware-dev` issue filing | Claude | 30 min review |
-| 3.3 | Run on `v*` tag push; add "hardware run green on this SHA" to the release checklist in `RELEASE-TRAIN.md` (advisory, not a hard gate in `release.yml`) | Claude | 20 min review |
-| 3.4 | Video + OCR test | Claude | 30 min review, 30 min tuning |
-| 3.5 | Re-test #428 on the dev-channel JetKVM, which exercises the new binary `hidrpc` path for real | You | 15 min |
+| 3.2 | Device matrix with per-channel policy; `firmware-dev` issues via the reporter | Claude | 30 min review |
+| 3.3 | Video + OCR test | Claude | 30 min review, 30 min tuning |
+| 3.4 | Advisory release check: `RELEASE-TRAIN.md` gains "latest nightly on the release commit is green on stable devices". Not a gate in `release.yml` | Claude | 20 min review |
+| 3.5 | Once #428 merges, confirm the dev-channel JetKVM exercises the new binary `hidrpc` scroll path | You | 15 min |
 
 ### Later, when needed
 
 - Mini-KVM round trip, once a helper implements the mux (#417).
-- Netboot (`netbootd`) test: witness netboots a known image, reports its kernel version.
-- Serial console test through `serialcap`.
+- Pre-merge (PR branch) and tag-triggered runs, after their admission is
+  designed ([§11](#11-decisions-and-open-questions)).
+- Netboot (`netbootd`) and serial console (`serialcap`) tests.
 
-## 10. Decisions and open questions
+## 11. Decisions and open questions
 
 | # | Question | Proposed answer |
 |---|---|---|
-| D1 | Run hardware tests on every PR? | **No.** Nightly, on release tags, and on demand. A PR that touches a hardware helper can be dispatched by hand. |
-| D2 | Make the hardware run a hard release gate in `release.yml`? | **Not yet.** Advisory first (phase 3.3); revisit after a month of stable nightly runs. A flaky bench shouldn't block a release. |
-| D3 | Pi or x86 for the runner? | Either. A Pi 5 is cheaper and quieter; an N100 mini PC builds Rust roughly 2–3x faster. Phase 1 uses whatever is already on hand. |
-| D4 | Build panio on the runner, or download the CI artifact? | **Build on the runner** in phase 1 (simplest, about 5–10 min on a Pi 5 with a warm cache). Revisit if nightly runs get slow. |
-| Q1 | Can the existing bench double as the runner, or does CI need its own? | Shared is fine with leases in place (§6). A dedicated bench avoids "bench busy" skips. Your call. |
+| D1 | Run hardware tests on every PR? | **No.** |
+| D2 | Where does the runner register? | **The private `panio-hardware-ci` repo only.** Public panio has no self-hosted runner. |
+| D3 | Which code runs in phase 1? | Only commits reachable from public `main`. |
+| D4 | Pre-merge testing (e.g. a PR branch like #428's)? | **Deferred.** Needs an admission design for unreviewed code: at minimum a disposable environment (phase 2), a per-run approval naming the exact SHA, and acceptance that hardware can be driven maliciously during that run. |
+| D5 | Tag-triggered runs? | **Deferred** to after phase 3, as "nightly also tests the newest `v*` tag" in the private repo (§5.2). |
+| D6 | Hard release gate in `release.yml`? | **No.** Advisory first; revisit after a month of stable nightly runs. |
+| D7 | Pi or x86 for bench1? | Either. A Pi 5 is cheaper and quieter; an N100 mini PC builds Rust about 2–3x faster and makes phase 2's VM-per-job easier. |
+| Q1 | Can your existing bench double as the CI bench? | Only if it can be moved onto the isolated segment and dedicated to `panio-ci`. Otherwise use a second box. |
 | Q2 | Which mux is the phase 1 device: KVM-Go or `usbtoggle`? | Whichever is already cabled. |
+| Q3 | Separate the harness host from the candidate host? | Not planned. It's the only way to defend verdicts against a hostile candidate (§5.7). Revisit if pre-merge testing (D4) is wanted. |
+
+## 12. Review findings and where they are addressed
+
+| Finding | Summary | Addressed in |
+|---|---|---|
+| SEC-01 | Hook installed after registration | §10 steps 1.6 → 1.7: protected hook and local refusal tests before registration; listener won't start without it (§5.4) |
+| SEC-02 | Network containment deferred | §5.5 and step 1.3, in phase 1 before any job; IPv4 and IPv6; "no isolation, no runner" |
+| SEC-03 | Approval, labels and lint aren't boundaries | §2, §5.2: runner moved to a private repo; public panio has none |
+| SEC-04 | Hook not immutable; admission too loose | §5.3 (full checks, deny by default, re-run actor, approved SHA), §5.4 (ownership, `--disableupdate`, systemd environment, hash-pinned precheck), §5.7 (candidate build is untrusted) |
+| SEC-05 | Ephemeral ≠ wiped | §5.6: persistent phase 1 limited to reviewed code with cleanup and quarantine; real per-job reset in phase 2 |
+| SEC-06 | Read-only token vs. automatic issues | §5.8: manual in phase 1; hosted reporter with an Issues-only GitHub App in phase 2; bench never holds it |
+| SEC-07 | Masking isn't confidentiality | §5.8: raw logs private; only sanitized structured summaries published |
+| SEC-08 | Leases and cancellation cleanup late | §7, in phase 1 |
+| SEC-09 | Harness in candidate checkout; shared host | §5.7: harness and verdicts in the private repo, restricted witness SSH, residual risk documented |
+| SEC-10 | Trigger and hook mismatch; tag credentials | §5.2: no `push` trigger; deploy-key note; tags deferred |
+
+## 13. Negative acceptance gates
+
+Each gate is a deliberate attempt to make the wrong thing happen, with the
+required result. "Step" is where in [§10](#10-phased-rollout) it is first
+exercised. All are proposed, not yet executed.
+
+| Gate | Attempt | Required result | Step |
+|---|---|---|---|
+| N01 | A public fork workflow asks for `panio-hw` | No runner assigned (public panio has none; the job sits queued) | 1.7 |
+| N02 | Hook missing or altered | Service refuses to start | 1.6 |
+| N03 | Wrong workflow, event or ref | Rejected before any workflow step | 1.6, 1.7 |
+| N04 | Candidate SHA not on public `main`, or a re-run by another actor | No candidate code executes | 1.6, 1.7 |
+| N05 | A job tries to modify the hook, policy, unit or runner files | Denied by file ownership | 1.6 |
+| N06 | Connect to the trusted LAN over IPv4 or IPv6 | Blocked | 1.3, 1.4 |
+| N07 | panio exits 0 without the USB moving | Product failure | 1.8 |
+| N08 | Stale nonce or incomplete round trip | Never a pass | 1.8 |
+| N09 | Witness absent, or everything skipped | Missing coverage; the run fails | 1.8 |
+| N10 | Lease already held | No device actuation | 1.8 |
+| N11 | Cancel during actuation | Verified cleanup, or quarantine | 1.8 |
+| N12 | Bench token tries to change a public panio issue | Denied (token is private-repo, read-only) | 1.8, 2.6 |
+| N13 | Sensitive diagnostic data in output | Stays in private logs; not in the published summary | 1.8 |
+| N14 | Unexpected persistent state between jobs | Next execution blocked (quarantine) | 1.6, 2.5 |
+| N15 | Malformed, oversized or replayed reporter input | Rejected or deduplicated; no command execution | 2.6 |
+| N16 | Reporter credential tries contents, workflow or admin changes | Denied by App permissions | 2.6 |
+| N17 | Runner offline, queued, cancelled, or an all-skipped run | Watchdog reports missing successful coverage | 2.7 |
+| N18 | State planted in the disposable environment | Absent from the next job; otherwise quarantine | 2.5 |
+
+## 14. References
+
+- [Adding self-hosted runners](https://docs.github.com/en/actions/how-tos/manage-runners/self-hosted-runners/add-runners)
+- [Self-hosted runners reference](https://docs.github.com/en/actions/reference/runners/self-hosted-runners)
+- [Managing GitHub Actions settings for a repository](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/enabling-features-for-your-repository/managing-github-actions-settings-for-a-repository)
+- [Running scripts before or after a job](https://docs.github.com/en/actions/how-tos/manage-runners/self-hosted-runners/run-scripts)
+- [Variables reference](https://docs.github.com/en/actions/reference/workflows-and-actions/variables)
+- [`GITHUB_TOKEN`](https://docs.github.com/en/actions/concepts/security/github_token)
+- [Create an issue (REST)](https://docs.github.com/en/rest/issues/issues#create-an-issue)
