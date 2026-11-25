@@ -47,10 +47,9 @@ follows with that model in mind.
 
 The private control repository
 [`curtisgalloway/panio-hardware-ci`](https://github.com/curtisgalloway/panio-hardware-ci)
-exists (created November 25, 2026). The next small step (about 1 minute) is to
-open its **Settings → Actions → General → Workflow permissions**, select
-**Read repository contents and packages permissions**, and save. After that,
-phase 1 continues with step 1.2 in [§10](#10-phased-rollout).
+exists (created November 25, 2026), with read-only workflow permissions. The
+next step is 1.2 in [§10](#10-phased-rollout): drafting the bench workflow,
+harness and approval manifest in that repository.
 
 ---
 
@@ -603,7 +602,7 @@ The range is wide because isolation depends on what your router can do.
 
 | # | Step | Who | Time | Gates |
 |---|---|---|---|---|
-| 1.1 | Private `panio-hardware-ci` created (**done** Nov 25); set read-only workflow permissions | You | 1 min | — |
+| 1.1 | Private `panio-hardware-ci` created with read-only workflow permissions (**done** Nov 25) | You | — | — |
 | 1.2 | Add `hardware.yml` (dispatch only, **no schedule yet**), the harness, `approved/candidates.txt` with one entry, and the admission policy | Claude drafts; you review and merge | 45 min | — |
 | 1.3 | Isolate the bench network with explicit upstream deny rules; set up the home-LAN and router canaries and confirm they answer from the home LAN | You | 1–3 h | N06 |
 | 1.4 | On bench1: create `panio-ci` and `panio-job`, udev rules (devices go to `panio-job` only), nftables rules | You (Claude drafts the files) | 45 min | N06 |
