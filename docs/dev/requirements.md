@@ -281,6 +281,7 @@ Open questions (not yet requirements):
 | M3 — Verify on hardware | FX-3/FX-5, LAVA-4, BOOT-1 | ☐ |
 | Security | §10 (SEC-*) | ☐ (to be defined) |
 | M4 — Full (deferred) | DEP-3, JTAG-2 | ⤵ |
+| HW-CI — Hardware-in-the-loop CI for panio itself | Self-hosted runner in a private control repo, outcome-checked hardware tests ([design](hardware-ci.md)) | ☐ (design) |
 
 ## 12. Open implementation questions
 

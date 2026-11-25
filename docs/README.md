@@ -92,6 +92,7 @@ Source: [`docs/dev/`](https://github.com/curtisgalloway/panio/tree/main/docs/dev
 | [Adding a power-control helper](dev/adding-power-helpers.md) | Hook contract, helper conventions, skeletons (Rust/Python), verification, PR checklist. |
 | [Agent discoverability & usage evals](dev/agent-evals.md) | No-hardware eval: can a naive agent find the right command from `--help` → `panio skill` → docs? |
 | [Serial agent benchmark](dev/serial-agent-benchmark.md) | Hardware eval: panio vs. improvising vs. `fx serial` on serial tasks. |
+| [Hardware-in-the-loop CI (design)](dev/hardware-ci.md) | Testing panio itself against real KVMs and muxes on a self-hosted runner owned by a private control repo: security, outcome checks, phased rollout. |
 
 ### Hardware-CI integration (in design)
 

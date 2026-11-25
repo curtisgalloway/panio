@@ -105,3 +105,4 @@ nav:
           - Integration design: dev/ci-integration/design.md
           - Related work: dev/ci-integration/related-work.md
           - Redfish provider: dev/ci-integration/redfish-provider.md
+      - Hardware-in-the-loop CI (design): dev/hardware-ci.md
