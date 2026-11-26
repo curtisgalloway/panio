@@ -140,6 +140,11 @@ type Link struct {
 	OnEvent func(method string, params json.RawMessage)
 
 	video *Video
+
+	// Wheel transport, chosen per session (see wheel.go). Guarded by hidMu.
+	hidMu       sync.Mutex
+	wheelBinary bool
+	hid         *hidChannel
 }
 
 // h264Codecs are the only video codecs offered: H.265 is never negotiated.
@@ -194,8 +199,17 @@ func (l *Link) Close() {
 	})
 }
 
-// Call sends one JSON-RPC request and waits for its response.
+// Call sends one JSON-RPC request and waits for its response. A
+// `wheelReport` goes over whichever wheel transport the firmware supports
+// (see wheel.go); every other method is plain JSON-RPC.
 func (l *Link) Call(ctx context.Context, method string, params any) (json.RawMessage, error) {
+	if method == "wheelReport" {
+		return l.wheelReport(ctx, params)
+	}
+	return l.call(ctx, method, params)
+}
+
+func (l *Link) call(ctx context.Context, method string, params any) (json.RawMessage, error) {
 	select {
 	case <-l.done:
 		return nil, l.closedErr()
